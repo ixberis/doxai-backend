@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cuenta activada con pago confirmado</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      background-color: #28a745;
+      color: white;
+      padding: 15px;
+      text-align: center;
+      border-radius: 5px 5px 0 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+    .content {
+      background-color: #f9f9f9;
+      padding: 20px;
+      border-radius: 0 0 5px 5px;
+    }
+    .info-row {
+      margin-bottom: 10px;
+    }
+    .label {
+      font-weight: bold;
+      color: #495057;
+    }
+    .footer {
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+      margin-top: 30px;
+    }
+    .system-notification {
+      background-color: #e9f6ec;
+      border-left: 5px solid #28a745;
+      padding: 10px;
+      margin: 20px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>[ADMIN] Cuenta activada con pago confirmado</h1>
+    </div>
+
+    <div class="content">
+      <div class="system-notification">
+        <p>Un usuario ha activado su cuenta exitosamente en <strong>DoxAI</strong> tras confirmar el pago.</p>
+      </div>
+
+      <div class="info-row">
+        <span class="label">Nombre:</span> {{ user_name }}
+      </div>
+
+      <div class="info-row">
+        <span class="label">Correo electrónico:</span> {{ user_email }}
+      </div>
+
+      <div class="info-row">
+        <span class="label">Fecha de activación:</span> {{ activated_at }}
+      </div>
+
+      <div class="info-row">
+        <span class="label">Monto pagado:</span> {{ amount_paid }} {{ currency }}
+      </div>
+
+      <p>Este mensaje ha sido generado automáticamente por el sistema DoxAI para fines de auditoría y monitoreo.</p>
+    </div>
+
+    <div class="footer">
+      <p>Sistema Administrativo DoxAI</p>
+      <p>&copy; 2025 DoxAI. Todos los derechos reservados.</p>
+    </div>
+  </div>
+</body>
+</html>
+

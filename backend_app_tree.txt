@@ -1,0 +1,977 @@
+Listado de rutas de carpetas
+El n·mero de serie del volumen es A088-2772
+C:\USERS\IBM\ONEDRIVE\DOXAI\01_DOXAI\DOXAI-RELOADED\BACKEND
+ª   .env
+ª   .env.test
+ª   .gitkeep
+ª   backend_app_tree.txt
+ª   pytest.ini
+ª   requirements-dev.txt
+ª   sitecustomize.py
+ª   
++---.pytest_cache
+ª   ª   .gitignore
+ª   ª   CACHEDIR.TAG
+ª   ª   README.md
+ª   ª   
+ª   +---v
+ª       +---cache
+ª               lastfailed
+ª               nodeids
+ª               
++---app
+ª   ª   .gitignore
+ª   ª   main.py
+ª   ª   routes.py
+ª   ª   __init__.py
+ª   ª   
+ª   +---assets
+ª   ª   +---warmup
+ª   ª           .gitkeep
+ª   ª           warmup_es_min.pdf
+ª   ª           
+ª   +---modules
+ª   ª   +---auth
+ª   ª   ª   ª   README_auth_module.md
+ª   ª   ª   ª   security.py
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---enums
+ª   ª   ª   ª   ª   activation_status_enum.py
+ª   ª   ª   ª   ª   reasons_enums.py
+ª   ª   ª   ª   ª   role_enum.py
+ª   ª   ª   ª   ª   user_role_enum.py
+ª   ª   ª   ª   ª   user_status_enum.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           user_role_enum.cpython-311.pyc
+ª   ª   ª   ª           user_status_enum.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---facades
+ª   ª   ª   ª   ª   auth_facade.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           auth_facade.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---models
+ª   ª   ª   ª   ª   activation_models.py
+ª   ª   ª   ª   ª   login_models.py
+ª   ª   ª   ª   ª   password_reset_models.py
+ª   ª   ª   ª   ª   user_models.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           activation_models.cpython-311.pyc
+ª   ª   ª   ª           login_models.cpython-311.pyc
+ª   ª   ª   ª           password_reset_models.cpython-311.pyc
+ª   ª   ª   ª           user_models.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---routes
+ª   ª   ª   ª   ª   auth_routes.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           auth_routes.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---schemas
+ª   ª   ª   ª   ª   auth_schemas.py
+ª   ª   ª   ª   ª   user_schemas.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           auth_schemas.cpython-311.pyc
+ª   ª   ª   ª           user_schemas.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---services
+ª   ª   ª   ª   ª   activation_service.py
+ª   ª   ª   ª   ª   auth_service.py
+ª   ª   ª   ª   ª   password_reset_service.py
+ª   ª   ª   ª   ª   token_issuer_service.py
+ª   ª   ª   ª   ª   token_service.py
+ª   ª   ª   ª   ª   user_service.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           activation_service.cpython-311.pyc
+ª   ª   ª   ª           auth_service.cpython-311.pyc
+ª   ª   ª   ª           password_reset_service.cpython-311.pyc
+ª   ª   ª   ª           token_issuer_service.cpython-311.pyc
+ª   ª   ª   ª           token_service.cpython-311.pyc
+ª   ª   ª   ª           user_service.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---tests
+ª   ª   ª   ª   ª   conftest.py
+ª   ª   ª   ª   ª   test_models.py
+ª   ª   ª   ª   ª   test_routes.py
+ª   ª   ª   ª   ª   test_services.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           conftest.cpython-311.pyc
+ª   ª   ª   ª           test_models.cpython-311.pyc
+ª   ª   ª   ª           test_routes.cpython-311.pyc
+ª   ª   ª   ª           test_services.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---__pycache__
+ª   ª   ª           security.cpython-311.pyc
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---files
+ª   ª   ª   ª   README.md
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---facades
+ª   ª   ª   ª   ª   bulk_download_facade.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           bulk_download_facade.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---models
+ª   ª   ª   ª   ª   input_file_metadata_models.py
+ª   ª   ª   ª   ª   input_file_models.py
+ª   ª   ª   ª   ª   product_file_activity_models.py
+ª   ª   ª   ª   ª   product_file_metadata_models.py
+ª   ª   ª   ª   ª   product_file_models.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           input_file_metadata_models.cpython-311.pyc
+ª   ª   ª   ª           input_file_models.cpython-311.pyc
+ª   ª   ª   ª           product_file_activity_models.cpython-311.pyc
+ª   ª   ª   ª           product_file_metadata_models.cpython-311.pyc
+ª   ª   ª   ª           product_file_models.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---repositories
+ª   ª   ª   ª   ª   product_file_repository.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           product_file_repository.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---routes
+ª   ª   ª   ª   ª   file_routes.py
+ª   ª   ª   ª   ª   selected_download_routes.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           file_routes.cpython-311.pyc
+ª   ª   ª   ª           selected_download_routes.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---schemas
+ª   ª   ª   ª   ª   bulk_download_schemas.py
+ª   ª   ª   ª   ª   input_file_metadata_schemas.py
+ª   ª   ª   ª   ª   input_file_schemas.py
+ª   ª   ª   ª   ª   product_file_metadata_schemas.py
+ª   ª   ª   ª   ª   product_file_schemas.py
+ª   ª   ª   ª   ª   selected_download_schemas.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           bulk_download_schemas.cpython-311.pyc
+ª   ª   ª   ª           input_file_metadata_schemas.cpython-311.pyc
+ª   ª   ª   ª           input_file_schemas.cpython-311.pyc
+ª   ª   ª   ª           product_file_metadata_schemas.cpython-311.pyc
+ª   ª   ª   ª           product_file_schemas.cpython-311.pyc
+ª   ª   ª   ª           selected_download_schemas.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---services
+ª   ª   ª   ª   ª   bulk_download_service.py
+ª   ª   ª   ª   ª   embedding_validator_service.py
+ª   ª   ª   ª   ª   input_file_lookup_service.py
+ª   ª   ª   ª   ª   input_file_metadata_service.py
+ª   ª   ª   ª   ª   input_file_service.py
+ª   ª   ª   ª   ª   product_file_activity_service.py
+ª   ª   ª   ª   ª   product_file_metadata_service.py
+ª   ª   ª   ª   ª   product_file_service.py
+ª   ª   ª   ª   ª   product_file_type_mapper.py
+ª   ª   ª   ª   ª   selected_download_service.py
+ª   ª   ª   ª   ª   zip_creator_service.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---converters
+ª   ª   ª   ª   ª   ª   azure_document_intelligence_client.py
+ª   ª   ª   ª   ª   ª   azure_types.py
+ª   ª   ª   ª   ª   ª   common_office_helpers.py
+ª   ª   ª   ª   ª   ª   conversion_dispatcher.py
+ª   ª   ª   ª   ª   ª   conversion_runner.py
+ª   ª   ª   ª   ª   ª   dispatcher_core.py
+ª   ª   ª   ª   ª   ª   doc_legacy_converter.py
+ª   ª   ª   ª   ª   ª   excel_converter.py
+ª   ª   ª   ª   ª   ª   excel_legacy_converter.py
+ª   ª   ª   ª   ª   ª   office_conversion_handler.py
+ª   ª   ª   ª   ª   ª   pdf_adaptive_controller.py
+ª   ª   ª   ª   ª   ª   pdf_batch_config_manager.py
+ª   ª   ª   ª   ª   ª   pdf_batch_coordinator.py
+ª   ª   ª   ª   ª   ª   pdf_batch_processor.py
+ª   ª   ª   ª   ª   ª   pdf_batch_result_factory.py
+ª   ª   ª   ª   ª   ª   pdf_cached_page_processor.py
+ª   ª   ª   ª   ª   ª   pdf_cache_operations.py
+ª   ª   ª   ª   ª   ª   pdf_common.py
+ª   ª   ª   ª   ª   ª   pdf_complexity_analyzer.py
+ª   ª   ª   ª   ª   ª   pdf_conversion_config.py
+ª   ª   ª   ª   ª   ª   pdf_conversion_handler.py
+ª   ª   ª   ª   ª   ª   pdf_converter_simplified.py
+ª   ª   ª   ª   ª   ª   pdf_element_merger.py
+ª   ª   ª   ª   ª   ª   pdf_fast_processor.py
+ª   ª   ª   ª   ª   ª   pdf_image_enhancement.py
+ª   ª   ª   ª   ª   ª   pdf_image_preprocessing.py
+ª   ª   ª   ª   ª   ª   pdf_job_coordinator.py
+ª   ª   ª   ª   ª   ª   pdf_ocr_engine.py
+ª   ª   ª   ª   ª   ª   pdf_ocr_retry_handler.py
+ª   ª   ª   ª   ª   ª   pdf_optimization_recommender.py
+ª   ª   ª   ª   ª   ª   pdf_page_ocr_processor_refactored.py
+ª   ª   ª   ª   ª   ª   pdf_page_renderer.py
+ª   ª   ª   ª   ª   ª   pdf_parallel_executor.py
+ª   ª   ª   ª   ª   ª   pdf_parallel_page_processor_refactored.py
+ª   ª   ª   ª   ª   ª   pdf_parallel_performance.py
+ª   ª   ª   ª   ª   ª   pdf_parallel_worker.py
+ª   ª   ª   ª   ª   ª   pdf_performance_tracker.py
+ª   ª   ª   ª   ª   ª   pdf_preprocessing_config.py
+ª   ª   ª   ª   ª   ª   pdf_preprocessing_coordinator.py
+ª   ª   ª   ª   ª   ª   pdf_processing_metrics.py
+ª   ª   ª   ª   ª   ª   pdf_rasterizer_backend.py
+ª   ª   ª   ª   ª   ª   pdf_result_consolidator.py
+ª   ª   ª   ª   ª   ª   pdf_table_deduplication_service.py
+ª   ª   ª   ª   ª   ª   pdf_table_extraction_coordinator.py
+ª   ª   ª   ª   ª   ª   pdf_table_format_converter.py
+ª   ª   ª   ª   ª   ª   pdf_table_pdfplumber_extractor.py
+ª   ª   ª   ª   ª   ª   pdf_table_planner.py
+ª   ª   ª   ª   ª   ª   pdf_tabular_extractor_refactored.py
+ª   ª   ª   ª   ª   ª   pdf_utils.py
+ª   ª   ª   ª   ª   ª   plain_text_loader.py
+ª   ª   ª   ª   ª   ª   pptx_converter.py
+ª   ª   ª   ª   ª   ª   ppt_legacy_converter.py
+ª   ª   ª   ª   ª   ª   progress_adapter.py
+ª   ª   ª   ª   ª   ª   word_converter.py
+ª   ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           azure_document_intelligence_client.cpython-311.pyc
+ª   ª   ª   ª   ª           azure_types.cpython-311.pyc
+ª   ª   ª   ª   ª           common_office_helpers.cpython-311.pyc
+ª   ª   ª   ª   ª           conversion_dispatcher.cpython-311.pyc
+ª   ª   ª   ª   ª           conversion_runner.cpython-311.pyc
+ª   ª   ª   ª   ª           dispatcher_core.cpython-311.pyc
+ª   ª   ª   ª   ª           doc_legacy_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           excel_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           excel_legacy_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           office_conversion_handler.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_batch_config_manager.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_batch_coordinator.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_batch_processor.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_batch_result_factory.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_cached_page_processor.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_cache_operations.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_common.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_complexity_analyzer.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_conversion_config.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_conversion_handler.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_converter_simplified.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_element_merger.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_fast_processor.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_image_enhancement.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_image_preprocessing.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_job_coordinator.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_ocr_engine.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_ocr_retry_handler.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_optimization_recommender.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_page_ocr_processor_refactored.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_page_renderer.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_parallel_executor.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_parallel_page_processor_refactored.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_parallel_performance.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_parallel_worker.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_performance_tracker.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_preprocessing_config.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_preprocessing_coordinator.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_processing_metrics.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_rasterizer_backend.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_result_consolidator.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_table_deduplication_service.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_table_extraction_coordinator.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_table_format_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_table_pdfplumber_extractor.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_table_planner.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_tabular_extractor_refactored.cpython-311.pyc
+ª   ª   ª   ª   ª           pdf_utils.cpython-311.pyc
+ª   ª   ª   ª   ª           plain_text_loader.cpython-311.pyc
+ª   ª   ª   ª   ª           pptx_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           ppt_legacy_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           progress_adapter.cpython-311.pyc
+ª   ª   ª   ª   ª           word_converter.cpython-311.pyc
+ª   ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---storage
+ª   ª   ª   ª   ª   ª   create_user_folder_storage.py
+ª   ª   ª   ª   ª   ª   download_cache.py
+ª   ª   ª   ª   ª   ª   file_download_storage.py
+ª   ª   ª   ª   ª   ª   file_get_url_storage.py
+ª   ª   ª   ª   ª   ª   file_list_storage.py
+ª   ª   ª   ª   ª   ª   file_upload_storage.py
+ª   ª   ª   ª   ª   ª   project_archive_folder_storage.py
+ª   ª   ª   ª   ª   ª   project_create_folder_storage.py
+ª   ª   ª   ª   ª   ª   project_list_user_projects_storage.py
+ª   ª   ª   ª   ª   ª   storage_migration_service.py
+ª   ª   ª   ª   ª   ª   storage_paths.py
+ª   ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           create_user_folder_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           download_cache.cpython-311.pyc
+ª   ª   ª   ª   ª           file_download_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           file_get_url_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           file_list_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           file_upload_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           project_archive_folder_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           project_create_folder_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           project_list_user_projects_storage.cpython-311.pyc
+ª   ª   ª   ª   ª           storage_migration_service.cpython-311.pyc
+ª   ª   ª   ª   ª           storage_paths.cpython-311.pyc
+ª   ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---zip
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           bulk_download_service.cpython-311.pyc
+ª   ª   ª   ª           embedding_validator_service.cpython-311.pyc
+ª   ª   ª   ª           input_file_lookup_service.cpython-311.pyc
+ª   ª   ª   ª           input_file_metadata_service.cpython-311.pyc
+ª   ª   ª   ª           input_file_service.cpython-311.pyc
+ª   ª   ª   ª           product_file_activity_service.cpython-311.pyc
+ª   ª   ª   ª           product_file_metadata_service.cpython-311.pyc
+ª   ª   ª   ª           product_file_service.cpython-311.pyc
+ª   ª   ª   ª           product_file_type_mapper.cpython-311.pyc
+ª   ª   ª   ª           selected_download_service.cpython-311.pyc
+ª   ª   ª   ª           zip_creator_service.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---tests
+ª   ª   ª   ª   ª   conftest.py
+ª   ª   ª   ª   ª   test_routes.py
+ª   ª   ª   ª   ª   test_services.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           conftest.cpython-311.pyc
+ª   ª   ª   ª           test_routes.cpython-311.pyc
+ª   ª   ª   ª           test_services.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---__pycache__
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---payments
+ª   ª   ª   ª   README.md
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---enums
+ª   ª   ª   ª   ª   credit_tx_type_enum.py
+ª   ª   ª   ª   ª   currency_enum.py
+ª   ª   ª   ª   ª   payment_currency_enum.py
+ª   ª   ª   ª   ª   payment_provider_enum.py
+ª   ª   ª   ª   ª   payment_status_enum.py
+ª   ª   ª   ª   ª   reservation_status_enum.py
+ª   ª   ª   ª   ª   user_plan_enum.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           payment_provider_enum.cpython-311.pyc
+ª   ª   ª   ª           payment_status_enum.cpython-311.pyc
+ª   ª   ª   ª           user_plan_enum.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---facades
+ª   ª   ª   ª   ª   abandoned_payment_facade.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           abandoned_payment_facade.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---models
+ª   ª   ª   ª   ª   credit_balances_models.py
+ª   ª   ª   ª   ª   credit_ledger_models.py
+ª   ª   ª   ª   ª   payment_event_models.py
+ª   ª   ª   ª   ª   payment_models.py
+ª   ª   ª   ª   ª   usage_reservations_models.py
+ª   ª   ª   ª   ª   usage_reservation_models.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           credit_balances_models.cpython-311.pyc
+ª   ª   ª   ª           credit_ledger_models.cpython-311.pyc
+ª   ª   ª   ª           payment_event_models.cpython-311.pyc
+ª   ª   ª   ª           payment_models.cpython-311.pyc
+ª   ª   ª   ª           usage_reservations_models.cpython-311.pyc
+ª   ª   ª   ª           usage_reservation_models.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---routes
+ª   ª   ª   ª   ª   abandoned_payment_router.py
+ª   ª   ª   ª   ª   payment_confirmation_router.py
+ª   ª   ª   ª   ª   payment_routes.py
+ª   ª   ª   ª   ª   payment_webhooks_router.py
+ª   ª   ª   ª   ª   resume_payment_router.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           abandoned_payment_router.cpython-311.pyc
+ª   ª   ª   ª           payment_confirmation_router.cpython-311.pyc
+ª   ª   ª   ª           payment_routes.cpython-311.pyc
+ª   ª   ª   ª           payment_webhooks_router.cpython-311.pyc
+ª   ª   ª   ª           resume_payment_router.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---schemas
+ª   ª   ª   ª   ª   credit_schemas.py
+ª   ª   ª   ª   ª   payment_event_schemas.py
+ª   ª   ª   ª   ª   payment_schemas.py
+ª   ª   ª   ª   ª   reservation_schemas.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           credit_schemas.cpython-311.pyc
+ª   ª   ª   ª           payment_event_schemas.cpython-311.pyc
+ª   ª   ª   ª           payment_schemas.cpython-311.pyc
+ª   ª   ª   ª           reservation_schemas.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---services
+ª   ª   ª   ª   ª   credit_service.py
+ª   ª   ª   ª   ª   payment_event_service.py
+ª   ª   ª   ª   ª   payment_service.py
+ª   ª   ª   ª   ª   reservation_service.py
+ª   ª   ª   ª   ª   resume_payment_service.py
+ª   ª   ª   ª   ª   subscription_status_checker.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---confirmation
+ª   ª   ª   ª   ª   ª   payment_verifier.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           payment_verifier.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---paypal
+ª   ª   ª   ª   ª   ª   paypal_auth_service.py
+ª   ª   ª   ª   ª   ª   paypal_subscription_creator_service.py
+ª   ª   ª   ª   ª   ª   paypal_subscription_service.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           paypal_auth_service.cpython-311.pyc
+ª   ª   ª   ª   ª           paypal_subscription_creator_service.cpython-311.pyc
+ª   ª   ª   ª   ª           paypal_subscription_service.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---records
+ª   ª   ª   ª   ª   ª   payment_records.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           payment_records.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---subscription
+ª   ª   ª   ª   ª   ª   subscription_status.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           subscription_status.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---utils
+ª   ª   ª   ª   ª   ª   custom_id_extractor.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           custom_id_extractor.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---webhooks
+ª   ª   ª   ª   ª   ª   payment_webhook_handlers.py
+ª   ª   ª   ª   ª   ª   signature_verification.py
+ª   ª   ª   ª   ª   ª   
+ª   ª   ª   ª   ª   +---subscriptions_handlers
+ª   ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª   ª           payment_webhook_handlers.cpython-311.pyc
+ª   ª   ª   ª   ª           signature_verification.cpython-311.pyc
+ª   ª   ª   ª   ª           
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           credit_service.cpython-311.pyc
+ª   ª   ª   ª           payment_event_service.cpython-311.pyc
+ª   ª   ª   ª           payment_service.cpython-311.pyc
+ª   ª   ª   ª           reservation_service.cpython-311.pyc
+ª   ª   ª   ª           resume_payment_service.cpython-311.pyc
+ª   ª   ª   ª           subscription_status_checker.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---tests
+ª   ª   ª   ª   ª   conftest.py
+ª   ª   ª   ª   ª   test_models.py
+ª   ª   ª   ª   ª   test_routes.py
+ª   ª   ª   ª   ª   test_services.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           conftest.cpython-311.pyc
+ª   ª   ª   ª           test_models.cpython-311.pyc
+ª   ª   ª   ª           test_routes.cpython-311.pyc
+ª   ª   ª   ª           test_services.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---__pycache__
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---projects
+ª   ª   ª   ª   README.md
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---models
+ª   ª   ª   ª   ª   project_activity_models.py
+ª   ª   ª   ª   ª   project_file_event_models.py
+ª   ª   ª   ª   ª   project_models.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           project_activity_models.cpython-311.pyc
+ª   ª   ª   ª           project_file_event_models.cpython-311.pyc
+ª   ª   ª   ª           project_models.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---routes
+ª   ª   ª   ª   ª   bulk_download_input_files_routes.py
+ª   ª   ª   ª   ª   bulk_download_product_files_routes.py
+ª   ª   ª   ª   ª   bulk_download_routes.py
+ª   ª   ª   ª   ª   input_file_routes.py
+ª   ª   ª   ª   ª   projects_read_route.py
+ª   ª   ª   ª   ª   projects_state_route.py
+ª   ª   ª   ª   ª   project_file_event_routes.py
+ª   ª   ª   ª   ª   project_routes.py
+ª   ª   ª   ª   ª   selected_download_input_files_routes.py
+ª   ª   ª   ª   ª   selected_download_product_files_routes.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           bulk_download_input_files_routes.cpython-311.pyc
+ª   ª   ª   ª           bulk_download_product_files_routes.cpython-311.pyc
+ª   ª   ª   ª           bulk_download_routes.cpython-311.pyc
+ª   ª   ª   ª           input_file_routes.cpython-311.pyc
+ª   ª   ª   ª           projects_read_route.cpython-311.pyc
+ª   ª   ª   ª           projects_state_route.cpython-311.pyc
+ª   ª   ª   ª           project_file_event_routes.cpython-311.pyc
+ª   ª   ª   ª           project_routes.cpython-311.pyc
+ª   ª   ª   ª           selected_download_input_files_routes.cpython-311.pyc
+ª   ª   ª   ª           selected_download_product_files_routes.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---schemas
+ª   ª   ª   ª   ª   project_activity_schemas.py
+ª   ª   ª   ª   ª   project_file_event_schemas.py
+ª   ª   ª   ª   ª   project_schemas.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           project_activity_schemas.cpython-311.pyc
+ª   ª   ª   ª           project_file_event_schemas.cpython-311.pyc
+ª   ª   ª   ª           project_schemas.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---services
+ª   ª   ª   ª   ª   project_activity_service.py
+ª   ª   ª   ª   ª   project_archive_service.py
+ª   ª   ª   ª   ª   project_closure_service.py
+ª   ª   ª   ª   ª   project_file_event_service.py
+ª   ª   ª   ª   ª   project_service.py
+ª   ª   ª   ª   ª   project_status_service.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           project_activity_service.cpython-311.pyc
+ª   ª   ª   ª           project_archive_service.cpython-311.pyc
+ª   ª   ª   ª           project_closure_service.cpython-311.pyc
+ª   ª   ª   ª           project_file_event_service.cpython-311.pyc
+ª   ª   ª   ª           project_service.cpython-311.pyc
+ª   ª   ª   ª           project_status_service.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---tests
+ª   ª   ª   ª   ª   conftest.py
+ª   ª   ª   ª   ª   test_routes.py
+ª   ª   ª   ª   ª   test_services.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           conftest.cpython-311.pyc
+ª   ª   ª   ª           test_routes.cpython-311.pyc
+ª   ª   ª   ª           test_services.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---__pycache__
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---rag
+ª   ª   ª   ª   README.md
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---models
+ª   ª   ª   ª   ª   chunk_models.py
+ª   ª   ª   ª   ª   embedding_models.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           chunk_models.cpython-311.pyc
+ª   ª   ª   ª           embedding_models.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---routes
+ª   ª   ª   ª   ª   rag_routes.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           rag_routes.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---schemas
+ª   ª   ª   ª   ª   indexing_schemas.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           indexing_schemas.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---services
+ª   ª   ª   ª   ª   chunking_service.py
+ª   ª   ª   ª   ª   embedding_service.py
+ª   ª   ª   ª   ª   indexing_service.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           chunking_service.cpython-311.pyc
+ª   ª   ª   ª           embedding_service.cpython-311.pyc
+ª   ª   ª   ª           indexing_service.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---tests
+ª   ª   ª   ª   ª   conftest.py
+ª   ª   ª   ª   ª   test_routes.py
+ª   ª   ª   ª   ª   test_services.py
+ª   ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   ª   
+ª   ª   ª   ª   +---__pycache__
+ª   ª   ª   ª           conftest.cpython-311.pyc
+ª   ª   ª   ª           test_routes.cpython-311.pyc
+ª   ª   ª   ª           test_services.cpython-311.pyc
+ª   ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª   ª           
+ª   ª   ª   +---__pycache__
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---user_profile
+ª   ª       ª   README.md
+ª   ª       ª   __init__.py
+ª   ª       ª   
+ª   ª       +---models
+ª   ª       ª   ª   __init__.py
+ª   ª       ª   ª   
+ª   ª       ª   +---__pycache__
+ª   ª       ª           __init__.cpython-311.pyc
+ª   ª       ª           
+ª   ª       +---routes
+ª   ª       ª   ª   profile_routes.py
+ª   ª       ª   ª   __init__.py
+ª   ª       ª   ª   
+ª   ª       ª   +---__pycache__
+ª   ª       ª           profile_routes.cpython-311.pyc
+ª   ª       ª           __init__.cpython-311.pyc
+ª   ª       ª           
+ª   ª       +---schemas
+ª   ª       ª   ª   profile_schemas.py
+ª   ª       ª   ª   __init__.py
+ª   ª       ª   ª   
+ª   ª       ª   +---__pycache__
+ª   ª       ª           profile_schemas.cpython-311.pyc
+ª   ª       ª           __init__.cpython-311.pyc
+ª   ª       ª           
+ª   ª       +---services
+ª   ª       ª   ª   profile_service.py
+ª   ª       ª   ª   __init__.py
+ª   ª       ª   ª   
+ª   ª       ª   +---__pycache__
+ª   ª       ª           profile_service.cpython-311.pyc
+ª   ª       ª           __init__.cpython-311.pyc
+ª   ª       ª           
+ª   ª       +---tests
+ª   ª       ª   ª   conftest.py
+ª   ª       ª   ª   test_routes.py
+ª   ª       ª   ª   test_services.py
+ª   ª       ª   ª   __init__.py
+ª   ª       ª   ª   
+ª   ª       ª   +---__pycache__
+ª   ª       ª           conftest.cpython-311.pyc
+ª   ª       ª           test_routes.cpython-311.pyc
+ª   ª       ª           test_services.cpython-311.pyc
+ª   ª       ª           __init__.cpython-311.pyc
+ª   ª       ª           
+ª   ª       +---__pycache__
+ª   ª               __init__.cpython-311.pyc
+ª   ª               
+ª   +---shared
+ª   ª   ª   README.md
+ª   ª   ª   __init__.py
+ª   ª   ª   
+ª   ª   +---config
+ª   ª   ª   ª   constants.py
+ª   ª   ª   ª   settings.py
+ª   ª   ª   ª   settings_eviction.py
+ª   ª   ª   ª   settings_factory.py
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           constants.cpython-311.pyc
+ª   ª   ª           settings.cpython-311.pyc
+ª   ª   ª           settings_eviction.cpython-311.pyc
+ª   ª   ª           settings_factory.cpython-311.pyc
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---core
+ª   ª   ª   ª   app.py
+ª   ª   ª   ª   resource_cache.py
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           app.cpython-311.pyc
+ª   ª   ª           resource_cache.cpython-311.pyc
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---database
+ª   ª   ª   ª   base.py
+ª   ª   ª   ª   database.py
+ª   ª   ª   ª   database.py.bak
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           base.cpython-311.pyc
+ª   ª   ª           database.cpython-311.pyc
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---enums
+ª   ª   ª   ª   email_status_enum.py
+ª   ª   ª   ª   email_type_enum.py
+ª   ª   ª   ª   file_category_enum.py
+ª   ª   ª   ª   file_language_enum.py
+ª   ª   ª   ª   file_type_enum.py
+ª   ª   ª   ª   input_file_class_enum.py
+ª   ª   ª   ª   input_processing_status_enum.py
+ª   ª   ª   ª   ocr_optimization_enum.py
+ª   ª   ª   ª   product_file_enum.py
+ª   ª   ª   ª   product_file_event_enum.py
+ª   ª   ª   ª   product_file_generation_method_enum.py
+ª   ª   ª   ª   product_file_type_enum.py
+ª   ª   ª   ª   product_version_enum.py
+ª   ª   ª   ª   project_action_type_enum.py
+ª   ª   ª   ª   project_file_event_enum.py
+ª   ª   ª   ª   project_filter_enum.py
+ª   ª   ª   ª   project_phase_enum.py
+ª   ª   ª   ª   project_status_enum.py
+ª   ª   ª   ª   rag_phase_enum.py
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           activation_status_enum.cpython-311.pyc
+ª   ª   ª           credit_tx_type_enum.cpython-311.pyc
+ª   ª   ª           currency_enum.cpython-311.pyc
+ª   ª   ª           email_status_enum.cpython-311.pyc
+ª   ª   ª           email_type_enum.cpython-311.pyc
+ª   ª   ª           file_category_enum.cpython-311.pyc
+ª   ª   ª           file_language_enum.cpython-311.pyc
+ª   ª   ª           file_type_enum.cpython-311.pyc
+ª   ª   ª           input_file_class_enum.cpython-311.pyc
+ª   ª   ª           input_processing_status_enum.cpython-311.pyc
+ª   ª   ª           ocr_optimization_enum.cpython-311.pyc
+ª   ª   ª           payment_currency_enum.cpython-311.pyc
+ª   ª   ª           payment_provider_enum.cpython-311.pyc
+ª   ª   ª           payment_status_enum.cpython-311.pyc
+ª   ª   ª           product_file_enum.cpython-311.pyc
+ª   ª   ª           product_file_event_enum.cpython-311.pyc
+ª   ª   ª           product_file_generation_method_enum.cpython-311.pyc
+ª   ª   ª           product_file_type_enum.cpython-311.pyc
+ª   ª   ª           product_version_enum.cpython-311.pyc
+ª   ª   ª           project_action_type_enum.cpython-311.pyc
+ª   ª   ª           project_file_event_enum.cpython-311.pyc
+ª   ª   ª           project_filter_enum.cpython-311.pyc
+ª   ª   ª           project_phase_enum.cpython-311.pyc
+ª   ª   ª           project_status_enum.cpython-311.pyc
+ª   ª   ª           rag_phase_enum.cpython-311.pyc
+ª   ª   ª           reasons_enums.cpython-311.pyc
+ª   ª   ª           reservation_status_enum.cpython-311.pyc
+ª   ª   ª           role_enum.cpython-311.pyc
+ª   ª   ª           subscription_period_unit_enum.cpython-311.pyc
+ª   ª   ª           subscription_plan_enum.cpython-311.pyc
+ª   ª   ª           subscription_status_enum.cpython-311.pyc
+ª   ª   ª           user_plan_enum.cpython-311.pyc
+ª   ª   ª           user_status_enum.cpython-311.pyc
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---integrations
+ª   ª   ª   ª   email_sender.py
+ª   ª   ª   ª   recaptcha_adapter.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           email_sender.cpython-311.pyc
+ª   ª   ª           recaptcha_adapter.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---middleware
+ª   ª   +---models
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---routes
+ª   ª   ª   ª   legacy_compatibility_routes.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           legacy_compatibility_routes.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---security
+ª   ª   ª   ª   rate_limit_service.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           rate_limit_service.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---templates
+ª   ª   ª   ª   account_activation_email.html
+ª   ª   ª   ª   account_deleted_email.html
+ª   ª   ª   ª   account_locked_email.html
+ª   ª   ª   ª   activation_email.html
+ª   ª   ª   ª   admin_account_deleted_email.html
+ª   ª   ª   ª   admin_brute_force_alert.html
+ª   ª   ª   ª   admin_login_alert.html
+ª   ª   ª   ª   admin_new_user_email.html
+ª   ª   ª   ª   admin_profile_updated_email.html
+ª   ª   ª   ª   admin_subscription_cancelled_email.html
+ª   ª   ª   ª   admin_subscription_reactivated_email.html
+ª   ª   ª   ª   admin_subscription_suspended_email.html
+ª   ª   ª   ª   admin_user_activated_email.html
+ª   ª   ª   ª   login_success_email.html
+ª   ª   ª   ª   password_reset_email.html
+ª   ª   ª   ª   password_reset_failure_admin.html
+ª   ª   ª   ª   password_reset_failure_user.html
+ª   ª   ª   ª   password_reset_request_admin.html
+ª   ª   ª   ª   password_reset_success_admin.html
+ª   ª   ª   ª   password_reset_success_user.html
+ª   ª   ª   ª   paypal_subscription_cancelled_email.html
+ª   ª   ª   ª   paypal_subscription_reactivated_email.html
+ª   ª   ª   ª   paypal_subscription_suspended_email.html
+ª   ª   ª   ª   profile_updated_email.html
+ª   ª   ª   ª   resume_payment_email.html
+ª   ª   ª   ª   subscription_reactivated_email.html
+ª   ª   ª   ª   subscription_suspended_email.html
+ª   ª   ª   ª   welcome_email.html
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---emails
+ª   ª   ª   ª       activation.html
+ª   ª   ª   ª       password_reset.html
+ª   ª   ª   ª       payment_receipt.html
+ª   ª   ª   ª       
+ª   ª   ª   +---__pycache__
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---utils
+ª   ª   ª   ª   async_job_registry.py
+ª   ª   ª   ª   base_models.py
+ª   ª   ª   ª   email_utils.py
+ª   ª   ª   ª   filename_config.py
+ª   ª   ª   ª   filename_core.py
+ª   ª   ª   ª   filename_logger.py
+ª   ª   ª   ª   filename_monitoring.py
+ª   ª   ª   ª   filename_sanitization.py
+ª   ª   ª   ª   filename_unique.py
+ª   ª   ª   ª   file_cleanup.py
+ª   ª   ª   ª   file_validation_utils.py
+ª   ª   ª   ª   hashing.py
+ª   ª   ª   ª   http_exceptions.py
+ª   ª   ª   ª   http_storage_client.py
+ª   ª   ª   ª   jwt_utils.py
+ª   ª   ª   ª   migration_tools.py
+ª   ª   ª   ª   password_validation.py
+ª   ª   ª   ª   pdf_resource_manager.py
+ª   ª   ª   ª   pdf_warmup.py
+ª   ª   ª   ª   project_phase_utils.py
+ª   ª   ª   ª   README_utils.md
+ª   ª   ª   ª   recaptcha.py
+ª   ª   ª   ª   security.py
+ª   ª   ª   ª   slug_utils.py
+ª   ª   ª   ª   sqlalchemy_typing.py
+ª   ª   ª   ª   storage_pagination_utils.py
+ª   ª   ª   ª   temp_directory_manager.py
+ª   ª   ª   ª   text_normalizer.py
+ª   ª   ª   ª   validators.py
+ª   ª   ª   ª   zip_utils.py
+ª   ª   ª   ª   __init__.py
+ª   ª   ª   ª   
+ª   ª   ª   +---__pycache__
+ª   ª   ª           async_job_registry.cpython-311.pyc
+ª   ª   ª           base_models.cpython-311.pyc
+ª   ª   ª           email_utils.cpython-311.pyc
+ª   ª   ª           filename_config.cpython-311.pyc
+ª   ª   ª           filename_core.cpython-311.pyc
+ª   ª   ª           filename_logger.cpython-311.pyc
+ª   ª   ª           filename_monitoring.cpython-311.pyc
+ª   ª   ª           filename_sanitization.cpython-311.pyc
+ª   ª   ª           filename_unique.cpython-311.pyc
+ª   ª   ª           file_cleanup.cpython-311.pyc
+ª   ª   ª           file_validation_utils.cpython-311.pyc
+ª   ª   ª           hashing.cpython-311.pyc
+ª   ª   ª           http_exceptions.cpython-311.pyc
+ª   ª   ª           http_storage_client.cpython-311.pyc
+ª   ª   ª           jwt_utils.cpython-311.pyc
+ª   ª   ª           migration_tools.cpython-311.pyc
+ª   ª   ª           password_validation.cpython-311.pyc
+ª   ª   ª           pdf_resource_manager.cpython-311.pyc
+ª   ª   ª           project_phase_utils.cpython-311.pyc
+ª   ª   ª           recaptcha.cpython-311.pyc
+ª   ª   ª           security.cpython-311.pyc
+ª   ª   ª           slug_utils.cpython-311.pyc
+ª   ª   ª           sqlalchemy_typing.cpython-311.pyc
+ª   ª   ª           storage_pagination_utils.cpython-311.pyc
+ª   ª   ª           temp_directory_manager.cpython-311.pyc
+ª   ª   ª           text_normalizer.cpython-311.pyc
+ª   ª   ª           validators.cpython-311.pyc
+ª   ª   ª           zip_utils.cpython-311.pyc
+ª   ª   ª           __init__.cpython-311.pyc
+ª   ª   ª           
+ª   ª   +---__pycache__
+ª   ª           __init__.cpython-311.pyc
+ª   ª           
+ª   +---__pycache__
+ª           main.cpython-311.pyc
+ª           routes.cpython-311.pyc
+ª           __init__.cpython-311.pyc
+ª           
++---docs
+ª       .gitkeep
+ª       Crear_Activar_Cuenta.md
+ª       
++---scripts
+ª   ª   .gitkeep
+ª   ª   audit_imports.py
+ª   ª   fix_imports.py
+ª   ª   report_routes.py
+ª   ª   validate_openapi.py
+ª   ª   
+ª   +---__pycache__
+ª           audit_imports.cpython-311.pyc
+ª           fix_imports.cpython-311.pyc
+ª           report_routes.cpython-311.pyc
+ª           validate_openapi.cpython-311.pyc
+ª           
++---tests
+ª   ª   test_db_connection.py
+ª   ª   
+ª   +---__pycache__
+ª           test_db_connection.cpython-311.pyc
+ª           
++---__pycache__
+        sitecustomize.cpython-311.pyc
+        __compile_check__.cpython-311.pyc
+        

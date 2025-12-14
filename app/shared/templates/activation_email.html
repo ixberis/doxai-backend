@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Active su cuenta en DoxAI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+    }
+    .container {
+      max-width: 600px;
+      margin: 20px auto;
+      background-color: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .header {
+      background: linear-gradient(135deg, #4A6CF7 0%, #3651D4 100%);
+      color: white;
+      text-align: center;
+      padding: 30px 20px;
+    }
+    .logo {
+      max-width: 150px;
+      margin-bottom: 15px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 600;
+    }
+    .content {
+      padding: 30px 20px;
+    }
+    .content p {
+      margin: 15px 0;
+      color: #555;
+    }
+    .highlight-box {
+      background-color: #f0f4ff;
+      border-left: 4px solid #4A6CF7;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
+    .button {
+      display: inline-block;
+      background-color: #4A6CF7;
+      color: white !important;
+      padding: 14px 32px;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 600;
+      margin: 20px 0;
+      text-align: center;
+      transition: background-color 0.3s ease;
+    }
+    .button:hover {
+      background-color: #3651D4;
+    }
+    .button-container {
+      text-align: center;
+      margin: 25px 0;
+    }
+    .expiry-notice {
+      font-size: 14px;
+      color: #d97706;
+      background-color: #fef3c7;
+      padding: 12px;
+      border-radius: 4px;
+      margin: 20px 0;
+      border-left: 4px solid #f59e0b;
+    }
+    .footer {
+      background-color: #f9f9f9;
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+      padding: 20px;
+      border-top: 1px solid #e5e5e5;
+    }
+    .footer a {
+      color: #4A6CF7;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="https://doxai.vercel.app/logo.png" alt="DoxAI Logo" class="logo">
+      <h1>Bienvenido a DoxAI</h1>
+    </div>
+
+    <div class="content">
+      <p>Estimado/a <strong>{{ user_name }}</strong>,</p>
+
+      <p>Gracias por registrarse en <strong>DoxAI</strong>. Para completar el proceso, active su cuenta haciendo clic en el siguiente botón:</p>
+
+      <div class="button-container">
+        <a href="{{ activation_link }}" class="button">Activar mi cuenta</a>
+      </div>
+
+      <div class="highlight-box">
+        <strong>Créditos de bienvenida</strong><br>
+        Al activar su cuenta, se le asignarán automáticamente <strong>5 créditos gratuitos</strong> para que explore las funcionalidades de DoxAI.
+      </div>
+
+      <div class="expiry-notice">
+        <strong>Importante:</strong> Este enlace expirará en <strong>60 minutos</strong>. Si no activa su cuenta antes de ese tiempo, deberá solicitar un nuevo enlace de activación.
+      </div>
+
+      <p style="margin-top: 30px;">Si usted no solicitó la creación de esta cuenta, puede ignorar este mensaje.</p>
+
+      <p>Atentamente,<br>El equipo de DoxAI</p>
+    </div>
+
+    <div class="footer">
+      <p>Este es un correo automático, por favor no responda a esta dirección.</p>
+      <p>¿Necesita ayuda? Visite nuestro <a href="{{ frontend_url }}/soporte">centro de soporte</a></p>
+      <p>&copy; 2025 DoxAI. Todos los derechos reservados.</p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recibo de pago - DoxAI</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #059669;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-radius: 8px 8px 0 0;
+        }
+        .content {
+            background-color: #f9fafb;
+            padding: 30px;
+            border-radius: 0 0 8px 8px;
+        }
+        .details {
+            background-color: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .details-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .details-row:last-child {
+            border-bottom: none;
+            font-weight: bold;
+            font-size: 1.1em;
+            color: #059669;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 12px;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>✓ Pago exitoso</h1>
+    </div>
+    <div class="content">
+        <p>Hola {{user_name}},</p>
+        
+        <p>¡Gracias por tu pago! Hemos recibido tu pago exitosamente y tus créditos ya están disponibles.</p>
+        
+        <div class="details">
+            <h3>Detalles del pago</h3>
+            <div class="details-row">
+                <span>Fecha:</span>
+                <span>{{payment_date}}</span>
+            </div>
+            <div class="details-row">
+                <span>ID de transacción:</span>
+                <span>{{transaction_id}}</span>
+            </div>
+            <div class="details-row">
+                <span>Método de pago:</span>
+                <span>{{payment_method}}</span>
+            </div>
+            <div class="details-row">
+                <span>Plan:</span>
+                <span>{{plan_name}}</span>
+            </div>
+            <div class="details-row">
+                <span>Créditos agregados:</span>
+                <span>{{credits_added}}</span>
+            </div>
+            <div class="details-row">
+                <span>Monto total:</span>
+                <span>{{amount}} {{currency}}</span>
+            </div>
+        </div>
+        
+        <p>Tu nuevo saldo de créditos es: <strong>{{new_balance}} créditos</strong></p>
+        
+        <p>Puedes ver tu historial de transacciones en tu perfil de usuario.</p>
+        
+        <p>Si tienes alguna pregunta, no dudes en contactarnos.</p>
+        
+        <p>¡Gracias por confiar en DoxAI!<br>
+        El equipo de DoxAI</p>
+    </div>
+    <div class="footer">
+        <p>© 2025 DoxAI. Todos los derechos reservados.</p>
+        <p>Este es un recibo automático. Por favor no respondas a este correo.</p>
+    </div>
+</body>
+</html>

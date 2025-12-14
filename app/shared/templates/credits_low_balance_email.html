@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Saldo de créditos bajo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #f59e0b;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+        }
+        .content {
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        .warning-box {
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .button {
+            display: inline-block;
+            padding: 12px 30px;
+            background-color: #5c6ef8;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .footer {
+            text-align: center;
+            padding: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚠️ Tu saldo de créditos está bajo</h1>
+        </div>
+        <div class="content">
+            <p>Hola {{ user_name }},</p>
+            
+            <div class="warning-box">
+                <p><strong>Saldo actual:</strong> {{ current_balance }} créditos</p>
+                <p>Has alcanzado el umbral de alerta configurado.</p>
+            </div>
+
+            <p>Para evitar interrupciones en tu servicio, te recomendamos recargar tu cuenta pronto.</p>
+
+            <p style="text-align: center;">
+                <a href="{{ topup_url }}" class="button">Recargar créditos</a>
+            </p>
+
+            <p><strong>Fecha y hora:</strong> {{ timestamp }}</p>
+        </div>
+        <div class="footer">
+            <p>© {{ current_year }} DoxAI. Todos los derechos reservados.</p>
+        </div>
+    </div>
+</body>
+</html>

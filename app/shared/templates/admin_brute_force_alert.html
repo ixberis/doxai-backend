@@ -1,0 +1,101 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[DoxAI Admin] Posible Ataque de Fuerza Bruta</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #dc3545;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            border-radius: 5px 5px 0 0;
+        }
+        h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+        .content {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 0 0 5px 5px;
+        }
+        .info-row {
+            margin-bottom: 10px;
+        }
+        .label {
+            font-weight: bold;
+            color: #495057;
+        }
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            margin-top: 30px;
+        }
+        .alert-notification {
+            background-color: #fff3cd;
+            border-left: 5px solid #ffc107;
+            padding: 10px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>[ADMIN] Posible Ataque de Fuerza Bruta Detectado</h1>
+        </div>
+        
+        <div class="content">
+            <div class="alert-notification">
+                <p>Este mensaje fue generado automáticamente por el sistema de seguridad de DoxAI. Se han detectado múltiples intentos fallidos de inicio de sesión desde una misma IP.</p>
+            </div>
+
+            <p><strong>Detalles del evento de seguridad:</strong></p>
+
+            <div class="info-row">
+                <span class="label">Correo(s) afectado(s):</span> {{ emails }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Dirección IP:</span> {{ ip_address }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Navegador / Dispositivo:</span> {{ user_agent }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Número de bloqueos registrados:</span> {{ block_count }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Hora del último bloqueo:</span> {{ timestamp }}
+            </div>
+
+            <p>Te recomendamos revisar los registros del sistema y tomar las medidas de seguridad necesarias si este comportamiento persiste.</p>
+        </div>
+
+        <div class="footer">
+            <p>Sistema Administrativo DoxAI</p>
+            <p>&copy; 2025 DoxAI. Todos los derechos reservados.</p>
+        </div>
+    </div>
+</body>
+</html>
+

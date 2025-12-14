@@ -1,0 +1,86 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cuenta Temporalmente Bloqueada - DoxAI</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            padding: 20px 0;
+        }
+        .logo {
+            max-width: 150px;
+        }
+        h1 {
+            color: #E63946;
+            margin-top: 0;
+        }
+        .content {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            margin-top: 30px;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        ul {
+            padding-left: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <img src="https://doxai.vercel.app/logo.png" alt="DoxAI Logo" class="logo">
+            <h1>Cuenta Bloqueada Temporalmente</h1>
+        </div>
+
+        <div class="content">
+            <p>Hola,</p>
+            
+            <p>Tu cuenta de DoxAI ha sido <strong>bloqueada temporalmente</strong> debido a múltiples intentos fallidos de inicio de sesión.</p>
+
+            <ul>
+                <li><strong>Email:</strong> {{ email }}</li>
+                <li><strong>Hora del bloqueo:</strong> {{ timestamp }}</li>
+                <li><strong>Duración:</strong> 15 minutos</li>
+            </ul>
+
+            <div class="warning">
+                <strong>¿No reconoces esta actividad?</strong> Podría tratarse de un intento no autorizado para acceder a tu cuenta. Considera restablecer tu contraseña lo antes posible.
+            </div>
+
+            <p>Puedes utilizar nuestra función de recuperación de contraseña desde la pantalla de inicio de sesión.</p>
+        </div>
+
+        <div class="footer">
+            <p>Este es un correo automático, por favor no respondas a esta dirección.</p>
+            <p>&copy; 2025 DoxAI. Todos los derechos reservados.</p>
+        </div>
+    </div>
+</body>
+</html>

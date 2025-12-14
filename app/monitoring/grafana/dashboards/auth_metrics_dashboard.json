@@ -1,0 +1,214 @@
+
+{
+  "id": null,
+  "uid": "doxai-auth-kpis",
+  "title": "DoxAI • Auth KPIs",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["doxai", "auth", "kpis", "observability"],
+  "time": { "from": "now-7d", "to": "now" },
+  "timepicker": { "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m"] },
+  "editable": true,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" },
+        "label": "Datasource",
+        "hide": 0
+      },
+      {
+        "name": "job",
+        "type": "query",
+        "datasource": "$ds",
+        "refresh": 2,
+        "query": "label_values(up, job)",
+        "current": { "text": ".*", "value": ".*" },
+        "label": "job",
+        "hide": 0,
+        "regex": "",
+        "includeAll": true,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active Sessions (gauge)",
+      "id": 1,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "auth_active_sessions",
+          "legendFormat": "active_sessions",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Activation Conversion Ratio (%)",
+      "id": 2,
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "fieldOptions": { "defaults": { "unit": "percent" }, "overrides": [] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "auth_activation_conversion_ratio / 100",
+          "legendFormat": "activation_rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Registrations (rate)",
+      "id": 3,
+      "gridPos": { "h": 8, "w": 8, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "rate(auth_registrations_total[$__rate_interval])",
+          "legendFormat": "registrations/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Activations (rate)",
+      "id": 4,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "rate(auth_activations_total[$__rate_interval])",
+          "legendFormat": "activations/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Password Resets (rate by status)",
+      "id": 5,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "sum by (status) (rate(auth_password_resets_total[$__rate_interval]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Login Attempts (rate by success/reason)",
+      "id": 6,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "sum by (success,reason) (rate(auth_login_attempts_total[$__rate_interval]))",
+          "legendFormat": "{{success}} / {{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Requests (rate by status)",
+      "id": 7,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "sum by (status) (rate(http_requests_total{job=~\"$job\"}[$__rate_interval]))",
+          "legendFormat": "status={{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Latency p50/p90/p99 (s)",
+      "id": 8,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_latency_seconds_bucket{job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(http_request_latency_seconds_bucket{job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_latency_seconds_bucket{job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "HTTP Error Rate (5xx)",
+      "id": 9,
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 20 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "fieldOptions": {
+          "defaults": { "unit": "percentunit" },
+          "overrides": []
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "$ds" },
+          "expr": "sum(rate(http_requests_total{status=~\"5..\",job=~\"$job\"}[$__rate_interval])) / sum(rate(http_requests_total{job=~\"$job\"}[$__rate_interval]))",
+          "legendFormat": "5xx rate",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

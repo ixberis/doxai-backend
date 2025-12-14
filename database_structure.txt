@@ -1,0 +1,6 @@
+Listado de rutas de carpetas
+El número de serie del volumen es A088-2772
+C:\USERS\IBM\ONEDRIVE\DOXAI\01_DOXAI\DOXAI-RELOADED\BACKEND\DATABASE
+Ruta de acceso no válida: \USERS\IBM\ONEDRIVE\DOXAI\01_DOXAI\DOXAI-RELOADED\BACKEND\DATABASE
+No existe ninguna subcarpeta 
+

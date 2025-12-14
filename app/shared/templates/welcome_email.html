@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bienvenido a DoxAI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      text-align: center;
+      padding: 20px 0;
+    }
+    .logo {
+      max-width: 150px;
+    }
+    h1 {
+      color: #4A6CF7;
+      margin-top: 0;
+    }
+    .content {
+      background-color: #f9f9f9;
+      padding: 20px;
+      border-radius: 5px;
+    }
+    .button {
+      display: inline-block;
+      background-color: #4A6CF7;
+      color: white !important;
+      padding: 12px 24px;
+      text-decoration: none;
+      border-radius: 4px;
+      font-weight: bold;
+      margin: 20px 0;
+    }
+    .footer {
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="https://doxai.vercel.app/logo.png" alt="DoxAI Logo" class="logo">
+      <h1>¡Bienvenido a DoxAI!</h1>
+    </div>
+
+    <div class="content">
+      <p>Hola <strong>{{ user_name }}</strong>,</p>
+
+      <p>¡Tu cuenta ha sido activada exitosamente! 🎉</p>
+
+      <div style="background-color: #f0f4ff; border-left: 4px solid #4A6CF7; padding: 15px; margin: 20px 0; border-radius: 4px;">
+        <strong>🎁 Regalo de bienvenida</strong><br>
+        Hemos acreditado <strong>5 créditos gratuitos</strong> a tu cuenta para que comiences a explorar todas las funcionalidades de DoxAI.
+      </div>
+
+      <p>Ya puedes acceder a nuestra plataforma y comenzar a utilizar tus créditos.</p>
+
+      <div style="text-align: center;">
+        <a href="{{ frontend_url }}" class="button">Iniciar sesión</a>
+      </div>
+
+      <p>Si tienes alguna duda o necesitas ayuda, no dudes en contactarnos. Estamos aquí para apoyarte.</p>
+
+      <p>Gracias por elegir <strong>DoxAI</strong>. Esperamos que tu experiencia sea enriquecedora.</p>
+    </div>
+
+    <div class="footer">
+      <p>Este es un correo automático, por favor no respondas a esta dirección.</p>
+      <p>&copy; 2025 DoxAI. Todos los derechos reservados.</p>
+    </div>
+  </div>
+</body>
+</html>
+

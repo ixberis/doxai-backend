@@ -1,0 +1,331 @@
+
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "iteration": 1731081600000,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "Resumen",
+      "type": "row"
+    },
+    {
+      "type": "stat",
+      "title": "Webhooks procesados (5m)",
+      "id": 1,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(payments_webhooks_processed_total{provider=~\"$provider\"}[$__interval]))",
+          "legendFormat": "procesados",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Tasa de error Webhooks (5m)",
+      "id": 2,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "expr": "100 * ( sum(increase(payments_webhooks_processed_total{provider=~\"$provider\",success=\"false\"}[$__interval])) ) / clamp_min(sum(increase(payments_webhooks_processed_total{provider=~\"$provider\"}[$__interval])),1)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Refunds exitosos (1h)",
+      "id": 3,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(increase(payments_refund_succeeded_total{provider=~\"$provider\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Checkouts iniciados (1h)",
+      "id": 4,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(increase(payments_checkout_started_total{provider=~\"$provider\",currency=~\"$currency\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 200,
+      "panels": [],
+      "title": "Calidad de Webhooks",
+      "type": "row"
+    },
+    {
+      "type": "timeseries",
+      "title": "Webhooks recibidos por tipo",
+      "id": 5,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (event_type) (rate(payments_webhooks_received_total{provider=~\"$provider\",event_type=~\"$event_type\"}[$__rate_interval]))",
+          "legendFormat": "{{event_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Webhooks procesados OK vs Error",
+      "id": 6,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (success) (rate(payments_webhooks_processed_total{provider=~\"$provider\"}[$__rate_interval]))",
+          "legendFormat": "success={{success}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latencia P95 procesamiento Webhooks",
+      "id": 7,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(payments_webhooks_processing_seconds_bucket{provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{provider}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "id": 300,
+      "panels": [],
+      "title": "Reembolsos",
+      "type": "row"
+    },
+    {
+      "type": "timeseries",
+      "title": "Refunds (exitosos/fallidos) por proveedor",
+      "id": 8,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum by (provider) (rate(payments_refund_succeeded_total{provider=~\"$provider\"}[$__rate_interval]))",
+          "legendFormat": "succeeded {{provider}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (provider) (rate(payments_refund_failed_total{provider=~\"$provider\"}[$__rate_interval]))",
+          "legendFormat": "failed {{provider}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latencia P95 proceso de Refunds",
+      "id": 9,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(payments_refund_processing_seconds_bucket{provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{provider}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "id": 400,
+      "panels": [],
+      "title": "Estados de Pago y Checkouts",
+      "type": "row"
+    },
+    {
+      "type": "timeseries",
+      "title": "Pagos por estado (stacked)",
+      "id": 10,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "options": { "legend": { "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum by (status) (increase(payments_status_total{provider=~\"$provider\",currency=~\"$currency\"}[$__interval]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "group": "A", "mode": "normal" } } }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkouts iniciados por moneda",
+      "id": 11,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "targets": [
+        {
+          "expr": "sum by (currency) (increase(payments_checkout_started_total{provider=~\"$provider\",currency=~\"$currency\"}[$__interval]))",
+          "legendFormat": "{{currency}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "id": 500,
+      "panels": [],
+      "title": "Créditos (Gauge)",
+      "type": "row"
+    },
+    {
+      "type": "gauge",
+      "title": "Créditos totales por moneda",
+      "id": 12,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 41 },
+      "targets": [
+        {
+          "expr": "credits_wallet_total{currency=~\"$currency\"}",
+          "legendFormat": "{{currency}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "showThresholdMarkers": true
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["payments", "metrics", "prometheus"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "current": { "selected": true, "text": "Prometheus", "value": "Prometheus" }
+      },
+      {
+        "name": "provider",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(payments_webhooks_processed_total, provider)",
+        "refresh": 1,
+        "hide": 0,
+        "multi": true,
+        "includeAll": true,
+        "current": { "selected": true, "text": "All", "value": ".*" },
+        "regex": ""
+      },
+      {
+        "name": "currency",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(payments_checkout_started_total, currency)",
+        "refresh": 1,
+        "hide": 0,
+        "multi": true,
+        "includeAll": true,
+        "current": { "selected": true, "text": "All", "value": ".*" },
+        "regex": ""
+      },
+      {
+        "name": "event_type",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(payments_webhooks_received_total, event_type)",
+        "refresh": 1,
+        "hide": 0,
+        "multi": true,
+        "includeAll": true,
+        "current": { "selected": true, "text": "All", "value": ".*" },
+        "regex": ""
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": { "refresh_intervals": ["5s","10s","30s","1m","5m","15m","1h"] },
+  "timezone": "",
+  "title": "Payments – Metrics (Prometheus)",
+  "uid": "payments-metrics-prom",
+  "version": 1,
+  "weekStart": ""
+}

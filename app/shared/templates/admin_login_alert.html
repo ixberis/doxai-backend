@@ -1,0 +1,94 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[DoxAI Admin] Nuevo Inicio de Sesión Exitoso</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #007bff;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            border-radius: 5px 5px 0 0;
+        }
+        h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+        .content {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 0 0 5px 5px;
+        }
+        .info-row {
+            margin-bottom: 10px;
+        }
+        .label {
+            font-weight: bold;
+            color: #495057;
+        }
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            margin-top: 30px;
+        }
+        .info-box {
+            background-color: #e2e3e5;
+            border-left: 5px solid #007bff;
+            padding: 10px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>[ADMIN] Nuevo Inicio de Sesión Exitoso</h1>
+        </div>
+        
+        <div class="content">
+            <div class="info-box">
+                <p>Este es un mensaje automático generado por el sistema DoxAI para notificar un nuevo acceso exitoso a la plataforma.</p>
+            </div>
+
+            <p><strong>Detalles del acceso:</strong></p>
+
+            <div class="info-row">
+                <span class="label">Correo del usuario:</span> {{ email }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Dirección IP:</span> {{ ip_address }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Navegador / Dispositivo:</span> {{ user_agent }}
+            </div>
+
+            <div class="info-row">
+                <span class="label">Fecha y hora del inicio de sesión:</span> {{ timestamp }}
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Sistema Administrativo DoxAI</p>
+            <p>&copy; 2025 DoxAI. Todos los derechos reservados.</p>
+        </div>
+    </div>
+</body>
+</html>
