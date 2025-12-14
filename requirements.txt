@@ -19,8 +19,8 @@ asyncpg==0.30.0
 greenlet==3.2.2
 pgvector==0.2.1
 psycopg2-binary==2.9.9
-prometheus-client-0.23.1
-apscheduler-3.11.1
+prometheus-client
+apscheduler
 
 # === Autenticación y seguridad ===
 bcrypt==4.0.1
@@ -62,9 +62,9 @@ charset-normalizer==3.4.2
 certifi==2025.4.26
 colorama==0.4.6
 click==8.2.1
-psycopg-3.3.2
-psycopg-binary-3.3.2
-aiosqlite-0.21.0
+psycopg
+psycopg-binary
+aiosqlite
 
 # === Jinja / templates / migraciones ===
 Jinja2==3.1.6
