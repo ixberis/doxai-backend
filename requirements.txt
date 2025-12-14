@@ -88,7 +88,7 @@ iopath==0.1.10
 layoutparser==0.3.4
 pdfplumber==0.11.7
 portalocker==3.2.0
-pywin32==311
+pywin32==311; platform_system=="Windows"
 pymupdf==1.26.3
 
 # === Modelo RAG ===
