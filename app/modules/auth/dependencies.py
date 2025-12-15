@@ -2,11 +2,14 @@
 """
 backend/app/modules/auth/dependencies.py
 
-Dependencias de autenticación para FastAPI.
+Dependencias de autenticación JWT para FastAPI.
 
 Provee:
 - validate_jwt_token: Core logic para validar token (única fuente de verdad)
 - get_current_user_id: Dependencia FastAPI con oauth2_scheme
+
+NOTA: La autenticación de servicio interno (InternalServiceAuth) está en
+app.shared.internal_auth para mantener separación de responsabilidades.
 
 Autor: DoxAI
 Fecha: 2025-12-13
@@ -14,9 +17,13 @@ Fecha: 2025-12-13
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import Depends, HTTPException, status
 
 from .security import oauth2_scheme, decode_access_token, TokenDecodeError
+
+logger = logging.getLogger(__name__)
 
 
 def validate_jwt_token(token: str) -> str:
@@ -77,4 +84,7 @@ async def get_current_user_id(
     return validate_jwt_token(token)
 
 
-__all__ = ["get_current_user_id", "validate_jwt_token"]
+__all__ = [
+    "get_current_user_id",
+    "validate_jwt_token",
+]

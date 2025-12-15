@@ -208,6 +208,7 @@ class ActivationService:
             "code": "ACCOUNT_ACTIVATED",
             "message": "La cuenta se activó exitosamente.",
             "credits_assigned": credits_assigned,
+            "user_id": user_id,  # Exponer user_id para que el flow service pueda enviar email
         }
         
         if warnings:

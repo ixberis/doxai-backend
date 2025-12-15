@@ -22,10 +22,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auth.services.activation_service import ActivationService
 from app.modules.auth.services.user_service import UserService
 from app.modules.auth.services.audit_service import AuditService
+from app.modules.auth.repositories import UserRepository
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import (
     send_activation_email_or_raise,
     send_welcome_email_safely,
+)
+from app.modules.auth.utils.error_classifier import classify_email_error
+from app.modules.auth.metrics.collectors.welcome_email_collectors import (
+    welcome_email_sent_total,
+    welcome_email_failed_total,
+    welcome_email_claimed_total,
 )
 from app.shared.integrations.email_sender import EmailSender
 from app.shared.config.config_loader import get_settings
@@ -50,18 +57,25 @@ class ActivationFlowService:
         self.settings = get_settings()
         self.activation_service = ActivationService(db)
         self.user_service = UserService.with_session(db)
+        self.user_repo = UserRepository(db)  # Para operación atómica anti-race
 
     async def activate_account(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """
         Activa la cuenta con base en el token recibido.
+        Envía correo de bienvenida (idempotente, anti-race condition).
 
         data esperado:
             - token
-            - email (opcional, usado para localizar usuario y enviar bienvenida)
+
+        Flujo de idempotencia (estado explícito + claim atómico):
+            1. Intentar claim atómico: UPDATE ... SET status='pending' WHERE status IS NULL
+            2. Solo si rowcount == 1 (ganamos la carrera) -> enviar correo
+            3. En éxito -> status='sent', sent_at=now()
+            4. En error -> status='failed', last_error=str(e)
+            5. Si rowcount == 0 -> ya claimed/sent/failed (skip)
         """
         payload = as_dict(data)
         token = payload.get("token")
-        email_hint = (payload.get("email") or "").strip().lower()
 
         if not token:
             raise HTTPException(
@@ -69,23 +83,25 @@ class ActivationFlowService:
                 detail="Token de activación requerido.",
             )
 
-        # 1) delegar activación al ActivationService
+        # 1) Delegar activación al ActivationService (obtiene user_id del token)
         result = await self.activation_service.activate_account(token)
         code = result.get("code")
         warnings = result.get("warnings", [])
+        activated_user_id = result.get("user_id")
 
-        # 2) si se activó la cuenta, enviar correo de bienvenida (opcional)
-        if code == "ACCOUNT_ACTIVATED" and email_hint:
-            user = await self.user_service.get_by_email(email_hint)
+        # 2) Enviar correo de bienvenida (solo si activación exitosa)
+        #    Condiciones para envío:
+        #    - code == ACCOUNT_ACTIVATED (no ALREADY_ACTIVATED, TOKEN_INVALID, etc.)
+        #    - user_id presente
+        if code == "ACCOUNT_ACTIVATED" and activated_user_id:
+            user = await self.user_service.get_by_id(activated_user_id)
             if user:
-                # correo de bienvenida (no interrumpe el flujo si falla)
-                await send_welcome_email_safely(
-                    self.email_sender,
-                    email=user.user_email,
-                    full_name=user.user_full_name,
+                await self._send_welcome_email_with_claim(
+                    user=user,
                     credits_assigned=result.get("credits_assigned", 0),
                 )
 
+                # Log de auditoría (siempre, independiente del correo)
                 try:
                     AuditService.log_activation_success(
                         user_id=str(user.user_id),
@@ -99,12 +115,105 @@ class ActivationFlowService:
             "code": code,
             "credits_assigned": result.get("credits_assigned", 0),
         }
-        
+
         # Propagar warnings si existen
         if warnings:
             response["warnings"] = warnings
-        
+
         return response
+
+    async def _send_welcome_email_with_claim(
+        self,
+        user,
+        credits_assigned: int,
+    ) -> None:
+        """
+        Envía correo de bienvenida con claim atómico anti-race.
+        
+        Flujo:
+            1. claim_welcome_email_if_pending() - claim atómico (con reclaim de stale)
+            2. Si ganamos la carrera -> enviar correo
+            3. mark_welcome_email_sent() o mark_welcome_email_failed()
+            4. commit transacción (o rollback en error)
+        """
+        user_id = int(user.user_id)
+        email_masked = user.user_email[:3] + "***"
+
+        # Claim atómico: solo 1 proceso gana la carrera (con reclaim de stale pending)
+        claimed, attempts = await self.user_repo.claim_welcome_email_if_pending(user_id)
+
+        if not claimed:
+            # Ya estaba claimed/sent/failed (otro request ganó o ya se procesó)
+            logger.info(
+                "welcome_email_skipped_already_claimed user_id=%s email=%s",
+                user_id,
+                email_masked,
+            )
+            return
+
+        # Ganamos la carrera -> somos responsables de enviar
+        # Métrica: claim exitoso
+        welcome_email_claimed_total.inc()
+        
+        logger.info(
+            "welcome_email_claimed user_id=%s email=%s attempt=%d",
+            user_id,
+            email_masked,
+            attempts,
+        )
+
+        try:
+            await send_welcome_email_safely(
+                self.email_sender,
+                email=user.user_email,
+                full_name=user.user_full_name,
+                credits_assigned=credits_assigned,
+            )
+
+            # Éxito: marcar como enviado
+            await self.user_repo.mark_welcome_email_sent(user_id)
+            await self.db.commit()
+
+            # Métrica: envío exitoso
+            welcome_email_sent_total.labels(provider="smtp").inc()
+
+            logger.info(
+                "welcome_email_sent user_id=%s email=%s credits=%d attempt=%d",
+                user_id,
+                email_masked,
+                credits_assigned,
+                attempts,
+            )
+
+        except Exception as e:
+            # Rollback explícito para no dejar sesión sucia
+            await self.db.rollback()
+            
+            # Fallo: marcar como failed con error (nueva transacción)
+            error_msg = str(e)[:500]
+            reason = classify_email_error(e)
+            
+            try:
+                await self.user_repo.mark_welcome_email_failed(user_id, error_msg)
+                await self.db.commit()
+            except Exception as mark_error:
+                logger.error(
+                    "welcome_email_mark_failed_error user_id=%s error=%s",
+                    user_id,
+                    mark_error,
+                )
+                await self.db.rollback()
+
+            # Métrica: fallo
+            welcome_email_failed_total.labels(provider="smtp", reason=reason).inc()
+
+            logger.error(
+                "welcome_email_failed user_id=%s email=%s error=%s attempt=%d",
+                user_id,
+                email_masked,
+                error_msg,
+                attempts,
+            )
 
     async def resend_activation(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """

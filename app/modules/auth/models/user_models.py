@@ -48,6 +48,14 @@ class AppUser(Base):
     user_is_activated: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     user_activated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     user_last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    # Welcome email tracking (estado explícito + claim atómico)
+    welcome_email_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    welcome_email_claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    welcome_email_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    welcome_email_last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    welcome_email_attempts: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    
     user_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     user_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

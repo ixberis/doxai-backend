@@ -13,9 +13,10 @@ Fecha: 19/11/2025
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.auth.enums import UserStatus
@@ -139,6 +140,96 @@ class UserRepository:
         await self._db.commit()
         await self._db.refresh(managed)
         return managed
+
+    async def claim_welcome_email_if_pending(
+        self,
+        user_id: int,
+        stale_ttl_minutes: int = 15,
+    ) -> tuple[bool, int]:
+        """
+        Claim atómico para envío de welcome email (anti-race + anti-stuck).
+
+        Ejecuta:
+            UPDATE app_users
+            SET welcome_email_status = 'pending',
+                welcome_email_claimed_at = now(),
+                welcome_email_attempts = welcome_email_attempts + 1,
+                welcome_email_last_error = NULL  -- limpia error previo
+            WHERE user_id = :user_id
+              AND (
+                welcome_email_status IS NULL
+                OR (welcome_email_status = 'pending' 
+                    AND welcome_email_claimed_at < now() - (:ttl_minutes * interval '1 minute'))
+              )
+
+        Retorna tupla (claimed: bool, attempts: int).
+        - claimed=True si este proceso ganó la carrera
+        - attempts es el nuevo contador después del claim
+
+        Importante: NO hace commit; el servicio maneja la transacción.
+        """
+        from sqlalchemy import text
+        
+        # UPDATE con reclaim de pending stale (parámetros seguros, schema explícito)
+        stmt = text("""
+            UPDATE public.app_users
+            SET welcome_email_status = 'pending',
+                welcome_email_claimed_at = now(),
+                welcome_email_attempts = welcome_email_attempts + 1,
+                welcome_email_last_error = NULL
+            WHERE user_id = :user_id
+              AND (
+                welcome_email_status IS NULL
+                OR (
+                    welcome_email_status = 'pending'
+                    AND welcome_email_claimed_at < now() - (:ttl_minutes * interval '1 minute')
+                )
+              )
+            RETURNING welcome_email_attempts
+        """)
+        
+        result = await self._db.execute(
+            stmt,
+            {"user_id": user_id, "ttl_minutes": stale_ttl_minutes},
+        )
+        row = result.fetchone()
+        
+        if row:
+            return (True, row[0])
+        return (False, 0)
+
+    async def mark_welcome_email_sent(self, user_id: int) -> None:
+        """
+        Marca el correo como enviado exitosamente.
+        Llamar después de enviar el correo.
+        """
+        stmt = (
+            update(AppUser)
+            .where(AppUser.user_id == user_id)
+            .values(
+                welcome_email_status="sent",
+                welcome_email_sent_at=datetime.now(timezone.utc),
+                welcome_email_last_error=None,
+            )
+        )
+        await self._db.execute(stmt)
+        # NO commit aquí
+
+    async def mark_welcome_email_failed(self, user_id: int, error: str) -> None:
+        """
+        Marca el correo como fallido con mensaje de error.
+        Permite reintentos manuales posteriores.
+        """
+        stmt = (
+            update(AppUser)
+            .where(AppUser.user_id == user_id)
+            .values(
+                welcome_email_status="failed",
+                welcome_email_last_error=error[:500] if error else "Unknown error",
+            )
+        )
+        await self._db.execute(stmt)
+        # NO commit aquí
 
 
 __all__ = ["UserRepository"]

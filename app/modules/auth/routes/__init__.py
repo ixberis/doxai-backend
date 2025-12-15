@@ -15,6 +15,7 @@ from fastapi import APIRouter
 from .auth_public import router as auth_public_router
 from .auth_tokens import router as auth_tokens_router
 from .auth_admin import router as auth_admin_router
+from .internal_routes import router as internal_router
 
 # Métricas del módulo Auth
 from ..metrics.routes import router as metrics_auth_router   # noqa
@@ -27,6 +28,7 @@ def get_auth_routers() -> list[APIRouter]:
         auth_tokens_router,
         auth_admin_router,
         metrics_auth_router,
+        internal_router,
     ]
 
 # Fin del archivo backend/app/modules/auth/routes/__init__.py

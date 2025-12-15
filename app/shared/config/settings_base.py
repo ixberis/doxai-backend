@@ -145,6 +145,12 @@ class BaseAppSettings(BaseSettings):
     email_templates_dir: Optional[str] = Field(default=None, validation_alias="EMAIL_TEMPLATES_DIR")
 
     # =========================
+    # Internal Service Auth
+    # =========================
+    internal_service_token: Optional[SecretStr] = Field(default=None, validation_alias="APP_SERVICE_TOKEN")
+    internal_api_url: Optional[str] = Field(default=None, validation_alias="APP_INTERNAL_API_URL")
+
+    # =========================
     # OpenAI / RAG (clave)
     # =========================
     openai_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="OPENAI_API_KEY")
