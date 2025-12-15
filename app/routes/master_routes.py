@@ -1,30 +1,70 @@
-
 # -*- coding: utf-8 -*-
 """
-backend\app\routes\master_routes.py
+backend/app/routes/master_routes.py
 
-Router maestro con dos capas:
-  - /api/... (interno/estable)
-  - rutas públicas sin prefijo
+Router maestro con arquitectura de capas claramente definida.
 
-Ajustes:
-- Mantiene la lógica de montado de Auth/Admin/Payments/Projects/Files/RAG.
-- Importa y monta los routers internos de métricas de Auth y Files en la capa
-  pública e interna, para facilitar scraping interno/ingress.
-- Integra el módulo Projects (incluye sus métricas bajo /projects/metrics/*)
-  en ambas capas (api y pública), espejo de Auth.
-- Integra el router principal de Files (/files/*) y el router de métricas de Files
-  (endpoints /files/metrics/*) en ambas capas.
+═══════════════════════════════════════════════════════════════════════════════
+ARQUITECTURA DE CAPAS
+═══════════════════════════════════════════════════════════════════════════════
+- `/api/...` → rutas API estables (uso interno/externo)
+- `/` → rutas públicas sin prefijo
+- `/_internal/...` → rutas internas (solo en capa API)
+
+═══════════════════════════════════════════════════════════════════════════════
+PROBLEMA ANTERIOR (pre 2025-12-15)
+═══════════════════════════════════════════════════════════════════════════════
+Los routers se montaban múltiples veces (3-5 veces cada uno) debido a:
+
+1. DOBLE MONTAJE AUTOMÁTICO: El loop `for r in get_auth_routers()` llamaba a
+   `_include(api, r, ...)` Y `_include(public, r, ...)` para el MISMO objeto
+   router, sin verificar si ya estaba montado.
+
+2. MONTAJE PARALELO EN app.py: La función `_include_module_routers()` en
+   `app/shared/core/app.py` escaneaba dinámicamente todos los módulos y
+   montaba cualquier `router` encontrado, EN PARALELO al montaje explícito
+   de master_routes.py.
+
+3. ROUTERS SIN TAGS: Algunos routers (ej: metrics_auth_router) no tenían
+   `tags=[]` definido, apareciendo en logs como "auth.unknown".
+
+Resultado: logs mostraban "Router 'auth.Authentication' montado en '/' " 
+repetido 3-5 veces, generando ruido y riesgo de shadowing.
+
+═══════════════════════════════════════════════════════════════════════════════
+SOLUCIÓN ACTUAL (determinista)
+═══════════════════════════════════════════════════════════════════════════════
+1. DEDUPLICACIÓN POR id(router): Sets `_mounted_api` y `_mounted_public`
+   rastrean qué routers ya fueron montados, evitando duplicados.
+
+2. FUNCIÓN `_include_once()`: Verifica antes de montar, loguea skip si
+   ya existe, garantiza un solo montaje por capa.
+
+3. LIMPIEZA PREVENTIVA de app.py: Se eliminó `_include_module_routers()`
+   para que NO haya montaje automático paralelo. Esta limpieza es PREVENTIVA
+   porque main.py no usaba create_app(), pero evita confusión futura.
+
+4. TAGS EXPLÍCITOS: Todos los routers ahora tienen tags definidos.
+
+Resultado: cada router aparece EXACTAMENTE una vez por capa en logs.
+
+═══════════════════════════════════════════════════════════════════════════════
+PRINCIPIOS DE DISEÑO
+═══════════════════════════════════════════════════════════════════════════════
+1. Cada router se monta UNA SOLA VEZ por capa (sin duplicados)
+2. La decisión de capa es explícita (api_only, public_only, both)
+3. Los routers internos (/_internal/*) solo van en la capa API
+4. Logging determinista para diagnóstico
 
 Autor: Ixchel Beristain
-Fecha: 2025-11-11
+Fecha: 2025-12-15
 """
 from __future__ import annotations
 
 import logging
 import os
 from importlib import import_module
-from typing import Iterable, Optional
+from typing import Optional, Set
 
 from fastapi import APIRouter
 
@@ -34,34 +74,63 @@ logger = logging.getLogger(__name__)
 api = APIRouter(prefix="/api")
 public = APIRouter(prefix="")  # sin prefijo
 
+# Registro de routers ya montados (por id) para evitar duplicados
+_mounted_api: Set[int] = set()
+_mounted_public: Set[int] = set()
 _loaded: list[str] = []  # trazabilidad/debug
 
 
-def _include(target: APIRouter, router: APIRouter, name: str) -> None:
-    """Incluye un router en la capa dada y registra trazabilidad en logs."""
+def _get_router_name(router: APIRouter) -> str:
+    """Obtiene un nombre descriptivo para el router."""
+    if router.tags:
+        return router.tags[0]
+    if router.prefix:
+        return router.prefix.strip("/").replace("/", ".") or "root"
+    return "unnamed"
+
+
+def _include_once(
+    target: APIRouter,
+    router: APIRouter,
+    module_name: str,
+    mounted_set: Set[int],
+) -> bool:
+    """
+    Incluye un router en la capa dada SOLO si no está ya montado.
+    
+    Returns:
+        True si se montó, False si ya estaba montado.
+    """
+    router_id = id(router)
+    if router_id in mounted_set:
+        logger.debug(
+            "⏭ Router '%s.%s' ya montado en '%s', saltando",
+            module_name,
+            _get_router_name(router),
+            target.prefix or "/",
+        )
+        return False
+    
     target.include_router(router)
-    _loaded.append(f"{target.prefix or '/'}:{name}")
+    mounted_set.add(router_id)
+    
+    router_name = f"{module_name}.{_get_router_name(router)}"
+    _loaded.append(f"{target.prefix or '/'}:{router_name}")
     logger.info(
-        "✅ Router '%s' montado en prefix '%s' (router.prefix='%s')",
-        name,
+        "✅ Router '%s' montado en '%s' (prefix='%s')",
+        router_name,
         target.prefix or "/",
-        getattr(router, "prefix", ""),
+        router.prefix or "",
     )
+    return True
 
 
 def _try_import_router(
-    module_candidates: Iterable[str],
+    module_candidates: list[str],
     attr: str = "router",
 ) -> Optional[APIRouter]:
     """
     Intenta importar un APIRouter desde una lista de módulos candidatos.
-
-    Args:
-        module_candidates: Lista de rutas de módulo a probar.
-        attr: Nombre del atributo dentro del módulo (por defecto 'router').
-
-    Returns:
-        El APIRouter encontrado o None si ninguno aplica.
     """
     for mod_path in module_candidates:
         try:
@@ -69,7 +138,7 @@ def _try_import_router(
             r = getattr(mod, attr, None)
             if r:
                 logger.debug(
-                    "✔ Cargado router desde %s.%s (router.prefix='%s')",
+                    "✔ Cargado router desde %s.%s (prefix='%s')",
                     mod_path,
                     attr,
                     getattr(r, "prefix", ""),
@@ -80,174 +149,195 @@ def _try_import_router(
     return None
 
 
-# ─────────────────────────────────────────
-# AUTH (get_auth_routers → público + /api)
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# AUTH
+# ═══════════════════════════════════════════════════════════════════════════
+# Auth routers se montan en AMBAS capas (api y public) para compatibilidad
 try:
-    from app.modules.auth.routes import get_auth_routers  # type: ignore
+    from app.modules.auth.routes import get_auth_routers
 
     for r in get_auth_routers():
-        _include(api, r, f"auth.{r.tags[0] if r.tags else 'unknown'}")
-        _include(public, r, f"auth.{r.tags[0] if r.tags else 'unknown'}")
-except Exception as e:  # pragma: no cover
+        name = _get_router_name(r)
+        # Routers internos (/_internal/*) solo en API
+        if r.prefix and r.prefix.startswith("/_internal"):
+            _include_once(api, r, "auth", _mounted_api)
+        else:
+            # Routers públicos en ambas capas
+            _include_once(api, r, "auth", _mounted_api)
+            _include_once(public, r, "auth", _mounted_public)
+except Exception as e:
     logger.warning("Auth routers no montados: %s", e)
 
 
-# ─────────────────────────────────────────
-# ADMIN (endpoints administrativos)
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# ADMIN (solo API por seguridad)
+# ═══════════════════════════════════════════════════════════════════════════
 try:
-    from app.modules.admin.routes import get_admin_routers  # type: ignore
+    from app.modules.admin.routes import get_admin_routers
 
     for r in get_admin_routers():
-        # Solo montar en /api (no en público por seguridad)
-        _include(api, r, f"admin.{r.tags[0] if r.tags else 'unknown'}")
-except Exception as e:  # pragma: no cover
+        _include_once(api, r, "admin", _mounted_api)
+except Exception as e:
     logger.warning("Admin routers no montados: %s", e)
 
 
-# ─────────────────────────────────────────
-# PAYMENTS: STUBS vs Routers Reales
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# PAYMENTS
+# ═══════════════════════════════════════════════════════════════════════════
 USE_STUBS = os.getenv("USE_PAYMENT_STUBS", "").lower() == "true"
-API_PREFIX = "/api/payments"  # reservado/por si se requiere en el futuro
 
 if USE_STUBS:
-    # 1) Cargar stubs desde cualquiera de los nombres posibles
-    stubs = _try_import_router(
-        [
-            "app.modules.payments.routes._stubs_tests_routes",  # nombre final
-            "app.modules.payments.routes._stubs_test_routes",  # alterno previo
-        ]
-    )
+    stubs = _try_import_router([
+        "app.modules.payments.routes._stubs_tests_routes",
+        "app.modules.payments.routes._stubs_test_routes",
+    ])
     if stubs:
-        # Montar stubs SOLO en public para evitar conflictos
-        # El router tiene prefix="/payments"
-        _include(public, stubs, "payments.stubs(/payments)")
-    # IMPORTANTE: no montar routers reales cuando se usan stubs
+        _include_once(public, stubs, "payments", _mounted_public)
 else:
-    # Routers reales de Payments + alias general /payments
-    payments_main = _try_import_router(
-        [
-            "app.modules.payments.routes",
-        ]
-    )
+    payments_main = _try_import_router(["app.modules.payments.routes"])
     if payments_main:
-        _include(public, payments_main, "payments.main")
-        logger.info("✅ Módulo payments montado exitosamente desde routes/__init__.py")
-    else:
-        logger.warning("⚠ No se pudo montar el módulo payments desde routes/__init__.py")
+        # Payments solo en public (tiene su propio prefix /payments)
+        _include_once(public, payments_main, "payments", _mounted_public)
+        logger.info("✅ Módulo payments montado")
 
 
-# ─────────────────────────────────────────
-# PROJECTS (router principal incluye métricas)
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# PROJECTS
+# ═══════════════════════════════════════════════════════════════════════════
+# NOTA: get_projects_router() crea una nueva instancia cada vez,
+# por lo que no hay riesgo de duplicación por id.
 try:
-    # El ensamblador de Projects ya incluye:
-    # - CRUD, Lifecycle, Files, Queries
-    # - Metrics (Prometheus y snapshots) bajo /projects/metrics/*
-    from app.modules.projects.routes import get_projects_router  # type: ignore
+    from app.modules.projects.routes import get_projects_router
 
-    # Crear instancias separadas para cada capa (evita reuso del mismo objeto)
+    # Instancias separadas para cada capa (diseño original preservado)
     projects_router_api = get_projects_router()
     projects_router_public = get_projects_router()
 
-    _include(api, projects_router_api, "projects.main")
-    _include(public, projects_router_public, "projects.main")
-except Exception as e:  # pragma: no cover
+    _include_once(api, projects_router_api, "projects", _mounted_api)
+    _include_once(public, projects_router_public, "projects", _mounted_public)
+except Exception as e:
     logger.warning("Projects routers no montados: %s", e)
 
 
-# ─────────────────────────────────────────
-# FILES — Router principal (/files/*)
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# FILES
+# ═══════════════════════════════════════════════════════════════════════════
 try:
-    files_main_router = _try_import_router(
-        [
-            # preferido: router explícito del módulo Files
-            "app.modules.files.routes.files_routes",
-            # alterno: si __init__.py de routes re-exporta `router`
-            "app.modules.files.routes",
-        ]
-    )
+    files_main_router = _try_import_router([
+        "app.modules.files.routes.files_routes",
+        "app.modules.files.routes",
+    ])
     if files_main_router:
-        _include(api, files_main_router, "files.main")
-        _include(public, files_main_router, "files.main")
-    else:
-        logger.info("(Opcional) Router principal de Files no encontrado")
-except Exception as e:  # pragma: no cover
-    logger.info("(Opcional) Router principal de Files no montado: %s", e)
+        _include_once(api, files_main_router, "files", _mounted_api)
+        _include_once(public, files_main_router, "files", _mounted_public)
+except Exception as e:
+    logger.info("Router de Files no montado: %s", e)
+
+# Files metrics ya están incluidos en files_routes.py bajo /files/metrics/*
+# No se monta por separado para evitar duplicación
 
 
-# ─────────────────────────────────────────
-# FILES — Métricas (/files/metrics/*)
-# ─────────────────────────────────────────
-try:
-    files_metrics_router = _try_import_router(
-        [
-            # nuevo ensamblador (recomendado)
-            "app.modules.files.metrics.routes",
-            # alterno por compatibilidad si existe un archivo único
-            "app.modules.files.metrics.routes.files_metrics_routes",
-        ]
-    )
-    if files_metrics_router:
-        # Montamos en ambas capas para simetría con Projects/Auth
-        _include(api, files_metrics_router, "files.metrics")
-        _include(public, files_metrics_router, "files.metrics")
-    else:
-        logger.info("(Opcional) Router de métricas de Files no encontrado")
-except Exception as e:  # pragma: no cover
-    logger.info("(Opcional) Router de métricas de Files no montado: %s", e)
-
-
-# ─────────────────────────────────────────
-# RAG — Router principal (/rag/*)
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# RAG
+# ═══════════════════════════════════════════════════════════════════════════
 try:
     from app.modules.rag.routes import router as rag_main_router
 
-    # Solo incluir en public por ahora para evitar conflictos
-    _include(public, rag_main_router, "rag.main")
-    logger.info("✅ Módulo RAG montado exitosamente")
-except Exception as e:  # pragma: no cover
+    # RAG solo en public por ahora
+    _include_once(public, rag_main_router, "rag", _mounted_public)
+    logger.info("✅ Módulo RAG montado")
+except Exception as e:
     logger.error("❌ Router de RAG no montado: %s", e, exc_info=True)
 
 
-# ─────────────────────────────────────────
-# BILLING — Router de paquetes de créditos
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# BILLING
+# ═══════════════════════════════════════════════════════════════════════════
 try:
     from app.modules.billing import router as billing_router
 
-    # Montar en /api/billing (solo capa api)
-    _include(api, billing_router, "billing.main")
-    logger.info("✅ Módulo Billing montado exitosamente")
-except Exception as e:  # pragma: no cover
+    # Billing solo en API
+    _include_once(api, billing_router, "billing", _mounted_api)
+    logger.info("✅ Módulo Billing montado")
+except Exception as e:
     logger.warning("⚠ Router de Billing no montado: %s", e)
 
 
-# ─────────────────────────────────────────
-# INTERNAL — Email test endpoint (solo dev)
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERNAL EMAIL ROUTES
+# ═══════════════════════════════════════════════════════════════════════════
 try:
     from app.routes.internal_email_routes import router as internal_email_router
-    
-    # Solo montar en api (rutas internas)
-    _include(api, internal_email_router, "internal.email")
+
+    _include_once(api, internal_email_router, "internal", _mounted_api)
     logger.info("✅ Endpoint interno de email montado")
-except Exception as e:  # pragma: no cover
+except Exception as e:
     logger.debug("Endpoint interno de email no montado: %s", e)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# DEBUG ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════
 @api.get("/_debug/loaded-routers")
 def loaded_routers():
-    """Endpoint de debug para ver qué routers se montaron y en qué capa."""
-    return {"loaded": _loaded}
+    """
+    Endpoint de debug para ver qué routers se montaron y en qué capa.
+    
+    Estructura de respuesta:
+    - api: lista de routers montados en /api
+    - public: lista de routers montados en /
+    - all: lista completa con formato "{layer}:{module}.{name}"
+    - counts: totales por capa
+    - has_duplicates: True si hay entradas duplicadas (bug)
+    - has_unknown: True si algún router no tiene tag definido (bug)
+    """
+    # Separar por capa
+    api_routers = [entry for entry in _loaded if entry.startswith("/api:")]
+    public_routers = [entry for entry in _loaded if entry.startswith("/:")]
+    
+    # Extraer solo nombres (sin prefijo de capa)
+    api_names = [entry.split(":", 1)[1] for entry in api_routers]
+    public_names = [entry.split(":", 1)[1] for entry in public_routers]
+    
+    # Detectar duplicados dentro de cada capa
+    api_duplicates = [name for name in api_names if api_names.count(name) > 1]
+    public_duplicates = [name for name in public_names if public_names.count(name) > 1]
+    
+    # Detectar routers sin tags ("unknown")
+    unknown_routers = [entry for entry in _loaded if ".unknown" in entry or ".unnamed" in entry]
+    
+    return {
+        "api": api_names,
+        "public": public_names,
+        "all": _loaded,
+        "counts": {
+            "api": len(_mounted_api),
+            "public": len(_mounted_public),
+            "total": len(_loaded),
+        },
+        "has_duplicates": bool(api_duplicates or public_duplicates),
+        "duplicates": {
+            "api": list(set(api_duplicates)),
+            "public": list(set(public_duplicates)),
+        },
+        "has_unknown": bool(unknown_routers),
+        "unknown_routers": unknown_routers,
+    }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ROUTER FINAL
+# ═══════════════════════════════════════════════════════════════════════════
 router = APIRouter()
 router.include_router(api)
 router.include_router(public)
 
-# Fin del script bbackend\app\routes\master_routes.py
+# Log resumen al final del montaje
+logger.info(
+    "📊 Routers montados: API=%d, Public=%d, Total=%d",
+    len(_mounted_api),
+    len(_mounted_public),
+    len(_loaded),
+)
+
+# Fin del archivo backend/app/routes/master_routes.py

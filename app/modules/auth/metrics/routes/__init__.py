@@ -22,7 +22,7 @@ from fastapi import APIRouter
 from .metrics_routes import router as metrics_routes_router
 
 # Router maestro de métricas de Auth
-router = APIRouter()
+router = APIRouter(tags=["metrics-auth"])
 
 # Incluimos el router real definido en metrics_routes.py
 router.include_router(metrics_routes_router)

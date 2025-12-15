@@ -30,8 +30,8 @@ from app.modules.auth.models.user_models import AppUser
 from app.shared.utils.jwt_utils import verify_token_type
 from app.modules.auth.services.audit_service import AuditService
 
-# Usamos el tag unificado "Authentication" (ver main.py openapi_tags)
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+# Tag único para identificación en montaje (Swagger agrupa bajo "auth")
+router = APIRouter(prefix="/auth", tags=["auth-tokens"])
 
 
 # ------------------------ LOGIN ------------------------ #

@@ -44,7 +44,7 @@ from app.modules.rag.routes.diagnostics.routes_diagnostics import (
 )
 from app.modules.rag.metrics.routes import router as rag_metrics_router
 
-router = APIRouter()
+router = APIRouter(tags=["rag"])
 
 # Indexación
 router.include_router(indexing_jobs_router)

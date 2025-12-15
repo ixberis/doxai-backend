@@ -2,46 +2,36 @@
 """
 backend/app/shared/core/app.py
 
-Factory para crear la aplicación FastAPI con módulos cargados dinámicamente.
+Factory para crear la aplicación FastAPI con ciclo de vida.
+
+═══════════════════════════════════════════════════════════════════════════════
+LIMPIEZA PREVENTIVA (2025-12-15)
+═══════════════════════════════════════════════════════════════════════════════
+Se eliminó la función `_include_module_routers()` que:
+- Escaneaba dinámicamente `app/modules/*/routes/`
+- Montaba automáticamente cualquier `router` encontrado
+- Causaba montajes DUPLICADOS junto con master_routes.py
+
+CONTEXTO: Aunque main.py actualmente NO usa `create_app()` (crea su propia
+instancia de FastAPI), esta limpieza es PREVENTIVA para:
+1. Evitar que futuros desarrolladores usen create_app() y reactiven el bug
+2. Mantener un único punto de verdad para montaje: master_routes.py
+3. Eliminar código muerto que generaba confusión
+
+El montaje de routers ahora ocurre EXCLUSIVAMENTE en:
+  `backend/app/routes/master_routes.py`
 
 Autor: Ixchel Beristáin
 Fecha: 24/10/2025
+Updated: 2025-12-15 - Eliminado montaje automático de routers (limpieza preventiva)
 """
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from importlib import import_module
-from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
 
-def _include_module_routers(app: FastAPI) -> None:
-    base = Path(__file__).resolve().parents[2] / "modules"
-    if not base.exists():
-        return
-    for pkg in base.iterdir():
-        if not (pkg.is_dir() and (pkg / "routes").exists()):
-            continue
-        # 1) intentar __init__.py con `router`
-        try:
-            mod = import_module(f"app.modules.{pkg.name}.routes")
-            router = getattr(mod, "router", None)
-            if router:
-                app.include_router(router)
-        except ModuleNotFoundError:
-            pass
-        # 2) incluir todos los *.py que exporten `router`
-        for py in (pkg / "routes").glob("*.py"):
-            if py.name == "__init__.py":
-                continue
-            try:
-                m = import_module(f"app.modules.{pkg.name}.routes.{py.stem}")
-                r = getattr(m, "router", None)
-                if r:
-                    app.include_router(r)
-            except ModuleNotFoundError:
-                continue
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -71,9 +61,22 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """
+    Crea una instancia de FastAPI con ciclo de vida.
+    
+    NOTA: Esta función NO monta routers automáticamente.
+    El montaje se hace en main.py via app.routes.master_routes.
+    
+    Returns:
+        FastAPI: Instancia configurada sin routers.
+    """
     app = FastAPI(
         title="DoxAI Backend (modular)",
         lifespan=lifespan
     )
-    _include_module_routers(app)
+    # NO se llama a _include_module_routers(app)
+    # Los routers se montan en main.py
     return app
+
+
+# Fin del archivo backend/app/shared/core/app.py

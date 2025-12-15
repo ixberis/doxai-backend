@@ -31,8 +31,8 @@ from app.modules.auth.schemas import (
     MessageResponse,
 )
 
-# Usamos el tag "Authentication" para que Swagger agrupe todo ahí
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+# Tag único para identificación en montaje (Swagger agrupa bajo "auth")
+router = APIRouter(prefix="/auth", tags=["auth-public"])
 
 
 @router.post(

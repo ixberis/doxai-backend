@@ -19,8 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Body
 
 from app.modules.auth.facades.auth_facade import AuthFacade, get_auth_facade
 
-# Usamos el mismo tag "Authentication" para agrupar en Swagger
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+# Tag único para identificación en montaje (Swagger agrupa bajo "auth")
+router = APIRouter(prefix="/auth", tags=["auth-admin"])
 
 
 @router.get(
