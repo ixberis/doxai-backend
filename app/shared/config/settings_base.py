@@ -90,6 +90,7 @@ class BaseAppSettings(BaseSettings):
     # =========================
     allowed_origins: str = Field(default="*", validation_alias="CORS_ORIGINS")
     frontend_url: str = Field(default="http://localhost:8080", validation_alias="FRONTEND_URL")
+    frontend_base_url: Optional[str] = Field(default=None, validation_alias="FRONTEND_BASE_URL")
 
     # =========================
     # Auth / JWT / Recaptcha
@@ -131,9 +132,9 @@ class BaseAppSettings(BaseSettings):
     # =========================
     # Email
     # =========================
-    # ✅ AJUSTE CLAVE: permitir EMAIL_MODE="api" para MailerSend API
     email_mode: Literal["console", "smtp", "api"] = Field(default="console", validation_alias="EMAIL_MODE")
-    email_timeout_sec: int = Field(default=8, validation_alias="EMAIL_TIMEOUT_SEC")
+    email_provider: Literal["smtp", "mailersend", ""] = Field(default="", validation_alias="EMAIL_PROVIDER")
+    email_timeout_sec: int = Field(default=30, validation_alias="EMAIL_TIMEOUT_SEC")
 
     # SMTP (solo aplica si email_mode == "smtp")
     smtp_server: Optional[str] = Field(default=None, validation_alias="EMAIL_SERVER")
@@ -148,10 +149,10 @@ class BaseAppSettings(BaseSettings):
     admin_notification_email: Optional[str] = Field(default=None, validation_alias="ADMIN_NOTIFICATION_EMAIL")
     email_templates_dir: Optional[str] = Field(default=None, validation_alias="EMAIL_TEMPLATES_DIR")
 
-    # ✅ MailerSend API (solo aplica si email_mode == "api")
+    # MailerSend API (solo aplica si email_mode == "api")
     mailersend_api_key: Optional[SecretStr] = Field(default=None, validation_alias="MAILERSEND_API_KEY")
     mailersend_from_email: Optional[str] = Field(default=None, validation_alias="MAILERSEND_FROM_EMAIL")
-    mailersend_from_name: Optional[str] = Field(default=None, validation_alias="MAILERSEND_FROM_NAME")
+    mailersend_from_name: Optional[str] = Field(default="DoxAI", validation_alias="MAILERSEND_FROM_NAME")
 
     # =========================
     # Internal Service Auth

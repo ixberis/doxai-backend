@@ -15,13 +15,32 @@ from .azure_types import (
     AzureConfig,
 )
 
+# Email senders
+from .email_sender import (
+    IEmailSender,
+    EmailSender,
+    StubEmailSender,
+    get_email_sender,
+)
+from .smtp_email_sender import SMTPEmailSender
+from .mailersend_email_sender import MailerSendEmailSender
+
 __all__ = [
+    # Azure
     "AzureDocumentIntelligenceClient",
     "AzureOcrResult",
-    "generate_embeddings",
     "AzureAnalysisStatus",
     "AzureModelId",
     "AzureDocumentResult",
     "AzurePage",
     "AzureConfig",
+    # OpenAI
+    "generate_embeddings",
+    # Email
+    "IEmailSender",
+    "EmailSender",
+    "StubEmailSender",
+    "SMTPEmailSender",
+    "MailerSendEmailSender",
+    "get_email_sender",
 ]

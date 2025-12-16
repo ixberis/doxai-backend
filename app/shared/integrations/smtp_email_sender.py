@@ -110,24 +110,34 @@ class SMTPEmailSender:
         self.tls_verify = tls_verify
 
     @classmethod
-    def from_env(cls) -> "SMTPEmailSender":
-        """Crea instancia desde variables de entorno."""
-        server = os.getenv("EMAIL_SERVER", "").strip()
-        port = int(os.getenv("EMAIL_PORT", "587").strip())
-        username = os.getenv("EMAIL_USERNAME", "").strip()
-        password = os.getenv("EMAIL_PASSWORD", "").strip()
-        from_email = os.getenv("EMAIL_FROM", "").strip()
-        from_name = os.getenv("EMAIL_FROM_NAME", "DoxAI").strip()
-        use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower().strip() == "true"
-        use_tls = os.getenv("EMAIL_USE_TLS", "true").lower().strip() == "true"
-        timeout = int(os.getenv("EMAIL_TIMEOUT_SEC", "30").strip())
-
-        # control de verificación TLS
-        tls_verify = _env_bool("EMAIL_TLS_VERIFY", default=True)
-
+    def from_settings(cls, settings) -> "SMTPEmailSender":
+        """
+        Crea instancia desde settings (fuente de verdad).
+        
+        Args:
+            settings: Configuración de la aplicación (BaseAppSettings)
+            
+        Returns:
+            SMTPEmailSender configurado
+            
+        Raises:
+            ValueError: si faltan credenciales requeridas
+        """
+        server = (settings.smtp_server or "").strip()
+        port = settings.smtp_port or 587
+        username = (settings.smtp_username or "").strip()
+        password = ""
+        if settings.smtp_password:
+            password = settings.smtp_password.get_secret_value().strip()
+        from_email = (settings.email_from or "").strip()
+        from_name = getattr(settings, "email_from_name", "DoxAI") or "DoxAI"
+        use_ssl = settings.email_use_ssl
+        use_tls = not use_ssl  # Si no es SSL, usa TLS
+        timeout = settings.email_timeout_sec or 30
+        tls_verify = getattr(settings, "email_tls_verify", True)
+        # Fallback: FRONTEND_BASE_URL tiene prioridad sobre FRONTEND_URL
         frontend_url = _normalize_base_url(
-            os.getenv("FRONTEND_BASE_URL", "").strip()
-            or os.getenv("FRONTEND_URL", "").strip()
+            getattr(settings, "frontend_base_url", None) or settings.frontend_url
         )
 
         if not all([server, username, password, from_email]):
@@ -158,6 +168,15 @@ class SMTPEmailSender:
             frontend_url=frontend_url,
             tls_verify=tls_verify,
         )
+
+    @classmethod
+    def from_env(cls) -> "SMTPEmailSender":
+        """
+        Wrapper de compatibilidad: carga settings y delega a from_settings().
+        Preferir from_settings() para mejor testabilidad.
+        """
+        from app.shared.config import settings
+        return cls.from_settings(settings)
 
     def _build_activation_body(
         self, full_name: str, activation_token: str
