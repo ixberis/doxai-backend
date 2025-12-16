@@ -293,10 +293,11 @@ class SMTPEmailSender:
                     server.ehlo()
                     if self.use_tls:
                         if self.tls_verify:
-                            server.starttls(context=context)
-                        else:
-                            # IMPORTANTE: no pasar context para evitar verificación forzada en algunos runtimes
+                            # STARTTLS con verificación normal
                             server.starttls()
+                        else:
+                            # STARTTLS SIN verificación (self-signed / cadena incompleta)
+                            server.starttls(context=context)
                         server.ehlo()
                     server.login(self.username, self.password)
                     refused = server.send_message(msg)
@@ -305,6 +306,7 @@ class SMTPEmailSender:
                         logger.warning("[SMTP] refused: %s", refused)
                     logger.info("[SMTP] sent ok to=%s msg_id=%s", to_email, msg_id)
                     return msg_id
+
 
 
         except Exception:
