@@ -9,12 +9,15 @@ Autor: Ixchel Beristain
 Actualizado: 2025-12-16
 
 Notas:
-- Para algunos proveedores SMTP (o configuraciones de hosting) la cadena TLS puede incluir
-  certificados "self-signed" o incompletos, lo cual provoca:
+- En entornos tipo Railway/Nixpacks, a veces el runtime no tiene un CA bundle
+  confiable para OpenSSL/Python, y se observa:
     [SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain
-- Para permitir desbloquear staging sin romper prod, se agrega el flag:
-    EMAIL_TLS_VERIFY=true|false   (default: true)
-  Si EMAIL_TLS_VERIFY=false, se usa un contexto TLS sin verificación para SMTP/STARTTLS.
+  incluso cuando el servidor usa Let's Encrypt.
+- Para evitar dependencia del CA bundle del sistema, cuando EMAIL_TLS_VERIFY=true
+  usamos certifi.where() como cafile (Mozilla CA bundle).
+- Para desbloquear staging sin romper prod, se mantiene el flag:
+    EMAIL_TLS_VERIFY=true|false (default: true)
+  Si EMAIL_TLS_VERIFY=false, se usa un contexto TLS sin verificación.
 """
 
 import os
@@ -25,6 +28,8 @@ import asyncio
 from email.message import EmailMessage
 from email.utils import formatdate, formataddr, make_msgid
 from typing import Optional, Tuple
+
+import certifi  # ✅ CA bundle confiable (Mozilla), evita issues en runtimes minimalistas
 
 from app.shared.integrations.email_templates import (
     render_email,
@@ -55,11 +60,16 @@ def _build_tls_context(verify: bool) -> ssl.SSLContext:
     """
     Construye un SSLContext para SMTP.
 
-    verify=True  -> contexto con verificación normal (recomendado prod)
+    verify=True  -> contexto con verificación (usa CA bundle de certifi)
     verify=False -> contexto SIN verificación (útil cuando el SMTP presenta cadena inválida)
     """
     if verify:
-        return ssl.create_default_context()
+        # ✅ Usar CA bundle de certifi (Mozilla), independiente del sistema operativo
+        # Evita fallas típicas en Railway/Nixpacks por ausencia de ca-certificates.
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        return ctx
 
     # ⚠️ Deshabilita validación de certificados/hostname.
     # Se mantiene cifrado, pero sin verificación de identidad del servidor.
@@ -112,7 +122,7 @@ class SMTPEmailSender:
         use_tls = os.getenv("EMAIL_USE_TLS", "true").lower().strip() == "true"
         timeout = int(os.getenv("EMAIL_TIMEOUT_SEC", "30").strip())
 
-        # NUEVO: control de verificación TLS
+        # control de verificación TLS
         tls_verify = _env_bool("EMAIL_TLS_VERIFY", default=True)
 
         frontend_url = _normalize_base_url(
@@ -125,7 +135,6 @@ class SMTPEmailSender:
                 "EMAIL_SERVER, EMAIL_USERNAME, EMAIL_PASSWORD y EMAIL_FROM son requeridos"
             )
 
-        # Log de seguridad: no imprimimos credenciales; sí el modo TLS verify.
         logger.info(
             "[SMTP] config: server=%s port=%s ssl=%s tls=%s tls_verify=%s timeout=%ss",
             server,
@@ -168,14 +177,12 @@ class SMTPEmailSender:
 
         html, text, used_template = render_email("activation_email", context)
 
-        # Fallback: solo texto plano si no hay template
         if not text:
             text = get_fallback_text(
                 "activation" if activation_link else "activation_no_link",
                 context,
             )
 
-        # Si no hay HTML, enviamos el texto como HTML mínimo
         if not html:
             html = f"<pre>{text}</pre>"
 
@@ -293,8 +300,8 @@ class SMTPEmailSender:
                     server.ehlo()
                     if self.use_tls:
                         if self.tls_verify:
-                            # STARTTLS con verificación normal
-                            server.starttls()
+                            # STARTTLS con verificación normal usando CA bundle de certifi
+                            server.starttls(context=context)
                         else:
                             # STARTTLS SIN verificación (self-signed / cadena incompleta)
                             server.starttls(context=context)
@@ -306,8 +313,6 @@ class SMTPEmailSender:
                         logger.warning("[SMTP] refused: %s", refused)
                     logger.info("[SMTP] sent ok to=%s msg_id=%s", to_email, msg_id)
                     return msg_id
-
-
 
         except Exception:
             logger.exception("[SMTP] send failed to=%s", to_email)
