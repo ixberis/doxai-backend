@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/shared/config/settings_base.py
@@ -54,7 +53,7 @@ class BaseAppSettings(BaseSettings):
         Prioriza DB_URL si existe, sino construye desde componentes individuales.
         """
         from urllib.parse import quote_plus
-        
+
         # Si se provee DB_URL completa, úsala (normaliza el esquema)
         if self.db_url:
             url = self.db_url
@@ -66,7 +65,7 @@ class BaseAppSettings(BaseSettings):
                 sep = "&" if "?" in url else "?"
                 url = f"{url}{sep}sslmode={self.db_sslmode}"
             return url
-        
+
         # Construye desde componentes (con password escapado)
         pw = quote_plus(self.db_password.get_secret_value())
         return (
@@ -103,7 +102,7 @@ class BaseAppSettings(BaseSettings):
     recaptcha_enabled: bool = Field(default=False, validation_alias="RECAPTCHA_ENABLED")
     recaptcha_secret: Optional[SecretStr] = Field(default=None, validation_alias="RECAPTCHA_SECRET")
     recaptcha_timeout_sec: int = Field(default=8, validation_alias="RECAPTCHA_TIMEOUT_SEC")
-    
+
     # Rate limiting para login
     login_attempts_limit: int = Field(default=5, validation_alias="LOGIN_ATTEMPTS_LIMIT")
     login_attempts_time_window_minutes: int = Field(default=15, validation_alias="LOGIN_ATTEMPTS_TIME_WINDOW_MINUTES")
@@ -132,17 +131,27 @@ class BaseAppSettings(BaseSettings):
     # =========================
     # Email
     # =========================
-    email_mode: Literal["console", "smtp"] = Field(default="console", validation_alias="EMAIL_MODE")
+    # ✅ AJUSTE CLAVE: permitir EMAIL_MODE="api" para MailerSend API
+    email_mode: Literal["console", "smtp", "api"] = Field(default="console", validation_alias="EMAIL_MODE")
     email_timeout_sec: int = Field(default=8, validation_alias="EMAIL_TIMEOUT_SEC")
+
+    # SMTP (solo aplica si email_mode == "smtp")
     smtp_server: Optional[str] = Field(default=None, validation_alias="EMAIL_SERVER")
     smtp_port: int = Field(default=465, validation_alias="EMAIL_PORT")
     smtp_username: Optional[str] = Field(default=None, validation_alias="EMAIL_USERNAME")
     smtp_password: Optional[SecretStr] = Field(default=None, validation_alias="EMAIL_PASSWORD")
-    email_from: str = Field(default="doxai@juvare.mx", validation_alias="EMAIL_FROM")
     email_use_ssl: bool = Field(default=True, validation_alias="EMAIL_USE_SSL")
+
+    # From / plantillas
+    email_from: str = Field(default="doxai@juvare.mx", validation_alias="EMAIL_FROM")
     email_service: str = Field(default="juvare", validation_alias="EMAIL_SERVICE")
     admin_notification_email: Optional[str] = Field(default=None, validation_alias="ADMIN_NOTIFICATION_EMAIL")
     email_templates_dir: Optional[str] = Field(default=None, validation_alias="EMAIL_TEMPLATES_DIR")
+
+    # ✅ MailerSend API (solo aplica si email_mode == "api")
+    mailersend_api_key: Optional[SecretStr] = Field(default=None, validation_alias="MAILERSEND_API_KEY")
+    mailersend_from_email: Optional[str] = Field(default=None, validation_alias="MAILERSEND_FROM_EMAIL")
+    mailersend_from_name: Optional[str] = Field(default=None, validation_alias="MAILERSEND_FROM_NAME")
 
     # =========================
     # Internal Service Auth
@@ -179,7 +188,7 @@ class BaseAppSettings(BaseSettings):
     log_format: Literal["json", "pretty", "plain"] = Field(default="pretty", validation_alias="LOG_FORMAT")
     log_emoji: bool = Field(default=True, validation_alias="LOG_EMOJI")
     sentry_dsn: Optional[HttpUrl] = Field(default=None, validation_alias="SENTRY_DSN")
-    
+
     # =========================
     # Warm-up flags (usados por shared/core)
     # =========================
@@ -194,7 +203,7 @@ class BaseAppSettings(BaseSettings):
     warmup_http_health_timeout_sec: float = Field(default=5.0, validation_alias="WARMUP_HTTP_HEALTH_TIMEOUT_SEC")
     warmup_timeout_sec: int = Field(default=30, validation_alias="WARMUP_TIMEOUT_SEC")
     warmup_silence_pdfminer: bool = Field(default=True, validation_alias="WARMUP_SILENCE_PDFMINER")
-    
+
     # =========================
     # Cliente HTTP global
     # =========================
@@ -218,20 +227,20 @@ class BaseAppSettings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.python_env == "production"
-    
+
     # ===== Propiedades de compatibilidad para código legacy =====
     @computed_field  # type: ignore[misc]
     @property
     def jwt_secret(self) -> str:
         """Alias de compatibilidad: jwt_secret_key -> jwt_secret"""
         return self.jwt_secret_key.get_secret_value()
-    
+
     @computed_field  # type: ignore[misc]
     @property
     def RECAPTCHA_ENABLED(self) -> bool:
         """Alias de compatibilidad: recaptcha_enabled -> RECAPTCHA_ENABLED"""
         return self.recaptcha_enabled
-    
+
     @computed_field  # type: ignore[misc]
     @property
     def recaptcha_secret_key(self) -> str:
@@ -259,7 +268,6 @@ class BaseAppSettings(BaseSettings):
             return [x.strip() for x in s.split(",") if x.strip()]
         return v
 
-    # ===== Validaciones mínimas de seguridad y coherencia =====
     # ===== Utilidad para normalizar CORS =====
     def get_cors_origins(self) -> list[str]:
         """Convierte allowed_origins en lista procesable para CORS middleware."""
@@ -280,25 +288,25 @@ class BaseAppSettings(BaseSettings):
         """
         import logging
         logger = logging.getLogger(__name__)
-        
+
         # JWT en prod: debe ser fuerte
         if self.is_prod:
             jwt_key = self.jwt_secret_key.get_secret_value()
             if not jwt_key or jwt_key == "please-change-me" or len(jwt_key) < 32:
                 raise ValueError("JWT_SECRET_KEY debe tener ≥32 caracteres en producción")
-            
+
             # SSL requerido en prod
             if self.db_sslmode != "require":
                 raise ValueError("DB_SSLMODE debe ser 'require' en producción")
             if not self.openai_api_key.get_secret_value():
                 raise ValueError("OPENAI_API_KEY es requerido en producción")
-        
+
         # Validaciones suaves para desarrollo
         if self.is_dev:
             jwt_key = self.jwt_secret_key.get_secret_value()
             if not jwt_key or jwt_key == "please-change-me" or len(jwt_key) < 32:
                 logger.info("ℹ️ JWT_SECRET_KEY es débil o usa valor por defecto - considera usar una clave más segura en desarrollo")
-            
+
             openai_key = self.openai_api_key.get_secret_value()
             if not openai_key or openai_key == "":
                 logger.info("ℹ️ OPENAI_API_KEY está vacío - funcionalidades RAG/IA no estarán disponibles")
@@ -318,6 +326,14 @@ class BaseAppSettings(BaseSettings):
             raise ValueError("En producción, PayPal debe usar PAYPAL_ENV=live.")
         if self.enable_stripe and self.is_prod and self.stripe_mode != "live":
             raise ValueError("En producción, Stripe debe usar STRIPE_MODE=live.")
+
+        # ✅ Validación mínima para email, según modo (evita deploys "a medias")
+        if self.email_mode == "smtp":
+            if not self.smtp_server or not self.smtp_username or not self.smtp_password:
+                raise ValueError("EMAIL_MODE=smtp requiere EMAIL_SERVER, EMAIL_USERNAME y EMAIL_PASSWORD.")
+        if self.email_mode == "api":
+            if not self.mailersend_api_key or not self.mailersend_from_email:
+                raise ValueError("EMAIL_MODE=api requiere MAILERSEND_API_KEY y MAILERSEND_FROM_EMAIL.")
 
     model_config = SettingsConfigDict(
         env_file=".env",
