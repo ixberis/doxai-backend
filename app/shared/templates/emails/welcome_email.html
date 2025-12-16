@@ -49,6 +49,13 @@
       color: #666;
       margin-top: 30px;
     }
+    .credits-box {
+      background-color: #f0f4ff;
+      border-left: 4px solid #4A6CF7;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -61,11 +68,11 @@
     <div class="content">
       <p>Hola <strong>{{ user_name }}</strong>,</p>
 
-      <p>¡Tu cuenta ha sido activada exitosamente! 🎉</p>
+      <p>¡Tu cuenta ha sido activada exitosamente!</p>
 
-      <div style="background-color: #f0f4ff; border-left: 4px solid #4A6CF7; padding: 15px; margin: 20px 0; border-radius: 4px;">
-        <strong>🎁 Regalo de bienvenida</strong><br>
-        Hemos acreditado <strong>5 créditos gratuitos</strong> a tu cuenta para que comiences a explorar todas las funcionalidades de DoxAI.
+      <div class="credits-box">
+        <strong>Regalo de bienvenida</strong><br>
+        Hemos acreditado <strong>{{ credits_assigned }} créditos gratuitos</strong> a tu cuenta para que comiences a explorar todas las funcionalidades de DoxAI.
       </div>
 
       <p>Ya puedes acceder a nuestra plataforma y comenzar a utilizar tus créditos.</p>
@@ -74,9 +81,9 @@
         <a href="{{ frontend_url }}" class="button">Iniciar sesión</a>
       </div>
 
-      <p>Si tienes alguna duda o necesitas ayuda, no dudes en contactarnos. Estamos aquí para apoyarte.</p>
+      <p>Si tienes alguna duda o necesitas ayuda, no dudes en contactarnos.</p>
 
-      <p>Gracias por elegir <strong>DoxAI</strong>. Esperamos que tu experiencia sea enriquecedora.</p>
+      <p>Gracias por elegir <strong>DoxAI</strong>.</p>
     </div>
 
     <div class="footer">
@@ -86,4 +93,3 @@
   </div>
 </body>
 </html>
-

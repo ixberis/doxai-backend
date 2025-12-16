@@ -1,0 +1,22 @@
+Estimado/a {{ user_name }},
+
+Gracias por registrarse en DoxAI. Para completar el proceso de activación, 
+utilice el siguiente enlace:
+
+{{ activation_link }}
+
+CRÉDITOS DE BIENVENIDA
+Al activar su cuenta, se le asignarán automáticamente 5 créditos gratuitos 
+para que explore las funcionalidades de DoxAI.
+
+IMPORTANTE: Este enlace expirará en 60 minutos. Si no activa su cuenta 
+antes de ese tiempo, deberá solicitar un nuevo enlace de activación.
+
+Si usted no solicitó la creación de esta cuenta, puede ignorar este mensaje.
+
+Atentamente,
+El equipo de DoxAI
+
+---
+DoxAI © 2025 – JUVARE®
+Este es un correo automático, por favor no responda a esta dirección.

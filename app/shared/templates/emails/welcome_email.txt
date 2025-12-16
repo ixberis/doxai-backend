@@ -1,0 +1,21 @@
+Estimado/a {{ user_name }},
+
+¡Bienvenido a DoxAI! Su cuenta ha sido activada exitosamente.
+
+REGALO DE BIENVENIDA
+Hemos acreditado {{ credits_assigned }} créditos gratuitos a su cuenta para 
+que comience a explorar todas las funcionalidades de DoxAI.
+
+Ya puede acceder a nuestra plataforma:
+{{ frontend_url }}
+
+Si tiene alguna duda o necesita ayuda, no dude en contactarnos.
+
+Gracias por elegir DoxAI.
+
+Atentamente,
+El equipo de DoxAI
+
+---
+DoxAI © 2025 – JUVARE®
+Este es un correo automático, por favor no responda a esta dirección.
