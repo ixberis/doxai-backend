@@ -281,6 +281,27 @@ async def check_database_health(timeout_s: float = 3.0, sql: str = "SELECT 1") -
 # ══════════════════════════════════════════════════════════════════════════════
 # DB identity diagnostics for Railway/Supabase mismatch
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# PROPÓSITO:
+#   Diagnóstico temporal para identificar la DB real a la que está conectada la
+#   app cuando hay sospechas de mismatch entre Railway y Supabase/PgBouncer.
+#
+# USO:
+#   - Por defecto NO se ejecuta (evita ruido en logs de producción).
+#   - Para activarlo, definir en Railway: DB_IDENTITY_DIAGNOSTICS=1
+#   - Se ejecuta UNA vez al startup y loguea con prefijo [DB-IDENTITY].
+#
+# CUÁNDO ACTIVAR:
+#   - Sospechas de conexión a DB incorrecta
+#   - Errores "relation does not exist" inexplicables
+#   - Verificación post-migración de entorno
+#
+# NOTA: Este es diagnóstico temporal, NO monitoreo permanente.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Flag para habilitar diagnóstico (default: deshabilitado)
+DB_IDENTITY_DIAGNOSTICS_ENABLED = _env_bool("DB_IDENTITY_DIAGNOSTICS", False)
+
 
 async def log_db_identity() -> None:
     """
@@ -288,19 +309,27 @@ async def log_db_identity() -> None:
     está conectada la app. Loguea con prefijo [DB-IDENTITY] para fácil búsqueda
     en Railway/logs.
 
-    Solo se ejecuta en production/staging. Si falla, loguea el error y continúa
-    sin romper el arranque.
+    COMPORTAMIENTO:
+      - Solo se ejecuta si DB_IDENTITY_DIAGNOSTICS=1 está definido en el entorno.
+      - Si el flag no está activo, retorna silenciosamente sin hacer nada.
+      - Usa logger.info() para el diagnóstico (nunca ERROR).
+      - Si falla, loguea como debug y continúa sin romper el arranque.
+
+    ACTIVACIÓN EN RAILWAY:
+      Definir variable de entorno: DB_IDENTITY_DIAGNOSTICS=1
+
+    NOTA: Este es diagnóstico temporal para troubleshooting, no monitoreo permanente.
     """
-    # Normalizar env tolerando comillas y espacios (ej. "staging" → staging)
+    # Verificar flag explícito primero
+    if not _env_bool("DB_IDENTITY_DIAGNOSTICS", False):
+        return
+
+
+    # Normalizar env para logging informativo
     env = os.getenv("ENVIRONMENT") or os.getenv("PYTHON_ENV") or "development"
     env = env.strip().strip('"').strip("'").lower()
-    
-    logger.info("[DB-IDENTITY] Checking environment: raw=%r normalized=%s", 
-                os.getenv("ENVIRONMENT"), env)
-    
-    if env not in ("production", "staging"):
-        logger.debug("[DB-IDENTITY] Diagnóstico omitido (env=%s)", env)
-        return
+
+    logger.info("[DB-IDENTITY] Diagnóstico habilitado (DB_IDENTITY_DIAGNOSTICS=1), env=%s", env)
 
     diagnostic_sql = text("""
         SELECT
@@ -319,7 +348,7 @@ async def log_db_identity() -> None:
             row = result.mappings().fetchone()
 
         if row:
-            logger.error(
+            logger.info(
                 "[DB-IDENTITY] db=%s schema=%s search_path=%s server_ip=%s server_port=%s "
                 "public_app_users=%s public_account_activations=%s",
                 row.get("db"),
@@ -331,19 +360,31 @@ async def log_db_identity() -> None:
                 row.get("public_account_activations"),
             )
         else:
-            logger.error("[DB-IDENTITY] Query ejecutada pero sin resultado (row=None)")
+            logger.info("[DB-IDENTITY] Query ejecutada pero sin resultado (row=None)")
 
     except Exception as exc:
-        # No romper el arranque; solo loguear el error
-        logger.error("[DB-IDENTITY] Error ejecutando diagnóstico: %s", exc)
+        # No romper el arranque; loguear como debug para no contaminar logs
+        logger.debug("[DB-IDENTITY] Error ejecutando diagnóstico", exc_info=True)
 
 
 async def init_db_diagnostics() -> None:
     """
     Hook de inicialización para ejecutar diagnósticos de DB al arranque.
     Llamar desde app/main.py en el lifespan o startup.
+
+    COMPORTAMIENTO:
+      - Seguro llamarlo siempre (no hace nada si DB_IDENTITY_DIAGNOSTICS no está activo).
+      - Nunca aborta el arranque de la aplicación.
+      - Cualquier excepción se atrapa y loguea como debug.
+
+    ACTIVACIÓN:
+      Definir en Railway: DB_IDENTITY_DIAGNOSTICS=1
     """
-    await log_db_identity()
+    try:
+        await log_db_identity()
+    except Exception as exc:
+        # Nunca romper startup por diagnóstico
+        logger.debug("[DB-IDENTITY] Excepción inesperada en init_db_diagnostics: %s", exc)
 
 
 __all__ = [
