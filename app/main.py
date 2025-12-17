@@ -44,7 +44,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 _ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
-_ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+# Normalizar env tolerando comillas y espacios (ej. "staging" → staging)
+_ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().strip('"').strip("'").lower()
 _override_env = _ENVIRONMENT != "production"
 load_dotenv(dotenv_path=_ENV_PATH, override=_override_env)
 
@@ -210,6 +211,13 @@ async def lifespan(app: FastAPI):
             logger.info("⚡ Warm-up omitido")
     except Exception as e:
         logger.error(f"❌ Error en warm-up: {e}")
+
+    # DB identity diagnostics (Railway/Supabase mismatch debugging)
+    try:
+        from app.shared.database import init_db_diagnostics
+        await init_db_diagnostics()
+    except Exception as e:
+        logger.warning(f"⚠️ DB diagnostics no disponible: {e}")
 
     # Iniciar scheduler y registrar jobs
     try:

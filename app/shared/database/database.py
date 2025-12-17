@@ -278,6 +278,74 @@ async def check_database_health(timeout_s: float = 3.0, sql: str = "SELECT 1") -
         return False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DB identity diagnostics for Railway/Supabase mismatch
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def log_db_identity() -> None:
+    """
+    Ejecuta una consulta de diagnóstico para identificar la DB real a la que
+    está conectada la app. Loguea con prefijo [DB-IDENTITY] para fácil búsqueda
+    en Railway/logs.
+
+    Solo se ejecuta en production/staging. Si falla, loguea el error y continúa
+    sin romper el arranque.
+    """
+    # Normalizar env tolerando comillas y espacios (ej. "staging" → staging)
+    env = os.getenv("ENVIRONMENT") or os.getenv("PYTHON_ENV") or "development"
+    env = env.strip().strip('"').strip("'").lower()
+    
+    logger.info("[DB-IDENTITY] Checking environment: raw=%r normalized=%s", 
+                os.getenv("ENVIRONMENT"), env)
+    
+    if env not in ("production", "staging"):
+        logger.debug("[DB-IDENTITY] Diagnóstico omitido (env=%s)", env)
+        return
+
+    diagnostic_sql = text("""
+        SELECT
+            current_database() AS db,
+            current_schema() AS schema,
+            current_setting('search_path') AS search_path,
+            inet_server_addr()::text AS server_ip,
+            inet_server_port()::text AS server_port,
+            to_regclass('public.app_users')::text AS public_app_users,
+            to_regclass('public.account_activations')::text AS public_account_activations
+    """)
+
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(diagnostic_sql)
+            row = result.mappings().fetchone()
+
+        if row:
+            logger.error(
+                "[DB-IDENTITY] db=%s schema=%s search_path=%s server_ip=%s server_port=%s "
+                "public_app_users=%s public_account_activations=%s",
+                row.get("db"),
+                row.get("schema"),
+                row.get("search_path"),
+                row.get("server_ip"),
+                row.get("server_port"),
+                row.get("public_app_users"),
+                row.get("public_account_activations"),
+            )
+        else:
+            logger.error("[DB-IDENTITY] Query ejecutada pero sin resultado (row=None)")
+
+    except Exception as exc:
+        # No romper el arranque; solo loguear el error
+        logger.error("[DB-IDENTITY] Error ejecutando diagnóstico: %s", exc)
+
+
+async def init_db_diagnostics() -> None:
+    """
+    Hook de inicialización para ejecutar diagnósticos de DB al arranque.
+    Llamar desde app/main.py en el lifespan o startup.
+    """
+    await log_db_identity()
+
+
 __all__ = [
     "engine",
     "SessionLocal",
@@ -286,5 +354,7 @@ __all__ = [
     "get_db",
     "session_scope",
     "check_database_health",
+    "log_db_identity",
+    "init_db_diagnostics",
 ]
 # Fin del archivo backend/app/shared/database/database.py

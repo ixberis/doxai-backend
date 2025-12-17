@@ -17,6 +17,8 @@ from .database import (
     get_async_session,
     get_db,
     check_database_health,
+    log_db_identity,
+    init_db_diagnostics,
 )
 from .base import Base, NAMING_CONVENTION, as_pg_enum
 
@@ -33,6 +35,8 @@ __all__ = [
     "get_async_session",
     "get_db",
     "check_database_health",
+    "log_db_identity",
+    "init_db_diagnostics",
 ]
 
 # Fin del archivo backend/app/shared/database/__init__.py
