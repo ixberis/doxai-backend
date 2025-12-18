@@ -1,4 +1,3 @@
-
 # backend/app/modules/auth/routes/auth_tokens.py
 # -*- coding: utf-8 -*-
 """
@@ -10,11 +9,12 @@ Rutas relacionadas con tokens / sesión de usuario:
 
 Autor: DoxAI / Refactor Fase 3
 Fecha: 20/11/2025
+Updated: 18/12/2025 - Added rate limiting
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status, HTTPException, Request
 
 from app.modules.auth.facades import get_auth_facade, AuthFacade
 from app.modules.auth.schemas import (
@@ -29,6 +29,8 @@ from app.modules.auth.services.user_service import get_current_user_from_token
 from app.modules.auth.models.user_models import AppUser
 from app.shared.utils.jwt_utils import verify_token_type
 from app.modules.auth.services.audit_service import AuditService
+from app.shared.security.rate_limit_dep import RateLimitDep
+from app.shared.http_utils.request_meta import get_request_meta
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
 router = APIRouter(prefix="/auth", tags=["auth-tokens"])
@@ -41,21 +43,33 @@ router = APIRouter(prefix="/auth", tags=["auth-tokens"])
     "/login",
     response_model=LoginResponse,
     summary="Login de usuario",
+    dependencies=[Depends(RateLimitDep(endpoint="auth:login", key_type="ip"))],
 )
 async def login(
     payload: LoginRequest,
+    request: Request,
     facade: AuthFacade = Depends(get_auth_facade),
 ):
     """
     Autentica al usuario con email y contraseña.
+
+    Rate limiting:
+      - 20 requests por IP cada 5 min
+      - 5 intentos fallidos por email en 15 min → lockout 30 min
 
     El flujo interno:
       - Aplica rate limiting (LoginAttemptService).
       - Verifica credenciales.
       - Verifica que la cuenta esté activada.
       - Emite tokens de acceso y refresh.
+      - Aplica backoff progresivo en intentos fallidos.
     """
-    return await facade.login(payload)
+    # Inject request metadata for audit trail
+    meta = get_request_meta(request)
+    data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    data.update(meta)
+    
+    return await facade.login(data)
 
 
 # --------------------- REFRESH TOKEN --------------------- #

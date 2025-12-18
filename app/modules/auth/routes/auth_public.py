@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/routes/auth_public.py
@@ -14,6 +13,7 @@ flow services del módulo Auth (registro, activación, reset).
 
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
+Updated: 18/12/2025 - Added rate limiting
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from app.modules.auth.schemas import (
     MessageResponse,
 )
 from app.shared.http_utils.request_meta import get_request_meta
+from app.shared.security.rate_limit_dep import RateLimitDep, check_rate_limit
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
 router = APIRouter(prefix="/auth", tags=["auth-public"])
@@ -41,6 +42,7 @@ router = APIRouter(prefix="/auth", tags=["auth-public"])
     response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Registro de usuario",
+    dependencies=[Depends(RateLimitDep(endpoint="auth:register", key_type="ip"))],
 )
 async def register(
     payload: RegisterRequest,
@@ -51,11 +53,12 @@ async def register(
     Registra un nuevo usuario en la plataforma.
 
     Flujo:
-      1. Verificación de reCAPTCHA (si está habilitado en settings).
-      2. Validación de unicidad de correo.
-      3. Creación del usuario.
-      4. Emisión de token de activación.
-      5. Envío de correo de activación.
+      1. Rate limiting por IP (3 requests / 10 min).
+      2. Verificación de reCAPTCHA (si está habilitado en settings).
+      3. Validación de unicidad de correo.
+      4. Creación del usuario.
+      5. Emisión de token de activación.
+      6. Envío de correo de activación.
     """
     # Inyectar metadatos de request para auditoría
     meta = get_request_meta(request)
@@ -68,6 +71,7 @@ async def register(
     "/activation",
     response_model=MessageResponse,
     summary="Activar cuenta con token",
+    dependencies=[Depends(RateLimitDep(endpoint="auth:activation", key_type="ip"))],
 )
 async def activate(
     payload: ActivationRequest,
@@ -76,6 +80,7 @@ async def activate(
 ):
     """
     Activa una cuenta a partir de un token enviado por correo electrónico.
+    Rate limited: 5 requests / 10 min por IP.
     """
     # Inyectar metadatos de request para auditoría
     meta = get_request_meta(request)
@@ -88,6 +93,7 @@ async def activate(
     "/activation/resend",
     response_model=MessageResponse,
     summary="Reenviar correo de activación",
+    dependencies=[Depends(RateLimitDep(endpoint="auth:activation", key_type="ip"))],
 )
 async def resend_activation(
     payload: ResendActivationRequest,
@@ -95,6 +101,7 @@ async def resend_activation(
 ):
     """
     Reenvía el correo de activación si la cuenta aún no está activa.
+    Rate limited: 5 requests / 10 min por IP.
     """
     return await facade.resend_activation_email(payload)
 
@@ -103,6 +110,7 @@ async def resend_activation(
     "/password/forgot",
     response_model=MessageResponse,
     summary="Iniciar restablecimiento de contraseña",
+    dependencies=[Depends(RateLimitDep(endpoint="auth:forgot", key_type="ip"))],
 )
 async def forgot_password(
     payload: PasswordResetRequest,
@@ -112,11 +120,26 @@ async def forgot_password(
     """
     Inicia el flujo de restablecimiento de contraseña.
 
+    Rate limited:
+      - 3 requests por IP cada 15 min
+      - 3 requests por email cada 60 min (checked in service layer)
+
     No revela si el email existe o no en el sistema por motivos de seguridad.
     """
     meta = get_request_meta(request)
     data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     data.update(meta)
+    
+    # Additional rate limit by email (within service layer for security)
+    email = data.get("email", "").strip().lower()
+    if email:
+        check_rate_limit(
+            request=request,
+            endpoint="auth:forgot",
+            key_type="email",
+            identifier=email,
+        )
+    
     return await facade.forgot_password(data)
 
 
@@ -124,6 +147,7 @@ async def forgot_password(
     "/password/reset",
     response_model=MessageResponse,
     summary="Confirmar restablecimiento de contraseña",
+    dependencies=[Depends(RateLimitDep(endpoint="auth:activation", key_type="ip"))],
 )
 async def reset_password(
     payload: PasswordResetConfirmRequest,
@@ -131,6 +155,7 @@ async def reset_password(
 ):
     """
     Confirma el restablecimiento de contraseña usando un token válido y una nueva contraseña.
+    Rate limited: 5 requests / 10 min por IP.
     """
     return await facade.reset_password(payload)
 

@@ -53,8 +53,9 @@ logging.getLogger(__name__).info(
     f"[dotenv] Loaded {_ENV_PATH} (override={_override_env}, ENVIRONMENT={_ENVIRONMENT})"
 )
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 import anyio
 
@@ -317,6 +318,17 @@ app.add_middleware(
 
 # Observabilidad Prometheus (/metrics)
 setup_observability(app)
+
+# Exception handler for rate limiting (consistent 429 response)
+from app.shared.security.rate_limit_dep import RateLimitExceeded, rate_limit_response
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
+    """Ensure RateLimitExceeded always returns consistent 429 JSON response."""
+    return rate_limit_response(
+        retry_after=exc.retry_after,
+        message=str(exc.detail),
+    )
 
 # Incluye router maestro
 from app.routes import router as main_router  # import dentro del scope

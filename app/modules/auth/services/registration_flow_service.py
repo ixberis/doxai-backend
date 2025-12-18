@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Mapping, Optional
 
-from fastapi import HTTPException, status
+from fastapi import status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +39,9 @@ from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.services.token_issuer_service import TokenIssuerService
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import send_activation_email_or_raise
+from app.shared.integrations.email_sender import EmailSender
+from app.shared.utils.security import hash_password
+from app.shared.utils.http_exceptions import BadRequestException, ConflictException
 from app.shared.integrations.email_sender import EmailSender
 from app.shared.utils.security import hash_password
 
@@ -111,8 +114,7 @@ class RegistrationFlowService:
                 error_message="missing_email_or_password",
                 user_agent=user_agent,
             )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+            raise BadRequestException(
                 detail="Email y contraseña son obligatorios.",
             )
 
@@ -130,9 +132,9 @@ class RegistrationFlowService:
                     user_agent=user_agent,
                     extra_data={"user_id": str(existing.user_id)},
                 )
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Este correo electrónico ya está registrado y activo.",
+                raise ConflictException(
+                    detail="No se pudo completar el registro. Si ya tiene una cuenta, inicie sesión o recupere su contraseña.",
+                    error_code="email_already_registered",
                 )
 
             # Usuario existe pero NO está activo: reenviar activación
@@ -184,9 +186,9 @@ class RegistrationFlowService:
                 error_message="integrity_error_email_in_use",
                 user_agent=user_agent,
             )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Este correo electrónico ya está en uso.",
+            raise ConflictException(
+                detail="No se pudo completar el registro. Si ya tiene una cuenta, inicie sesión o recupere su contraseña.",
+                error_code="email_already_registered",
             )
 
         logger.info("REGISTRATION: crear token de activación y enviar correo")

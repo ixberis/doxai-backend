@@ -76,13 +76,26 @@ class ConflictException(HTTPException):
     def __init__(
         self,
         detail: str = "Conflicto - el recurso ya existe o hay un conflicto de estado",
+        error_code: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=detail,
-            headers=headers
-        )
+        # Build structured detail with error_code if provided
+        if error_code:
+            structured_detail = {
+                "detail": detail,
+                "error_code": error_code
+            }
+            super().__init__(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=structured_detail,
+                headers=headers
+            )
+        else:
+            super().__init__(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=detail,
+                headers=headers
+            )
 
 
 class UnprocessableEntityException(HTTPException):
