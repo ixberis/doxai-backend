@@ -18,7 +18,7 @@ Fecha: 19/11/2025
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 
 from app.modules.auth.facades import get_auth_facade, AuthFacade
 from app.modules.auth.schemas import (
@@ -30,6 +30,7 @@ from app.modules.auth.schemas import (
     PasswordResetConfirmRequest,
     MessageResponse,
 )
+from app.shared.http_utils.request_meta import get_request_meta
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
 router = APIRouter(prefix="/auth", tags=["auth-public"])
@@ -43,6 +44,7 @@ router = APIRouter(prefix="/auth", tags=["auth-public"])
 )
 async def register(
     payload: RegisterRequest,
+    request: Request,
     facade: AuthFacade = Depends(get_auth_facade),
 ):
     """
@@ -55,7 +57,11 @@ async def register(
       4. Emisión de token de activación.
       5. Envío de correo de activación.
     """
-    return await facade.register_user(payload)
+    # Inyectar metadatos de request para auditoría
+    meta = get_request_meta(request)
+    data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    data.update(meta)
+    return await facade.register_user(data)
 
 
 @router.post(
@@ -65,12 +71,17 @@ async def register(
 )
 async def activate(
     payload: ActivationRequest,
+    request: Request,
     facade: AuthFacade = Depends(get_auth_facade),
 ):
     """
     Activa una cuenta a partir de un token enviado por correo electrónico.
     """
-    return await facade.activate_account(payload)
+    # Inyectar metadatos de request para auditoría
+    meta = get_request_meta(request)
+    data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    data.update(meta)
+    return await facade.activate_account(data)
 
 
 @router.post(
@@ -95,6 +106,7 @@ async def resend_activation(
 )
 async def forgot_password(
     payload: PasswordResetRequest,
+    request: Request,
     facade: AuthFacade = Depends(get_auth_facade),
 ):
     """
@@ -102,7 +114,10 @@ async def forgot_password(
 
     No revela si el email existe o no en el sistema por motivos de seguridad.
     """
-    return await facade.forgot_password(payload)
+    meta = get_request_meta(request)
+    data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    data.update(meta)
+    return await facade.forgot_password(data)
 
 
 @router.post(

@@ -218,12 +218,16 @@ class AuditService:
         cls,
         user_id: str,
         email: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> None:
         """Registra activación de cuenta exitosa"""
         cls.log_event(
             AuditEventType.ACTIVATION_SUCCESS,
             user_id=user_id,
             email=email,
+            ip_address=ip_address,
+            user_agent=user_agent,
             success=True,
         )
     

@@ -7,10 +7,13 @@ Sistema de caché en memoria para metadatos con TTL y LRU eviction.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import OrderedDict
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class MetadataCache:
@@ -45,8 +48,8 @@ class MetadataCache:
 
             value, expiry = self._cache[key]
             
-            # Verificar expiración
-            if expiry < time.time():
+            # Verificar expiración (None = nunca expira)
+            if expiry is not None and expiry < time.time():
                 del self._cache[key]
                 if self.enable_stats:
                     self._misses += 1
@@ -109,6 +112,55 @@ class MetadataCache:
         """Limpia todo el caché."""
         with self._lock:
             self._cache.clear()
+
+    def cleanup(self) -> int:
+        """
+        Elimina entradas expiradas del caché.
+        
+        Recorre todas las entradas y elimina aquellas cuyo TTL ha expirado.
+        Esta operación es thread-safe y no afecta entradas vigentes.
+        Maneja casos donde expiry es None (entradas sin TTL) conservándolas.
+        Loguea advertencia agregada si detecta entradas con formato inesperado.
+        
+        Returns:
+            Número de entradas eliminadas.
+        """
+        with self._lock:
+            now = time.time()
+            expired_keys = []
+            malformed_count = 0
+            malformed_samples: list[str] = []  # Máx 3 ejemplos
+            
+            for key, entry in self._cache.items():
+                # Manejar formato de tupla (value, expiry)
+                if not isinstance(entry, tuple) or len(entry) != 2:
+                    malformed_count += 1
+                    if len(malformed_samples) < 3:
+                        malformed_samples.append(f"{key}:{type(entry).__name__}")
+                    continue  # Formato inesperado, conservar
+                
+                _, expiry = entry
+                
+                # Si expiry es None, la entrada no expira
+                if expiry is None:
+                    continue
+                
+                if expiry < now:
+                    expired_keys.append(key)
+            
+            for key in expired_keys:
+                del self._cache[key]
+            
+            # Log agregado de entradas malformadas (rate-limited: 1x por cleanup)
+            if malformed_count > 0:
+                logger.warning(
+                    "MetadataCache.cleanup detected %d malformed entries (samples: %s). "
+                    "Expected format: (value, expiry). Entries preserved but may indicate corruption.",
+                    malformed_count,
+                    ", ".join(malformed_samples),
+                )
+            
+            return len(expired_keys)
 
     def get_stats(self) -> dict:
         """Retorna estadísticas del caché."""

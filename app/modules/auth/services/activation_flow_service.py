@@ -106,6 +106,8 @@ class ActivationFlowService:
                     AuditService.log_activation_success(
                         user_id=str(user.user_id),
                         email=user.user_email,
+                        ip_address=payload.get("ip_address"),
+                        user_agent=payload.get("user_agent"),
                     )
                 except Exception as e:
                     logger.warning(f"Audit log_activation_success failed: {e}")

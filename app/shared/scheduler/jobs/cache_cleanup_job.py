@@ -68,7 +68,7 @@ async def cleanup_expired_cache() -> Dict[str, Any]:
             'entries_removed': removed_count,
             'memory_freed_kb': memory_freed_kb,
             'duration_ms': round(duration_ms, 2),
-            'hit_rate': stats_after['hit_rate'],
+            'hit_rate': stats_after['hit_rate_percent'],
             'evictions': stats_after['evictions']
         }
         
@@ -95,7 +95,7 @@ async def cleanup_expired_cache() -> Dict[str, Any]:
             )
         
         # Advertencia si el hit rate es bajo
-        if stats_after['total'] > 100 and stats['hit_rate'] < 60:
+        if stats_after['total_requests'] > 100 and stats['hit_rate'] < 60:
             logger.warning(
                 f"Hit rate bajo ({stats['hit_rate']:.1f}%). "
                 f"El caché podría no estar siendo efectivo. "
