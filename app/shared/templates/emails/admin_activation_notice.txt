@@ -1,0 +1,19 @@
+NUEVA CUENTA ACTIVADA - DoxAI
+==============================
+
+Un usuario ha completado su registro en DoxAI.
+
+DATOS DEL USUARIO:
+- Email: {{ user_email }}
+- Nombre: {{ user_name }}
+- User ID: {{ user_id }}
+- Fecha/Hora: {{ activation_datetime }} UTC
+- Créditos asignados: {{ credits_assigned }}
+
+INFORMACIÓN TÉCNICA:
+- IP Address: {{ ip_address }}
+- User Agent: {{ user_agent }}
+
+---
+Este es un correo automático de notificación interna.
+DoxAI © 2025 – JUVARE®

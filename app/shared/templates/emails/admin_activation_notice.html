@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nueva cuenta activada - DoxAI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+    }
+    .container {
+      max-width: 600px;
+      margin: 20px auto;
+      background-color: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .header {
+      text-align: center;
+      padding: 10px 0;
+      border-bottom: 2px solid #4A6CF7;
+      margin-bottom: 20px;
+    }
+    h1 {
+      color: #4A6CF7;
+      margin: 0;
+      font-size: 24px;
+    }
+    .info-box {
+      background-color: #f0f4ff;
+      border-left: 4px solid #4A6CF7;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
+    .info-row {
+      margin: 10px 0;
+    }
+    .info-label {
+      font-weight: bold;
+      color: #555;
+      display: inline-block;
+      min-width: 120px;
+    }
+    .info-value {
+      color: #333;
+    }
+    .footer {
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #eee;
+    }
+    .badge {
+      display: inline-block;
+      background-color: #22c55e;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🎉 Nueva Cuenta Activada</h1>
+      <p style="color: #666; margin: 10px 0 0 0;">Un usuario ha completado su registro en DoxAI</p>
+    </div>
+
+    <div class="info-box">
+      <div class="info-row">
+        <span class="info-label">Email:</span>
+        <span class="info-value">{{ user_email }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Nombre:</span>
+        <span class="info-value">{{ user_name }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">User ID:</span>
+        <span class="info-value">{{ user_id }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Fecha/Hora:</span>
+        <span class="info-value">{{ activation_datetime }} UTC</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Créditos:</span>
+        <span class="info-value">{{ credits_assigned }} créditos de bienvenida</span>
+      </div>
+    </div>
+
+    <div class="info-box" style="background-color: #f9f9f9; border-left-color: #888;">
+      <p style="margin: 0 0 10px 0; font-weight: bold; color: #555;">Información técnica:</p>
+      <div class="info-row">
+        <span class="info-label">IP Address:</span>
+        <span class="info-value">{{ ip_address }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">User Agent:</span>
+        <span class="info-value" style="font-size: 11px; word-break: break-all;">{{ user_agent }}</span>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin: 20px 0;">
+      <span class="badge">ACTIVACIÓN EXITOSA</span>
+    </div>
+
+    <div class="footer">
+      <p>Este es un correo automático de notificación interna.</p>
+      <p>&copy; 2025 DoxAI - JUVARE®. Todos los derechos reservados.</p>
+    </div>
+  </div>
+</body>
+</html>

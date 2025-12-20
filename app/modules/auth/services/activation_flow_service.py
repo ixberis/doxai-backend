@@ -27,6 +27,7 @@ from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import (
     send_activation_email_or_raise,
     send_welcome_email_safely,
+    send_admin_activation_notice_safely,
 )
 from app.modules.auth.utils.error_classifier import classify_email_error
 from app.modules.auth.metrics.collectors.welcome_email_collectors import (
@@ -100,6 +101,26 @@ class ActivationFlowService:
                     user=user,
                     credits_assigned=result.get("credits_assigned", 0),
                 )
+
+                # Enviar notificación al admin (best-effort, no bloquea activación)
+                admin_email = getattr(self.settings, "admin_notification_email", None) or "doxai@juvare.mx"
+                admin_email_sent = await send_admin_activation_notice_safely(
+                    self.email_sender,
+                    admin_email=admin_email,
+                    user_email=user.user_email,
+                    user_name=user.user_full_name,
+                    user_id=int(user.user_id),
+                    credits_assigned=result.get("credits_assigned", 0),
+                    ip_address=payload.get("ip_address"),
+                    user_agent=payload.get("user_agent"),
+                )
+                
+                if not admin_email_sent:
+                    logger.warning(
+                        "admin_activation_notice_failed user_id=%s admin_email=%s",
+                        activated_user_id,
+                        admin_email,
+                    )
 
                 # Log de auditoría (siempre, independiente del correo)
                 try:

@@ -146,7 +146,7 @@ class BaseAppSettings(BaseSettings):
     # From / plantillas
     email_from: str = Field(default="doxai@juvare.mx", validation_alias="EMAIL_FROM")
     email_service: str = Field(default="juvare", validation_alias="EMAIL_SERVICE")
-    admin_notification_email: Optional[str] = Field(default=None, validation_alias="ADMIN_NOTIFICATION_EMAIL")
+    admin_notification_email: str = Field(default="doxai@juvare.mx", validation_alias="ADMIN_NOTIFY_EMAIL")
     email_templates_dir: Optional[str] = Field(default=None, validation_alias="EMAIL_TEMPLATES_DIR")
 
     # MailerSend API (solo aplica si email_mode == "api")

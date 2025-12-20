@@ -9,13 +9,13 @@ Soporta tres modos:
 - api: envío via API (MailerSend, etc.)
 
 Autor: Ixchel Beristain
-Actualizado: 2025-12-16
+Actualizado: 2025-12-20
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Protocol, TYPE_CHECKING
+from typing import Protocol, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.shared.config.settings_base import BaseAppSettings
@@ -28,6 +28,18 @@ class IEmailSender(Protocol):
     async def send_activation_email(self, to_email: str, full_name: str, activation_token: str) -> None: ...
     async def send_password_reset_email(self, to_email: str, full_name: str, reset_token: str) -> None: ...
     async def send_welcome_email(self, to_email: str, full_name: str, credits_assigned: int) -> None: ...
+    async def send_admin_activation_notice(
+        self,
+        to_email: str,
+        *,
+        user_email: str,
+        user_name: str,
+        user_id: str,
+        credits_assigned: int,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        activation_datetime_utc: Optional[str] = None,
+    ) -> None: ...
 
 
 class StubEmailSender:
@@ -44,6 +56,30 @@ class StubEmailSender:
     async def send_welcome_email(self, to_email: str, full_name: str, credits_assigned: int) -> None:
         logger.info(f"[CONSOLE EMAIL] Bienvenida → {to_email} | créditos={credits_assigned}")
         print(f"[STUB EMAIL] Bienvenida → {to_email} | {full_name} | {credits_assigned} créditos asignados")
+
+    async def send_admin_activation_notice(
+        self,
+        to_email: str,
+        *,
+        user_email: str,
+        user_name: str,
+        user_id: str,
+        credits_assigned: int,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        activation_datetime_utc: Optional[str] = None,
+    ) -> None:
+        logger.info(
+            f"[CONSOLE EMAIL] Admin notice → {to_email} | user={user_email} id={user_id} credits={credits_assigned}"
+        )
+        print(
+            f"[STUB EMAIL] Admin activation notice → {to_email}\n"
+            f"  User: {user_email} ({user_name})\n"
+            f"  ID: {user_id}\n"
+            f"  Credits: {credits_assigned}\n"
+            f"  IP: {ip_address or 'N/A'}\n"
+            f"  DateTime: {activation_datetime_utc or 'N/A'}"
+        )
 
 
 class EmailSender:

@@ -395,4 +395,102 @@ class SMTPEmailSender:
             self._send_sync, to_email, "Bienvenido a DoxAI", html, text
         )
 
+    def _build_admin_activation_notice_body(
+        self,
+        *,
+        user_email: str,
+        user_name: str,
+        user_id: str,
+        credits_assigned: int,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        activation_datetime_utc: Optional[str] = None,
+    ) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de notificación admin de activación."""
+        from datetime import datetime, timezone
+
+        if not activation_datetime_utc:
+            activation_datetime_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        context = {
+            "user_email": user_email,
+            "user_name": user_name or "No especificado",
+            "user_id": str(user_id),
+            "activation_datetime": activation_datetime_utc,
+            "credits_assigned": str(credits_assigned),
+            "ip_address": ip_address or "No disponible",
+            "user_agent": user_agent or "No disponible",
+        }
+
+        html, text, used_template = render_email("admin_activation_notice", context)
+
+        if not text:
+            text = (
+                f"NUEVA CUENTA ACTIVADA - DoxAI\n"
+                f"==============================\n\n"
+                f"Email: {user_email}\n"
+                f"Nombre: {user_name or 'No especificado'}\n"
+                f"User ID: {user_id}\n"
+                f"Fecha/Hora: {activation_datetime_utc} UTC\n"
+                f"Créditos: {credits_assigned}\n"
+                f"IP: {ip_address or 'No disponible'}\n"
+            )
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    async def send_admin_activation_notice(
+        self,
+        to_email: str,
+        *,
+        user_email: str,
+        user_name: str,
+        user_id: str,
+        credits_assigned: int,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        activation_datetime_utc: Optional[str] = None,
+    ) -> None:
+        """
+        Envía notificación al admin cuando un usuario activa su cuenta.
+        
+        Args:
+            to_email: Email del admin (normalmente doxai@juvare.mx)
+            user_email: Email del usuario que activó
+            user_name: Nombre del usuario
+            user_id: ID del usuario
+            credits_assigned: Créditos asignados
+            ip_address: IP del usuario (opcional)
+            user_agent: User agent del navegador (opcional)
+            activation_datetime_utc: Fecha/hora de activación (opcional, default=now)
+        """
+        html, text, used_template = self._build_admin_activation_notice_body(
+            user_email=user_email,
+            user_name=user_name,
+            user_id=user_id,
+            credits_assigned=credits_assigned,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            activation_datetime_utc=activation_datetime_utc,
+        )
+
+        logger.info(
+            "[SMTP] admin activation notice: to=%s user=%s user_id=%s template=%s",
+            to_email,
+            user_email[:3] + "***" if user_email else "unknown",
+            user_id,
+            "loaded" if used_template else "fallback",
+        )
+
+        await asyncio.to_thread(
+            self._send_sync,
+            to_email,
+            f"Cuenta activada en DoxAI - {user_email}",
+            html,
+            text,
+        )
+
+
 # Fin del archivo backend/app/shared/integrations/smtp_email_sender.py

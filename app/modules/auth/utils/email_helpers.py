@@ -4,23 +4,28 @@
 backend/app/modules/auth/utils/email_helpers.py
 
 Helpers de alto nivel para envío de correos relacionados con Auth
-(activación, bienvenida, restablecimiento de contraseña).
+(activación, bienvenida, restablecimiento de contraseña, notificación admin).
 
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
+Actualizado: 2025-12-20
 """
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
 
-from app.shared.integrations.email_sender import EmailSender
+from app.shared.integrations.email_sender import IEmailSender
+
+logger = logging.getLogger(__name__)
 
 
 async def send_activation_email_or_raise(
-    email_sender: EmailSender,
+    email_sender: IEmailSender,
     *,
     email: str,
     full_name: Optional[str],
@@ -45,7 +50,7 @@ async def send_activation_email_or_raise(
 
 
 async def send_welcome_email_safely(
-    email_sender: EmailSender,
+    email_sender: IEmailSender,
     *,
     email: str,
     full_name: Optional[str],
@@ -66,7 +71,7 @@ async def send_welcome_email_safely(
 
 
 async def send_password_reset_email_or_raise(
-    email_sender: EmailSender,
+    email_sender: IEmailSender,
     *,
     email: str,
     full_name: Optional[str],
@@ -90,10 +95,75 @@ async def send_password_reset_email_or_raise(
         )
 
 
+async def send_admin_activation_notice_safely(
+    email_sender: IEmailSender,
+    *,
+    admin_email: str,
+    user_email: str,
+    user_name: Optional[str],
+    user_id: int,
+    credits_assigned: int,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> bool:
+    """
+    Envía notificación al admin cuando un usuario activa su cuenta.
+    
+    Best-effort: no lanza excepción, solo retorna False si falla.
+    Loggea warning con contexto si falla.
+    
+    Args:
+        email_sender: Implementación de IEmailSender
+        admin_email: Email del admin destino (normalmente desde settings)
+        user_email: Email del usuario que activó
+        user_name: Nombre del usuario
+        user_id: ID del usuario
+        credits_assigned: Créditos asignados
+        ip_address: IP del usuario (opcional)
+        user_agent: User agent del navegador (opcional)
+    
+    Returns:
+        True si el email se envió correctamente, False en caso contrario.
+    """
+    try:
+        activation_datetime = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        
+        await email_sender.send_admin_activation_notice(
+            to_email=admin_email,
+            user_email=user_email,
+            user_name=user_name or "No especificado",
+            user_id=str(user_id),
+            credits_assigned=credits_assigned,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            activation_datetime_utc=activation_datetime,
+        )
+        
+        logger.info(
+            "admin_activation_email_sent to=%s user=%s user_id=%s credits=%d",
+            admin_email,
+            user_email[:3] + "***" if user_email else "unknown",
+            user_id,
+            credits_assigned,
+        )
+        return True
+        
+    except Exception as e:
+        logger.warning(
+            "admin_activation_email_failed to=%s user=%s user_id=%s error=%s",
+            admin_email,
+            user_email[:3] + "***" if user_email else "unknown",
+            user_id,
+            str(e)[:200],
+        )
+        return False
+
+
 __all__ = [
     "send_activation_email_or_raise",
     "send_welcome_email_safely",
     "send_password_reset_email_or_raise",
+    "send_admin_activation_notice_safely",
 ]
 
 # Fin del script backend/app/modules/auth/utils/email_helpers.py
