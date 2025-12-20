@@ -301,66 +301,140 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
+# ═══════════════════════════════════════════════════════════════════════════════
 # CORS - Configuración robusta para preflight OPTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 # REGLAS:
 # 1. En PRODUCTION: CORS_ORIGINS DEBE venir de env var; si falta → CORS cerrado
 # 2. En DEVELOPMENT: fallback permisivo a localhost
-# 3. "*" con allow_credentials=True es inválido → se filtra
+# 3. "*" con allow_credentials=True es inválido → se fuerza credentials=False
 # ═══════════════════════════════════════════════════════════════════════════════
-settings = get_settings()
-_is_production = _ENVIRONMENT == "production"
 
-# Obtener origins de configuración
-if hasattr(settings, "get_cors_origins"):
-    origins_list = settings.get_cors_origins()
-else:
-    origins_raw = getattr(settings, "allowed_origins", "")
-    origins_list = [o.strip() for o in origins_raw.split(",") if o.strip()]
-
-# Sanitizar: "*" con credentials=True es inválido en navegadores
-# Filtrar "*" y mantener solo origins explícitos
-if "*" in origins_list:
-    origins_list = [o for o in origins_list if o != "*"]
-    if not origins_list:
-        # Solo tenía "*", ahora está vacío
-        pass  # Se manejará abajo
-
-# Determinar origins finales según ambiente
-if not origins_list:
-    if _is_production:
-        # PRODUCCIÓN SIN CORS_ORIGINS = ERROR CRÍTICO
-        logger.error(
-            "❌ CORS_ORIGINS missing in production; CORS disabled. "
-            "Configure CORS_ORIGINS env var with explicit origins."
-        )
-        origins_list = []  # CORS cerrado - ningún origen permitido
+def _configure_cors(app_instance: FastAPI) -> dict:
+    """
+    Configura CORS middleware de forma verificable.
+    
+    Returns:
+        dict con la configuración aplicada para logging.
+    """
+    settings = get_settings()
+    
+    # Detectar ambiente
+    env_name = _ENVIRONMENT
+    python_env = os.getenv("PYTHON_ENV", "NOT_SET")
+    is_production = env_name == "production" or python_env == "production"
+    
+    # Leer CORS_ORIGINS raw desde env
+    cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+    settings_origins = getattr(settings, "allowed_origins", "")
+    
+    # Usar CORS_ORIGINS env var primero, luego settings
+    origins_raw = cors_origins_raw or settings_origins
+    
+    # Parsear origins
+    if hasattr(settings, "get_cors_origins") and cors_origins_raw:
+        # Si hay env var, parsear manualmente para evitar cache de settings
+        origins_list = [o.strip().strip('"').strip("'") for o in origins_raw.split(",") if o.strip()]
+    elif hasattr(settings, "get_cors_origins"):
+        origins_list = settings.get_cors_origins()
     else:
-        # DESARROLLO: fallback permisivo a localhost
-        logger.warning(
-            "⚠️ CORS_ORIGINS no configurado en desarrollo. "
-            "Usando fallback: localhost:5173, localhost:3000, localhost:8080"
-        )
-        origins_list = [
-            "http://localhost:5173",
-            "http://localhost:3000",
-            "http://localhost:8080",
-        ]
+        origins_list = [o.strip() for o in origins_raw.split(",") if o.strip()]
+    
+    # Configuración por defecto
+    allow_credentials = True
+    allow_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    allow_headers = ["*"]
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CASO ESPECIAL: "*" con allow_credentials=True es inválido en navegadores
+    # ═══════════════════════════════════════════════════════════════════════════
+    if "*" in origins_list:
+        if len(origins_list) == 1:
+            # Solo "*" → forzar credentials=False para que funcione
+            logger.warning(
+                "⚠️ CORS: origins='*' con allow_credentials=True es inválido. "
+                "Forzando allow_credentials=False para permitir cualquier origen."
+            )
+            allow_credentials = False
+            # Mantener "*" ya que credentials será False
+        else:
+            # Mezcla de "*" con otros origins → filtrar "*"
+            logger.warning(
+                "⚠️ CORS: Filtrando '*' de origins porque hay otros origins explícitos."
+            )
+            origins_list = [o for o in origins_list if o != "*"]
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CASO: origins vacío
+    # ═══════════════════════════════════════════════════════════════════════════
+    if not origins_list:
+        if is_production:
+            logger.error(
+                "❌ CORS DISABLED: No origins configured in production! "
+                "Set CORS_ORIGINS env var (e.g., CORS_ORIGINS=https://app.doxai.site). "
+                "All cross-origin requests will be BLOCKED."
+            )
+            # Fail-closed: lista vacía = ningún origen permitido
+        else:
+            logger.warning(
+                "⚠️ CORS: No origins configured in development. "
+                "Using localhost fallback."
+            )
+            origins_list = [
+                "http://localhost:5173",
+                "http://localhost:3000", 
+                "http://localhost:8080",
+            ]
+    
+    # Configuración final
+    cors_config = {
+        "allow_origins": origins_list,
+        "allow_credentials": allow_credentials,
+        "allow_methods": allow_methods,
+        "allow_headers": allow_headers,
+        "expose_headers": ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+        "max_age": 600,
+    }
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LOGGING COMPLETO DE CONFIGURACIÓN CORS
+    # ═══════════════════════════════════════════════════════════════════════════
+    logger.info("=" * 70)
+    logger.info("🌐 CORS CONFIGURATION STARTUP")
+    logger.info("=" * 70)
+    logger.info(f"  ENVIRONMENT:          {env_name}")
+    logger.info(f"  PYTHON_ENV:           {python_env}")
+    logger.info(f"  is_production:        {is_production}")
+    logger.info(f"  CORS_ORIGINS (raw):   '{cors_origins_raw}' (env var)")
+    logger.info(f"  settings.allowed_origins: '{settings_origins}'")
+    logger.info(f"  origins_parsed:       {origins_list}")
+    logger.info(f"  allow_credentials:    {allow_credentials}")
+    logger.info(f"  allow_methods:        {allow_methods}")
+    logger.info(f"  allow_headers:        {allow_headers}")
+    logger.info(f"  CORS ACTIVE:          {bool(origins_list)}")
+    logger.info("=" * 70)
+    
+    if not origins_list:
+        logger.error("🚫 CORS IS DISABLED - No origins will be allowed!")
+    else:
+        logger.info(f"✅ CORS ENABLED for {len(origins_list)} origin(s)")
+    
+    # Agregar middleware
+    app_instance.add_middleware(
+        CORSMiddleware,
+        **cors_config,
+    )
+    
+    return cors_config
 
-logger.info(f"🌐 CORS origins configurados ({_ENVIRONMENT}): {origins_list}")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins_list,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
-    max_age=600,  # Cache preflight por 10 minutos
-)
-
-# Observabilidad Prometheus (/metrics)
+# Observabilidad Prometheus (/metrics) - DEBE agregarse ANTES de CORS
+# para que CORS se ejecute PRIMERO (orden inverso en Starlette)
 setup_observability(app)
+
+# CORS middleware - SE AGREGA AL FINAL para que se ejecute PRIMERO
+# En Starlette, los middlewares se ejecutan en orden INVERSO al de registro.
+_cors_config = _configure_cors(app)
 
 # Exception handler for rate limiting (consistent 429 response)
 from app.shared.security.rate_limit_dep import RateLimitExceeded, rate_limit_response
