@@ -28,7 +28,7 @@ from app.modules.auth.services.user_service import UserService
 from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.shared.integrations.email_sender import EmailSender
-from app.shared.utils.security import hash_password
+from app.shared.utils.security import hash_password, PasswordTooLongError, MAX_PASSWORD_LENGTH
 
 
 class PasswordResetFlowService:
@@ -102,7 +102,14 @@ class PasswordResetFlowService:
             )
 
         # Hasheamos la nueva contraseña y delegamos a PasswordResetService
-        new_password_hash = hash_password(new_password)
+        try:
+            new_password_hash = hash_password(new_password)
+        except PasswordTooLongError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"La contraseña es demasiado larga (máximo {MAX_PASSWORD_LENGTH} caracteres).",
+            )
+
         result = await self.reset_service.confirm_password_reset(
             token=token,
             new_password_hash=new_password_hash,

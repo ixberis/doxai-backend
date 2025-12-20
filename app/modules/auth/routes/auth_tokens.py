@@ -12,7 +12,8 @@ Fecha: 20/11/2025
 Updated: 18/12/2025 - Added rate limiting
 """
 
-from __future__ import annotations
+# Note: NOT using 'from __future__ import annotations' to ensure FastAPI
+# can properly resolve Request type annotation for dependency injection
 
 from fastapi import APIRouter, Depends, status, HTTPException, Request
 

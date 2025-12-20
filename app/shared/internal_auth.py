@@ -80,7 +80,9 @@ async def require_internal_service_token(
         )
     
     provided_token = parts[1]
-    expected_token = settings.internal_service_token.get_secret_value()
+    # Soportar tanto SecretStr como str para compatibilidad con tests
+    token_value = settings.internal_service_token
+    expected_token = token_value.get_secret_value() if hasattr(token_value, 'get_secret_value') else str(token_value)
     
     # Comparación timing-safe para prevenir timing attacks
     if not secrets.compare_digest(provided_token, expected_token):

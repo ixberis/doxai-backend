@@ -18,7 +18,6 @@ from typing import Any, Dict, Optional, Union
 
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt  # pip install "python-jose[cryptography]"
-from passlib.context import CryptContext  # pip install "passlib[bcrypt]"
 
 # -----------------------------------------------------------------------------
 # Configuración (intenta leer de settings; si no, usa variables de entorno)
@@ -49,17 +48,16 @@ SECRET_KEY, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES = _load_config()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 # -----------------------------------------------------------------------------
-# Hash de contraseñas
+# Hash de contraseñas (delegado a shared/utils/security.py - fuente única)
 # -----------------------------------------------------------------------------
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from app.shared.utils.security import (
+    hash_password as _shared_hash,
+    verify_password as _shared_verify,
+)
 
-
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def verify_password(plain_password: str, password_hash: str) -> bool:
-    return pwd_context.verify(plain_password, password_hash)
+# Re-export para compatibilidad con código existente que importa desde aquí
+get_password_hash = _shared_hash
+verify_password = _shared_verify
 
 
 # -----------------------------------------------------------------------------

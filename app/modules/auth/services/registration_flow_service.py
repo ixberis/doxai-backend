@@ -40,10 +40,8 @@ from app.modules.auth.services.token_issuer_service import TokenIssuerService
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import send_activation_email_or_raise
 from app.shared.integrations.email_sender import EmailSender
-from app.shared.utils.security import hash_password
-from app.shared.utils.http_exceptions import BadRequestException, ConflictException
-from app.shared.integrations.email_sender import EmailSender
-from app.shared.utils.security import hash_password
+from app.shared.utils.security import hash_password, PasswordTooLongError, MAX_PASSWORD_LENGTH
+from app.shared.utils.http_exceptions import BadRequestException, ConflictException, UnprocessableEntityException
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +166,19 @@ class RegistrationFlowService:
         # ------------------------------------------------------------------
         # 2) Usuario nuevo
         # ------------------------------------------------------------------
-        password_hash = hash_password(password)
+        try:
+            password_hash = hash_password(password)
+        except PasswordTooLongError:
+            self.audit_service.log_register_failed(
+                email=email,
+                ip_address=ip_address,
+                error_message="password_too_long",
+                user_agent=user_agent,
+            )
+            raise UnprocessableEntityException(
+                detail=f"La contraseña es demasiado larga (máximo {MAX_PASSWORD_LENGTH} caracteres)."
+            )
+
         user = AppUser(
             user_email=email,
             user_full_name=full_name or "",

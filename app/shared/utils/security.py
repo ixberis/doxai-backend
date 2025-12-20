@@ -5,12 +5,13 @@ backend/app/shared/utils/security.py
 Utilidades de seguridad consolidadas para DoxAI.
 
 Incluye:
-- Hasheo y verificación de contraseñas (bcrypt via passlib)
+- Hasheo y verificación de contraseñas (Argon2id via passlib)
 - Generación y validación de tokens JWT
 - Helpers para tokens de activación y reset
 
 Autor: DoxAI
 Fecha: 2025-10-18 (Consolidación desde utils/security.py + utils/jwt_utils.py)
+Actualizado: 2025-12-20 - Migración de bcrypt a Argon2id
 """
 
 from datetime import datetime, timedelta, timezone
@@ -25,17 +26,49 @@ from app.shared.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ===== PASSWORD HASHING =====
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# ===== PASSWORD HASHING (Argon2id) =====
+# Argon2id: resistente a ataques GPU/ASIC, sin límite de 72 bytes
+# Límite máximo para prevenir DoS con payloads gigantes
+MAX_PASSWORD_LENGTH = 1024
+
+pwd_context = CryptContext(
+    schemes=["argon2"],
+    deprecated="auto",
+    argon2__type="ID",
+    argon2__memory_cost=65536,  # 64 MB
+    argon2__time_cost=3,
+    argon2__parallelism=2,
+)
+
+
+class PasswordTooLongError(ValueError):
+    """Contraseña excede el límite máximo permitido."""
+    pass
 
 
 def hash_password(password: str) -> str:
-    """Genera un hash seguro de la contraseña usando bcrypt."""
+    """
+    Genera un hash seguro de la contraseña usando Argon2id.
+    
+    Raises:
+        PasswordTooLongError: Si la contraseña excede MAX_PASSWORD_LENGTH
+    """
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise PasswordTooLongError(
+            f"La contraseña no puede exceder {MAX_PASSWORD_LENGTH} caracteres"
+        )
     return pwd_context.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifica que la contraseña coincida con el hash almacenado."""
+    """
+    Verifica que la contraseña coincida con el hash almacenado.
+    
+    Returns:
+        False si la contraseña es demasiado larga (anti-timing attack)
+    """
+    if len(plain_password) > MAX_PASSWORD_LENGTH:
+        return False  # Fail silently para evitar timing attacks
     return pwd_context.verify(plain_password, hashed_password)
 
 
@@ -163,4 +196,6 @@ __all__ = [
     "create_activation_token",
     "decode_token",
     "verify_token_type",
+    "MAX_PASSWORD_LENGTH",
+    "PasswordTooLongError",
 ]

@@ -8,7 +8,8 @@ Provides configurable rate limiting per endpoint.
 Author: DoxAI
 Updated: 2025-12-18
 """
-from __future__ import annotations
+# Note: NOT using 'from __future__ import annotations' to ensure FastAPI
+# can properly resolve Request type annotation for dependency injection
 
 import logging
 from typing import Optional, Callable
