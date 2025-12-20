@@ -92,7 +92,14 @@ class AuthService:
         """
         payload = as_dict(data)
         recaptcha_token = payload.get("recaptcha_token")
-        await verify_recaptcha_or_raise(recaptcha_token, self.recaptcha_verifier)
+        ip_address = payload.get("ip_address", "unknown")
+        
+        await verify_recaptcha_or_raise(
+            recaptcha_token,
+            self.recaptcha_verifier,
+            action="register",
+            ip_address=ip_address,
+        )
         return await self._registration_flow.register_user(payload)
 
     async def register(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
@@ -115,7 +122,23 @@ class AuthService:
     # Restablecimiento de contraseña
     # ------------------------------------------------------------------ #
     async def start_password_reset(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
-        return await self._password_reset_flow.start_password_reset(data)
+        """
+        Inicia el flujo de restablecimiento de contraseña.
+        Verifica reCAPTCHA (si está habilitado) ANTES de ejecutar el flujo.
+        """
+        payload = as_dict(data)
+        recaptcha_token = payload.get("recaptcha_token")
+        ip_address = payload.get("ip_address", "unknown")
+        
+        # Validar CAPTCHA antes de procesar (anti-abuso)
+        await verify_recaptcha_or_raise(
+            recaptcha_token,
+            self.recaptcha_verifier,
+            action="password_forgot",
+            ip_address=ip_address,
+        )
+        
+        return await self._password_reset_flow.start_password_reset(payload)
 
     async def start_reset(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         return await self.start_password_reset(data)

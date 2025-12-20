@@ -126,9 +126,19 @@ async def forgot_password(
       - 3 requests por email cada 60 min (checked in service layer)
 
     No revela si el email existe o no en el sistema por motivos de seguridad.
+    
+    SEGURIDAD ANTI-SPOOFING:
+    ip_address y user_agent se inyectan desde request headers (no del body).
+    El orden de merge garantiza que meta SIEMPRE sobrescribe cualquier valor del body.
     """
-    meta = get_request_meta(request)
+    # 1. Convertir payload a dict (Pydantic filtra campos no definidos en schema)
     data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    
+    # 2. Obtener meta de request headers (ip_address, user_agent)
+    meta = get_request_meta(request)
+    
+    # 3. ANTI-SPOOFING: meta.update() al final garantiza que ip_address/user_agent
+    #    se obtienen del request real, no del body
     data.update(meta)
     
     # Additional rate limit by email (within service layer for security)
@@ -148,17 +158,32 @@ async def forgot_password(
     "/password/reset",
     response_model=MessageResponse,
     summary="Confirmar restablecimiento de contraseña",
-    dependencies=[Depends(RateLimitDep(endpoint="auth:activation", key_type="ip"))],
+    dependencies=[Depends(RateLimitDep(endpoint="auth:reset", key_type="ip"))],
 )
 async def reset_password(
     payload: PasswordResetConfirmRequest,
+    request: Request,
     facade: AuthFacade = Depends(get_auth_facade),
 ):
     """
     Confirma el restablecimiento de contraseña usando un token válido y una nueva contraseña.
     Rate limited: 5 requests / 10 min por IP.
+    
+    SEGURIDAD ANTI-SPOOFING:
+    ip_address y user_agent se inyectan desde request headers (no del body).
+    El orden de merge garantiza que meta SIEMPRE sobrescribe cualquier valor del body.
     """
-    return await facade.reset_password(payload)
+    # 1. Obtener meta de request headers (ip_address, user_agent)
+    meta = get_request_meta(request)
+    
+    # 2. Convertir payload a dict
+    data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    
+    # 3. ANTI-SPOOFING: meta.update() al final garantiza que ip_address/user_agent
+    #    del body se sobrescriben con los valores reales del request
+    data.update(meta)
+    
+    return await facade.reset_password(data)
 
 
 # Fin del script backend/app/modules/auth/routes/auth_public.py

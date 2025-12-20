@@ -15,11 +15,12 @@ Refactor Fase 3:
   específico send_password_reset_email() (compatible con StubEmailSender).
 
 Autor: Ixchel Beristain
-Actualizado: 2025-11-19
+Actualizado: 2025-12-20
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
@@ -29,6 +30,15 @@ from app.modules.auth.repositories import PasswordResetRepository
 from app.modules.auth.services.user_service import UserService
 from app.shared.integrations.email_sender import EmailSender
 from app.shared.config.config_loader import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def _mask_email(email: str) -> str:
+    """Enmascara email para logging seguro (primeros 3 chars + ***)."""
+    if not email or len(email) < 4:
+        return "***"
+    return email[:3] + "***"
 
 
 class PasswordResetService:
@@ -98,18 +108,28 @@ class PasswordResetService:
 
     # --------------------- confirmación de reset ---------------------
 
-    async def confirm_password_reset(self, token: str, new_password_hash: str) -> Dict[str, Any]:
+    async def confirm_password_reset(
+        self,
+        token: str,
+        new_password_hash: str,
+        *,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Confirma el restablecimiento usando un token válido.
 
         Args:
             token: Token de reset proveído por el usuario.
             new_password_hash: Contraseña ya hasheada.
+            ip_address: IP desde donde se hizo el reset (opcional).
+            user_agent: User agent del navegador (opcional).
 
         Returns:
             Dict con:
                 - code: "PASSWORD_RESET_OK" o "TOKEN_INVALID"
                 - message: texto explicativo
+                - user_id: ID del usuario (solo si exitoso)
         """
         now = datetime.now(timezone.utc)
         reset = await self.reset_repo.get_by_token(token, only_valid=True, now=now)
@@ -133,9 +153,31 @@ class PasswordResetService:
         await self.user_service.save(user)
         await self.reset_repo.mark_as_used(reset)
 
+        user_id = str(user.user_id)
+        user_email = user.user_email or ""
+        user_name = getattr(user, "user_full_name", None) or getattr(user, "full_name", "") or ""
+
+        # Log de éxito
+        logger.info(
+            "password_reset_success user_id=%s email=%s ip=%s",
+            user_id,
+            _mask_email(user_email),
+            ip_address or "unknown",
+        )
+
+        # Enviar email de notificación (best-effort, no debe fallar el reset)
+        await self._send_reset_success_email_safely(
+            user_email=user_email,
+            user_id=user_id,
+            full_name=user_name,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
         return {
             "code": "PASSWORD_RESET_OK",
             "message": "La contraseña se actualizó correctamente.",
+            "user_id": user_id,
         }
 
     # --------------------- helpers internos ---------------------
@@ -166,6 +208,49 @@ class PasswordResetService:
             full_name="",
             reset_token=token,
         )
+
+    async def _send_reset_success_email_safely(
+        self,
+        *,
+        user_email: str,
+        user_id: str,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> None:
+        """
+        Envía email de notificación de reset exitoso (best-effort).
+        No lanza excepciones; loguea warning en caso de fallo.
+        """
+        if not user_email:
+            logger.warning(
+                "password_reset_success_email_skipped user_id=%s reason=no_email",
+                user_id,
+            )
+            return
+
+        reset_datetime = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            await self.email_sender.send_password_reset_success_email(
+                to_email=user_email,
+                full_name=full_name,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                reset_datetime_utc=reset_datetime,
+            )
+            logger.info(
+                "password_reset_success_email_sent to=%s user_id=%s",
+                _mask_email(user_email),
+                user_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "password_reset_success_email_failed to=%s user_id=%s error=%s",
+                _mask_email(user_email),
+                user_id,
+                str(e)[:200],
+            )
 
 
 __all__ = ["PasswordResetService"]

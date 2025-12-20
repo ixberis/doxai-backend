@@ -51,12 +51,17 @@ class PasswordResetFlowService:
 
         data esperado:
             - email
-            - ip_address (opcional)
-            - user_agent (opcional)
+            - ip_address (inyectado desde request meta, NO del body)
+            - user_agent (inyectado desde request meta, NO del body)
             - recaptcha_token (validado previamente por AuthService)
+        
+        IMPORTANTE: ip_address y user_agent SOLO deben provenir de get_request_meta(request)
+        en el endpoint. No se confía en valores enviados desde el cliente.
         """
         payload = as_dict(data)
         email = (payload.get("email") or "").strip().lower()
+        
+        # SEGURIDAD: ip_address y user_agent SOLO provienen de request meta
         ip = payload.get("ip_address") or "unknown"
         ua = payload.get("user_agent") or ""
 
@@ -90,10 +95,20 @@ class PasswordResetFlowService:
         data esperado:
             - token
             - new_password
+            - ip_address (inyectado desde request meta, NO del body)
+            - user_agent (inyectado desde request meta, NO del body)
+        
+        IMPORTANTE: ip_address y user_agent SOLO deben provenir de get_request_meta(request)
+        en el endpoint. No se confía en valores enviados desde el cliente.
         """
         payload = as_dict(data)
         token = payload.get("token")
         new_password = payload.get("new_password")
+        
+        # SEGURIDAD: ip_address y user_agent SOLO provienen de request meta (inyectado en endpoint)
+        # Estos valores son confiables porque get_request_meta() los extrae del request real
+        ip_address = payload.get("ip_address") or "unknown"
+        user_agent = payload.get("user_agent") or ""
 
         if not token or not new_password:
             raise HTTPException(
@@ -113,6 +128,8 @@ class PasswordResetFlowService:
         result = await self.reset_service.confirm_password_reset(
             token=token,
             new_password_hash=new_password_hash,
+            ip_address=ip_address,
+            user_agent=user_agent,
         )
 
         if result.get("code") == "TOKEN_INVALID":

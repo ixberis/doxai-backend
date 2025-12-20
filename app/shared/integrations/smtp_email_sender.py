@@ -492,5 +492,88 @@ class SMTPEmailSender:
             text,
         )
 
+    def _build_password_reset_success_body(
+        self,
+        *,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        reset_datetime_utc: Optional[str] = None,
+    ) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de notificación de reset exitoso."""
+        from datetime import datetime, timezone
+
+        if not reset_datetime_utc:
+            reset_datetime_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        login_url = f"{self.frontend_url}/auth/login" if self.frontend_url else ""
+
+        context = {
+            "user_name": full_name or "Usuario",
+            "reset_datetime": reset_datetime_utc,
+            "ip_address": ip_address or "No disponible",
+            "user_agent": user_agent or "No disponible",
+            "login_url": login_url,
+            "frontend_url": self.frontend_url or "",
+        }
+
+        html, text, used_template = render_email("password_reset_success_email", context)
+
+        if not text:
+            text = (
+                f"CONTRASEÑA RESTABLECIDA - DoxAI\n"
+                f"================================\n\n"
+                f"Hola {full_name or 'Usuario'},\n\n"
+                f"Su contraseña ha sido restablecida exitosamente.\n\n"
+                f"Fecha/Hora: {reset_datetime_utc} UTC\n"
+                f"IP: {ip_address or 'No disponible'}\n\n"
+                f"Si usted no realizó este cambio, contacte soporte: doxai@juvare.mx\n"
+            )
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    async def send_password_reset_success_email(
+        self,
+        to_email: str,
+        *,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        reset_datetime_utc: Optional[str] = None,
+    ) -> None:
+        """
+        Envía notificación al usuario cuando su contraseña fue restablecida.
+        
+        Args:
+            to_email: Email del usuario
+            full_name: Nombre del usuario
+            ip_address: IP desde donde se hizo el reset (opcional)
+            user_agent: User agent del navegador (opcional)
+            reset_datetime_utc: Fecha/hora del reset (opcional, default=now)
+        """
+        html, text, used_template = self._build_password_reset_success_body(
+            full_name=full_name,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            reset_datetime_utc=reset_datetime_utc,
+        )
+
+        logger.info(
+            "[SMTP] password_reset_success: to=%s template=%s",
+            to_email[:3] + "***" if to_email else "unknown",
+            "loaded" if used_template else "fallback",
+        )
+
+        await asyncio.to_thread(
+            self._send_sync,
+            to_email,
+            "Su contraseña fue restablecida - DoxAI",
+            html,
+            text,
+        )
+
 
 # Fin del archivo backend/app/shared/integrations/smtp_email_sender.py

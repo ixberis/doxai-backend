@@ -40,6 +40,15 @@ class IEmailSender(Protocol):
         user_agent: Optional[str] = None,
         activation_datetime_utc: Optional[str] = None,
     ) -> None: ...
+    async def send_password_reset_success_email(
+        self,
+        to_email: str,
+        *,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        reset_datetime_utc: Optional[str] = None,
+    ) -> None: ...
 
 
 class StubEmailSender:
@@ -79,6 +88,25 @@ class StubEmailSender:
             f"  Credits: {credits_assigned}\n"
             f"  IP: {ip_address or 'N/A'}\n"
             f"  DateTime: {activation_datetime_utc or 'N/A'}"
+        )
+
+    async def send_password_reset_success_email(
+        self,
+        to_email: str,
+        *,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        reset_datetime_utc: Optional[str] = None,
+    ) -> None:
+        logger.info(
+            f"[CONSOLE EMAIL] Password reset success → {to_email} | user={full_name}"
+        )
+        print(
+            f"[STUB EMAIL] Password reset success → {to_email}\n"
+            f"  User: {full_name}\n"
+            f"  IP: {ip_address or 'N/A'}\n"
+            f"  DateTime: {reset_datetime_utc or 'N/A'}"
         )
 
 
