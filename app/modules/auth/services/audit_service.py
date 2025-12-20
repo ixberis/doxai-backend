@@ -256,12 +256,14 @@ class AuditService:
         cls,
         email: str,
         ip_address: str,
+        user_agent: str | None = None,
     ) -> None:
         """Registra solicitud de reset de contraseña"""
         cls.log_event(
             AuditEventType.PASSWORD_RESET_REQUEST,
             email=email,
             ip_address=ip_address,
+            user_agent=user_agent,
             success=True,
         )
     

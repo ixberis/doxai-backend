@@ -79,6 +79,7 @@ class PasswordResetFlowService:
         AuditService.log_password_reset_request(
             email=email,
             ip_address=ip,
+            user_agent=ua,
         )
 
         return {
