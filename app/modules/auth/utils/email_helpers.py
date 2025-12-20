@@ -70,6 +70,65 @@ async def send_welcome_email_safely(
         return
 
 
+async def send_activation_email_safely(
+    email_sender: IEmailSender,
+    *,
+    email: str,
+    full_name: Optional[str],
+    token: str,
+    user_id: Optional[int] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> bool:
+    """
+    Envía correo de activación (reenvío) de forma best-effort.
+    
+    No lanza excepción hacia arriba. Loggea el resultado.
+    
+    Logs:
+        - activation_resend_email_sent to=... user_id=...
+        - activation_resend_email_failed to=... user_id=... error=...
+    
+    Args:
+        email_sender: Implementación de IEmailSender
+        email: Email destino
+        full_name: Nombre del usuario
+        token: Token de activación
+        user_id: ID del usuario (para logs)
+        ip_address: IP del usuario (para logs)
+        user_agent: User agent (para logs)
+    
+    Returns:
+        True si el email se envió correctamente, False en caso contrario.
+    """
+    email_masked = email[:3] + "***" if email else "unknown"
+    
+    try:
+        await email_sender.send_activation_email(
+            to_email=email,
+            full_name=full_name or "",
+            activation_token=token,
+        )
+        
+        logger.info(
+            "activation_resend_email_sent to=%s user_id=%s ip=%s",
+            email_masked,
+            user_id,
+            ip_address or "unknown",
+        )
+        return True
+        
+    except Exception as e:
+        logger.warning(
+            "activation_resend_email_failed to=%s user_id=%s ip=%s error=%s",
+            email_masked,
+            user_id,
+            ip_address or "unknown",
+            str(e)[:200],
+        )
+        return False
+
+
 async def send_password_reset_email_or_raise(
     email_sender: IEmailSender,
     *,
@@ -161,6 +220,7 @@ async def send_admin_activation_notice_safely(
 
 __all__ = [
     "send_activation_email_or_raise",
+    "send_activation_email_safely",
     "send_welcome_email_safely",
     "send_password_reset_email_or_raise",
     "send_admin_activation_notice_safely",

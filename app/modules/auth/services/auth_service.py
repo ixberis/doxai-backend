@@ -116,7 +116,23 @@ class AuthService:
         return await self.activate_account(data)
 
     async def resend_activation_email(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
-        return await self._activation_flow.resend_activation(data)
+        """
+        Reenvía correo de activación.
+        Verifica reCAPTCHA (si está habilitado) ANTES de ejecutar el flujo.
+        """
+        payload = as_dict(data)
+        recaptcha_token = payload.get("recaptcha_token")
+        ip_address = payload.get("ip_address", "unknown")
+        
+        # Validar CAPTCHA antes de procesar (anti-abuso)
+        await verify_recaptcha_or_raise(
+            recaptcha_token,
+            self.recaptcha_verifier,
+            action="activation_resend",
+            ip_address=ip_address,
+        )
+        
+        return await self._activation_flow.resend_activation(payload)
 
     # ------------------------------------------------------------------ #
     # Restablecimiento de contraseña

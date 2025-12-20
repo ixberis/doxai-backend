@@ -60,6 +60,14 @@ class RateLimitDep:
             _: None = Depends(RateLimitDep(endpoint="auth:register", key_type="ip"))
         ):
             ...
+        
+        # For email-based rate limiting (extracts from JSON body):
+        @router.post("/activation/resend")
+        async def resend(
+            request: Request,
+            _: None = Depends(RateLimitDep(endpoint="auth:resend", key_type="email"))
+        ):
+            ...
     """
     
     def __init__(
@@ -69,6 +77,7 @@ class RateLimitDep:
         limit: Optional[int] = None,
         window_sec: Optional[int] = None,
         identifier_extractor: Optional[Callable[[Request], str]] = None,
+        body_field: Optional[str] = None,
     ):
         """
         Initialize rate limit dependency.
@@ -79,25 +88,33 @@ class RateLimitDep:
             limit: Max requests in window (uses service default if None)
             window_sec: Window duration in seconds (uses service default if None)
             identifier_extractor: Optional function to extract identifier from request
+            body_field: Field name to extract from JSON body (e.g., "email")
+                       If key_type="email" and no extractor provided, defaults to "email"
         """
         self.endpoint = endpoint
         self.key_type = key_type
         self.limit = limit
         self.window_sec = window_sec
         self.identifier_extractor = identifier_extractor
+        self.body_field = body_field
     
     async def __call__(self, request: Request) -> RateLimitResult:
         """Execute rate limit check."""
         limiter = get_rate_limiter()
         
         # Extract identifier
-        if self.identifier_extractor:
-            identifier = self.identifier_extractor(request)
-        elif self.key_type == "ip":
-            identifier = get_client_ip(request)
-        else:
-            # For email, caller must provide extractor or handle separately
-            identifier = "unknown"
+        identifier = await self._extract_identifier(request)
+        
+        # Skip rate limiting if we couldn't extract identifier for email
+        if identifier == "unknown" and self.key_type == "email":
+            # Can't rate limit by email if we don't have one
+            # Return a dummy result that allows the request
+            return RateLimitResult(
+                allowed=True,
+                current_count=0,
+                limit=self.limit or 0,
+                retry_after=0,
+            )
         
         result = limiter.check_and_consume(
             endpoint=self.endpoint,
@@ -119,6 +136,39 @@ class RateLimitDep:
             )
         
         return result
+    
+    async def _extract_identifier(self, request: Request) -> str:
+        """Extract identifier from request based on key_type."""
+        if self.identifier_extractor:
+            # Support both sync and async extractors
+            import inspect
+            result = self.identifier_extractor(request)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        
+        if self.key_type == "ip":
+            return get_client_ip(request)
+        
+        if self.key_type == "email":
+            # Extract email from JSON body using Starlette's caching
+            field = self.body_field or "email"
+            try:
+                body = await request.json()
+                email = (body.get(field) or "").strip().lower()
+                if email:
+                    return email
+                logger.debug(
+                    f"Rate limit email extraction: field '{field}' empty or missing"
+                )
+                return "unknown"
+            except Exception as e:
+                logger.debug(
+                    f"Rate limit email extraction failed: {type(e).__name__}"
+                )
+                return "unknown"
+        
+        return "unknown"
 
 
 def check_rate_limit(

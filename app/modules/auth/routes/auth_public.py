@@ -32,7 +32,7 @@ from app.modules.auth.schemas import (
     MessageResponse,
 )
 from app.shared.http_utils.request_meta import get_request_meta
-from app.shared.security.rate_limit_dep import RateLimitDep, check_rate_limit
+from app.shared.security.rate_limit_dep import RateLimitDep
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
 router = APIRouter(prefix="/auth", tags=["auth-public"])
@@ -94,24 +94,51 @@ async def activate(
     "/activation/resend",
     response_model=MessageResponse,
     summary="Reenviar correo de activación",
-    dependencies=[Depends(RateLimitDep(endpoint="auth:activation", key_type="ip"))],
+    dependencies=[
+        Depends(RateLimitDep(
+            endpoint="auth:activation_resend",
+            key_type="ip",
+            limit=3,
+            window_sec=600,
+        )),
+        Depends(RateLimitDep(
+            endpoint="auth:activation_resend",
+            key_type="email",
+            limit=2,
+            window_sec=900,
+        )),
+    ],
 )
 async def resend_activation(
     payload: ResendActivationRequest,
+    request: Request,
     facade: AuthFacade = Depends(get_auth_facade),
 ):
     """
     Reenvía el correo de activación si la cuenta aún no está activa.
-    Rate limited: 5 requests / 10 min por IP.
+    
+    Rate limited:
+      - 3 requests por IP cada 10 min
+      - 2 requests por email cada 15 min
+    
+    SEGURIDAD: Siempre responde 200 con mensaje genérico.
     """
-    return await facade.resend_activation_email(payload)
+    # Inyectar metadatos de request para auditoría
+    meta = get_request_meta(request)
+    data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    data.update(meta)
+    
+    return await facade.resend_activation_email(data)
 
 
 @router.post(
     "/password/forgot",
     response_model=MessageResponse,
     summary="Iniciar restablecimiento de contraseña",
-    dependencies=[Depends(RateLimitDep(endpoint="auth:forgot", key_type="ip"))],
+    dependencies=[
+        Depends(RateLimitDep(endpoint="auth:forgot", key_type="ip")),
+        Depends(RateLimitDep(endpoint="auth:forgot", key_type="email")),
+    ],
 )
 async def forgot_password(
     payload: PasswordResetRequest,
@@ -122,8 +149,8 @@ async def forgot_password(
     Inicia el flujo de restablecimiento de contraseña.
 
     Rate limited:
-      - 3 requests por IP cada 15 min
-      - 3 requests por email cada 60 min (checked in service layer)
+      - Por IP (default limits)
+      - Por email (default limits)
 
     No revela si el email existe o no en el sistema por motivos de seguridad.
     
@@ -140,16 +167,6 @@ async def forgot_password(
     # 3. ANTI-SPOOFING: meta.update() al final garantiza que ip_address/user_agent
     #    se obtienen del request real, no del body
     data.update(meta)
-    
-    # Additional rate limit by email (within service layer for security)
-    email = data.get("email", "").strip().lower()
-    if email:
-        check_rate_limit(
-            request=request,
-            endpoint="auth:forgot",
-            key_type="email",
-            identifier=email,
-        )
     
     return await facade.forgot_password(data)
 

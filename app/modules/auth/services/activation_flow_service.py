@@ -25,7 +25,7 @@ from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.repositories import UserRepository
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import (
-    send_activation_email_or_raise,
+    send_activation_email_safely,
     send_welcome_email_safely,
     send_admin_activation_notice_safely,
 )
@@ -43,10 +43,6 @@ logger = logging.getLogger(__name__)
 
 class ActivationFlowService:
     """Orquestador del flujo de activación y reenvío de activación."""
-
-    # Rate limiter compartido entre instancias (class-level)
-    _resend_timestamps: dict = {}
-    _RESEND_COOLDOWN_SECONDS: int = 60
 
     def __init__(
         self,
@@ -325,15 +321,24 @@ class ActivationFlowService:
     async def resend_activation(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """
         Reenvía correo de activación si el usuario existe y no está activo.
-        Incluye rate limiting básico (1 request/minuto por email).
+        Rate limiting manejado por RateLimitDep en la ruta (no en servicio).
+        
+        SEGURIDAD: Siempre responde 200 con mensaje genérico para no revelar
+        si el email existe, ya está activo, o no existe.
 
         data esperado:
             - email
+            - ip_address (opcional, para auditoría)
+            - user_agent (opcional, para auditoría)
         """
-        import time
-        
         payload = as_dict(data)
         email = (payload.get("email") or "").strip().lower()
+        ip_address = payload.get("ip_address", "unknown")
+        user_agent = payload.get("user_agent", "")
+        email_masked = email[:3] + "***" if email else "unknown"
+
+        # Mensaje genérico para TODAS las respuestas (seguridad anti-enumeración)
+        generic_message = "Si existe una cuenta con ese correo y aún no ha sido activada, recibirá un nuevo enlace de activación."
 
         if not email:
             raise HTTPException(
@@ -341,45 +346,67 @@ class ActivationFlowService:
                 detail="Email requerido.",
             )
 
-        # Rate limiting básico (in-memory)
-        now = time.time()
-        last_request = self._resend_timestamps.get(email, 0)
-        if now - last_request < self._RESEND_COOLDOWN_SECONDS:
-            logger.warning(f"Resend activation rate limited for email={email[:3]}***")
-            # Siempre responder 200 para no filtrar info
-            return {"message": "Si su cuenta existe, reenviaremos el correo de activación."}
-        
-        self._resend_timestamps[email] = now
+        # Log de request recibido
+        logger.info(
+            "activation_resend_requested email=%s ip=%s ua=%s",
+            email_masked,
+            ip_address,
+            (user_agent[:50] + "...") if user_agent and len(user_agent) > 50 else user_agent,
+        )
 
         user = await self.user_service.get_by_email(email)
         if not user:
-            # No revelamos existencia
-            logger.info(f"Resend activation: email not found (not revealing)")
-            return {"message": "Si su cuenta existe, reenviaremos el correo de activación."}
+            # No revelamos existencia - respuesta idéntica
+            logger.info(
+                "activation_resend_skipped_not_found email=%s ip=%s",
+                email_masked,
+                ip_address,
+            )
+            return {"message": generic_message}
 
         if await self.activation_service.is_active(user):
-            return {"message": "La cuenta ya se encuentra activa."}
+            # Ya activo - respuesta idéntica (no revelar estado)
+            logger.info(
+                "activation_resend_skipped_already_active user_id=%s ip=%s",
+                user.user_id,
+                ip_address,
+            )
+            return {"message": generic_message}
 
+        # Usuario existe y no está activo -> generar token y enviar email
         token = await self.activation_service.issue_activation_token(
             user_id=str(user.user_id),
         )
 
-        await send_activation_email_or_raise(
+        logger.info(
+            "activation_resend_sent user_id=%s ip=%s",
+            user.user_id,
+            ip_address,
+        )
+
+        # Envío best-effort (no falla si el email no se puede enviar)
+        email_sent = await send_activation_email_safely(
             self.email_sender,
             email=user.user_email,
             full_name=user.user_full_name,
             token=token,
+            user_id=int(user.user_id),
+            ip_address=ip_address,
+            user_agent=user_agent,
         )
 
+        # Auditoría (siempre, independiente del resultado del email)
         try:
             AuditService.log_activation_resend(
                 user_id=str(user.user_id),
                 email=user.user_email,
+                ip_address=ip_address,
+                user_agent=user_agent,
             )
         except Exception as e:
             logger.warning(f"Audit log_activation_resend failed: {e}")
 
-        return {"message": "Correo de activación reenviado. Revise su bandeja de entrada."}
+        return {"message": generic_message}
 
 
 __all__ = ["ActivationFlowService"]
