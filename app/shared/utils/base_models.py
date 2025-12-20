@@ -21,6 +21,17 @@ Actualizado: 11/07/2025 - Migración a Pydantic v2
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 class UTF8SafeModel(BaseModel):
+    """
+    Modelo base con configuración UTF-8 segura para respuestas JSON.
+    
+    Nota: El mojibake en PowerShell ocurre porque el cliente no interpreta
+    UTF-8 correctamente. FastAPI usa UTF-8 por defecto, pero algunos clientes
+    (como Invoke-WebRequest en PowerShell) requieren forzar la decodificación.
+    
+    Para PowerShell, usar:
+        [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::GetEncoding("ISO-8859-1").GetBytes($response.Content))
+    O configurar: $OutputEncoding = [System.Text.Encoding]::UTF8
+    """
     model_config = ConfigDict(
         from_attributes=True,             # reemplaza a orm_mode=True
         populate_by_name=True,            # para que funcionen los aliases

@@ -293,12 +293,22 @@ openapi_tags = [
     {"name": "Payments", "description": "Pagos, webhooks y créditos"},
 ]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# UTF-8 JSON Response Class (Opción A - más limpia)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Usar UTF8JSONResponse como default_response_class garantiza que TODAS las
+# respuestas JSON (return {...}) incluyan charset=utf-8 automáticamente.
+# Esto soluciona el mojibake sin necesidad de middleware.
+# ═══════════════════════════════════════════════════════════════════════════════
+from app.shared.utils.json_response import UTF8JSONResponse
+
 app = FastAPI(
     title="DoxAI API",
     description="API unificada para DoxAI",
     version="1.0.0",
     lifespan=lifespan,
     openapi_tags=openapi_tags,
+    default_response_class=UTF8JSONResponse,  # ← Fuerza charset=utf-8 en todas las respuestas JSON
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -432,19 +442,49 @@ def _configure_cors(app_instance: FastAPI) -> dict:
 # para que CORS se ejecute PRIMERO (orden inverso en Starlette)
 setup_observability(app)
 
+# Observabilidad Prometheus (/metrics) - DEBE agregarse ANTES de CORS
+# para que CORS se ejecute PRIMERO (orden inverso en Starlette)
+setup_observability(app)
+
 # CORS middleware - SE AGREGA AL FINAL para que se ejecute PRIMERO
 # En Starlette, los middlewares se ejecutan en orden INVERSO al de registro.
 _cors_config = _configure_cors(app)
 
-# Exception handler for rate limiting (consistent 429 response)
-from app.shared.security.rate_limit_dep import RateLimitExceeded, rate_limit_response
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXCEPTION HANDLERS CON UTF-8
+# ═══════════════════════════════════════════════════════════════════════════════
+# Los exception handlers deben usar UTF8JSONResponse explícitamente porque
+# default_response_class NO aplica a excepciones (solo a return {...}).
+# ═══════════════════════════════════════════════════════════════════════════════
 
+from fastapi import HTTPException
+from app.shared.security.rate_limit_dep import RateLimitExceeded, rate_limit_response
+from app.shared.utils.json_response import json_response_utf8
+
+
+# Exception handler for rate limiting (consistent 429 response with UTF-8)
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
-    """Ensure RateLimitExceeded always returns consistent 429 JSON response."""
+    """Ensure RateLimitExceeded always returns consistent 429 JSON response with UTF-8."""
     return rate_limit_response(
         retry_after=exc.retry_after,
         message=str(exc.detail),
+    )
+
+
+# Exception handler for HTTPException (forces UTF-8 charset on all HTTP errors)
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """
+    Custom HTTPException handler that ensures UTF-8 charset on JSON responses.
+    
+    This fixes mojibake (broken accents) in error messages like:
+    - "La cuenta aún no ha sido activada" → displays correctly instead of "aÃºn"
+    """
+    return json_response_utf8(
+        content={"detail": exc.detail},
+        status_code=exc.status_code,
+        headers=getattr(exc, "headers", None),
     )
 
 # Incluye router maestro

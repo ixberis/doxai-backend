@@ -37,7 +37,7 @@ class RateLimitExceeded(HTTPException):
 
 
 def rate_limit_response(retry_after: int, message: Optional[str] = None) -> JSONResponse:
-    """Create a standardized 429 response."""
+    """Create a standardized 429 response with explicit UTF-8 charset."""
     return JSONResponse(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         content={
@@ -46,6 +46,7 @@ def rate_limit_response(retry_after: int, message: Optional[str] = None) -> JSON
             "error_code": "rate_limit_exceeded",
         },
         headers={"Retry-After": str(retry_after)},
+        media_type="application/json; charset=utf-8",
     )
 
 

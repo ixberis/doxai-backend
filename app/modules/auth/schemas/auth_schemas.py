@@ -35,7 +35,8 @@ class RegisterRequest(UTF8SafeModel):
         pattern=r'^\+?[0-9\s\-()]{7,20}$',
         description="E.164 laxo: admite +, espacios, guiones y paréntesis (7–20 dígitos)"
     )
-    recaptcha_token: str = Field(..., min_length=1)
+    # Opcional para CLI/tests; se valida en verify_recaptcha_or_raise si RECAPTCHA_ENABLED=true
+    recaptcha_token: Optional[str] = Field(None, min_length=1)
 
     @field_validator('email')
     @classmethod
@@ -48,7 +49,8 @@ class LoginRequest(UTF8SafeModel):
     """Petición de inicio de sesión"""
     email: EmailStr
     password: str = Field(..., min_length=1)
-    recaptcha_token: str = Field(..., min_length=1)
+    # Opcional para CLI/tests; se valida si RECAPTCHA_ENABLED=true
+    recaptcha_token: Optional[str] = Field(None, min_length=1)
 
     @field_validator('email')
     @classmethod
@@ -76,7 +78,8 @@ class ResendActivationRequest(UTF8SafeModel):
 class PasswordResetRequest(UTF8SafeModel):
     """Petición de recuperación de contraseña"""
     email: EmailStr
-    recaptcha_token: str = Field(..., min_length=1)
+    # Opcional para CLI/tests; se valida si RECAPTCHA_ENABLED=true
+    recaptcha_token: Optional[str] = Field(None, min_length=1)
 
     @field_validator('email')
     @classmethod
