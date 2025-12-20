@@ -22,8 +22,15 @@ from .email_sender import (
     StubEmailSender,
     get_email_sender,
 )
+# Email senders
+from .email_sender import (
+    IEmailSender,
+    EmailSender,
+    StubEmailSender,
+    get_email_sender,
+)
 from .smtp_email_sender import SMTPEmailSender
-from .mailersend_email_sender import MailerSendEmailSender
+from .mailersend_email_sender import MailerSendEmailSender, MailerSendError
 
 __all__ = [
     # Azure
@@ -42,5 +49,6 @@ __all__ = [
     "StubEmailSender",
     "SMTPEmailSender",
     "MailerSendEmailSender",
+    "MailerSendError",
     "get_email_sender",
 ]

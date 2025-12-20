@@ -38,7 +38,6 @@ from app.modules.auth.services.activation_service import ActivationService
 from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.services.token_issuer_service import TokenIssuerService
 from app.modules.auth.utils.payload_extractors import as_dict
-from app.modules.auth.utils.email_helpers import send_activation_email_or_raise
 from app.shared.integrations.email_sender import EmailSender
 from app.shared.utils.security import hash_password, PasswordTooLongError, MAX_PASSWORD_LENGTH
 from app.shared.utils.http_exceptions import BadRequestException, ConflictException, UnprocessableEntityException
@@ -139,11 +138,14 @@ class RegistrationFlowService:
             token = await self.activation_service.issue_activation_token(
                 user_id=existing.user_id,
             )
-            await send_activation_email_or_raise(
-                self.email_sender,
+            
+            # Best-effort: intentar enviar email, pero no fallar el registro
+            email_sent = await self._send_activation_email_best_effort(
                 email=existing.user_email,
                 full_name=existing.user_full_name,
                 token=token,
+                user_id=existing.user_id,
+                ip_address=ip_address,
             )
 
             access_token = self.token_issuer.create_access_token(
@@ -157,10 +159,17 @@ class RegistrationFlowService:
                 user_agent=user_agent,
             )
 
+            # Mensaje depende de si se envió el email
+            message = (
+                "Correo de activación reenviado. Revise su bandeja de entrada."
+                if email_sent
+                else "Cuenta creada. Si no recibes el correo de activación, usa 'Reenviar activación' en inicio de sesión."
+            )
+
             return {
                 "user_id": existing.user_id,
                 "access_token": access_token,
-                "message": "Correo de activación reenviado. Revise su bandeja de entrada.",
+                "message": message,
             }
 
         # ------------------------------------------------------------------
@@ -205,11 +214,14 @@ class RegistrationFlowService:
         token = await self.activation_service.issue_activation_token(
             user_id=created.user_id,
         )
-        await send_activation_email_or_raise(
-            self.email_sender,
+        
+        # Best-effort: intentar enviar email, pero no fallar el registro
+        email_sent = await self._send_activation_email_best_effort(
             email=created.user_email,
             full_name=created.user_full_name,
             token=token,
+            user_id=created.user_id,
+            ip_address=ip_address,
         )
 
         access_token = self.token_issuer.create_access_token(
@@ -223,11 +235,67 @@ class RegistrationFlowService:
             user_agent=user_agent,
         )
 
+        # Mensaje depende de si se envió el email
+        message = (
+            "Usuario registrado. Revise su correo para activar la cuenta."
+            if email_sent
+            else "Cuenta creada. Si no recibes el correo de activación, usa 'Reenviar activación' en inicio de sesión."
+        )
+
         return {
             "user_id": created.user_id,
             "access_token": access_token,
-            "message": "Usuario registrado. Revise su correo para activar la cuenta.",
+            "message": message,
         }
+
+
+    async def _send_activation_email_best_effort(
+        self,
+        *,
+        email: str,
+        full_name: str,
+        token: str,
+        user_id: int,
+        ip_address: str,
+    ) -> bool:
+        """
+        Envía email de activación de forma best-effort.
+        
+        No propaga excepciones. Loguea resultado.
+        
+        Returns:
+            True si se envió correctamente, False si falló.
+        """
+        email_masked = email[:3] + "***" if email else "unknown"
+        
+        try:
+            await self.email_sender.send_activation_email(
+                to_email=email,
+                full_name=full_name or "",
+                activation_token=token,
+            )
+            
+            logger.info(
+                "activation_email_sent to=%s user_id=%s ip=%s",
+                email_masked,
+                user_id,
+                ip_address,
+            )
+            return True
+            
+        except Exception as e:
+            # Extraer error_code si es MailerSendError
+            error_code = getattr(e, "error_code", "unknown")
+            
+            logger.warning(
+                "activation_email_failed to=%s user_id=%s ip=%s error_code=%s error=%s",
+                email_masked,
+                user_id,
+                ip_address,
+                error_code,
+                str(e)[:200],
+            )
+            return False
 
 
 __all__ = ["RegistrationFlowService"]

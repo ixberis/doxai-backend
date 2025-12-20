@@ -36,6 +36,15 @@ logger = logging.getLogger(__name__)
 MAILERSEND_API_URL = "https://api.mailersend.com/v1/email"
 
 
+class MailerSendError(Exception):
+    """Error de MailerSend con código interno (no expone detalles del provider)."""
+    
+    def __init__(self, error_code: str, status_code: int, message: str):
+        self.error_code = error_code
+        self.status_code = status_code
+        super().__init__(message)
+
+
 def _normalize_base_url(url: Optional[str]) -> Optional[str]:
     """Normaliza una URL base (quita espacios y slash final)."""
     if not url:
@@ -127,6 +136,47 @@ class MailerSendEmailSender:
         """
         from app.shared.config import settings
         return cls.from_settings(settings)
+
+    def _classify_mailersend_error(self, status_code: int, error_body: str) -> str:
+        """
+        Clasifica errores de MailerSend a códigos internos.
+        
+        No expone detalles del provider al cliente.
+        
+        Returns:
+            Código interno seguro para logs/métricas.
+        """
+        error_lower = error_body.lower()
+        
+        # Trial account unique recipients limit (#MS42225)
+        if status_code == 422 and "#ms42225" in error_lower:
+            return "mailersend_trial_unique_recipients_limit"
+        
+        # Trial account sending limit
+        if status_code == 422 and "trial" in error_lower and "limit" in error_lower:
+            return "mailersend_trial_limit"
+        
+        # Rate limiting
+        if status_code == 429:
+            return "mailersend_rate_limit"
+        
+        # Authentication errors
+        if status_code == 401:
+            return "mailersend_auth_error"
+        
+        # Validation errors (other 422)
+        if status_code == 422:
+            return "mailersend_validation_error"
+        
+        # Server errors
+        if status_code >= 500:
+            return "mailersend_server_error"
+        
+        # Generic client error
+        if status_code >= 400:
+            return "mailersend_client_error"
+        
+        return "mailersend_unknown_error"
 
     def _build_activation_body(
         self, full_name: str, activation_token: str
@@ -253,36 +303,45 @@ class MailerSendEmailSender:
                     )
                     return message_id
 
-                # Handle errors - try to parse JSON if available
+                # Handle errors - classify and log appropriately
                 error_body = response.text
                 content_type = response.headers.get("Content-Type", "")
+                error_code = self._classify_mailersend_error(
+                    response.status_code, error_body
+                )
                 
                 if "application/json" in content_type:
                     try:
                         error_json = response.json()
-                        logger.error(
-                            "[MailerSend] send failed: to=%s status=%d json=%s",
+                        logger.warning(
+                            "[MailerSend] send failed: to=%s status=%d error_code=%s json=%s",
                             to_email,
                             response.status_code,
+                            error_code,
                             error_json,
                         )
                     except Exception:
-                        logger.error(
-                            "[MailerSend] send failed: to=%s status=%d body=%s",
+                        logger.warning(
+                            "[MailerSend] send failed: to=%s status=%d error_code=%s body=%s",
                             to_email,
                             response.status_code,
+                            error_code,
                             error_body[:500],
                         )
                 else:
-                    logger.error(
-                        "[MailerSend] send failed: to=%s status=%d body=%s",
+                    logger.warning(
+                        "[MailerSend] send failed: to=%s status=%d error_code=%s body=%s",
                         to_email,
                         response.status_code,
+                        error_code,
                         error_body[:500],
                     )
 
-                raise RuntimeError(
-                    f"MailerSend API error: {response.status_code} - {error_body[:200]}"
+                # Raise with internal error_code, NOT provider details
+                raise MailerSendError(
+                    error_code=error_code,
+                    status_code=response.status_code,
+                    message=f"Error de envío de email (código: {error_code})",
                 )
 
             except httpx.TimeoutException as e:
