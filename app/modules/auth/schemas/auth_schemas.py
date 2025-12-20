@@ -58,8 +58,8 @@ class LoginRequest(UTF8SafeModel):
 
 
 class ActivationRequest(UTF8SafeModel):
-    """Petición de activación de cuenta"""
-    token: str = Field(..., min_length=10)
+    """Petición de activación de cuenta - sin validación estricta, el servicio valida"""
+    token: str = ""  # Sin min_length - toda validación va en el servicio
 
 
 class ResendActivationRequest(UTF8SafeModel):

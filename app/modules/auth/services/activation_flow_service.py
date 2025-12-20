@@ -76,13 +76,44 @@ class ActivationFlowService:
             5. Si rowcount == 0 -> ya claimed/sent/failed (skip)
         """
         payload = as_dict(data)
-        token = payload.get("token")
+        token = payload.get("token", "").strip() if payload.get("token") else ""
 
+        # Validación 1: token faltante o vacío
         if not token:
+            logger.warning(
+                "activation_validation_failed error_code=activation_token_missing ip=%s",
+                payload.get("ip_address", "unknown"),
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token de activación requerido.",
+                detail={
+                    "message": "No se proporcionó un token de activación.",
+                    "error_code": "activation_token_missing",
+                },
             )
+
+        # Validación 2: token con formato inválido (muy corto)
+        if len(token) < 10:
+            logger.warning(
+                "activation_validation_failed error_code=activation_token_invalid token_length=%d ip=%s",
+                len(token),
+                payload.get("ip_address", "unknown"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "El enlace de activación no es válido.",
+                    "error_code": "activation_token_invalid",
+                },
+            )
+
+        # Log de inicio del flujo (token truncado por seguridad)
+        token_preview = token[:8] + "..." if len(token) > 8 else token[:4] + "..."
+        logger.info(
+            "activation_flow_started token_preview=%s ip=%s",
+            token_preview,
+            payload.get("ip_address", "unknown"),
+        )
 
         # 1) Delegar activación al ActivationService (obtiene user_id del token)
         result = await self.activation_service.activate_account(token)
@@ -90,36 +121,89 @@ class ActivationFlowService:
         warnings = result.get("warnings", [])
         activated_user_id = result.get("user_id")
 
+        # Manejar errores del servicio de activación
+        if code == "TOKEN_INVALID":
+            logger.warning(
+                "activation_validation_failed error_code=activation_token_invalid reason=not_found ip=%s",
+                payload.get("ip_address", "unknown"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "El enlace de activación no es válido o ya fue utilizado.",
+                    "error_code": "activation_token_invalid",
+                },
+            )
+
+        if code == "TOKEN_EXPIRED":
+            logger.warning(
+                "activation_validation_failed error_code=activation_token_expired ip=%s",
+                payload.get("ip_address", "unknown"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "El enlace de activación ha expirado. Solicite uno nuevo.",
+                    "error_code": "activation_token_expired",
+                },
+            )
+
         # 2) Enviar correo de bienvenida (solo si activación exitosa)
         #    Condiciones para envío:
         #    - code == ACCOUNT_ACTIVATED (no ALREADY_ACTIVATED, TOKEN_INVALID, etc.)
         #    - user_id presente
         if code == "ACCOUNT_ACTIVATED" and activated_user_id:
+            credits_assigned = result.get("credits_assigned", 0)
+            
+            # Log de activación exitosa (SIEMPRE)
+            logger.info(
+                "activation_success user_id=%s credits=%d",
+                activated_user_id,
+                credits_assigned,
+            )
+            
             user = await self.user_service.get_by_id(activated_user_id)
             if user:
                 await self._send_welcome_email_with_claim(
                     user=user,
-                    credits_assigned=result.get("credits_assigned", 0),
+                    credits_assigned=credits_assigned,
                 )
 
                 # Enviar notificación al admin (best-effort, no bloquea activación)
                 admin_email = getattr(self.settings, "admin_notification_email", None) or "doxai@juvare.mx"
-                admin_email_sent = await send_admin_activation_notice_safely(
-                    self.email_sender,
-                    admin_email=admin_email,
-                    user_email=user.user_email,
-                    user_name=user.user_full_name,
-                    user_id=int(user.user_id),
-                    credits_assigned=result.get("credits_assigned", 0),
-                    ip_address=payload.get("ip_address"),
-                    user_agent=payload.get("user_agent"),
-                )
                 
-                if not admin_email_sent:
+                try:
+                    admin_email_sent = await send_admin_activation_notice_safely(
+                        self.email_sender,
+                        admin_email=admin_email,
+                        user_email=user.user_email,
+                        user_name=user.user_full_name,
+                        user_id=int(user.user_id),
+                        credits_assigned=credits_assigned,
+                        ip_address=payload.get("ip_address"),
+                        user_agent=payload.get("user_agent"),
+                    )
+                    
+                    if admin_email_sent:
+                        logger.info(
+                            "admin_activation_email_sent to=%s user_id=%s credits=%d",
+                            admin_email,
+                            activated_user_id,
+                            credits_assigned,
+                        )
+                    else:
+                        logger.warning(
+                            "admin_activation_email_failed to=%s user_id=%s error=%s",
+                            admin_email,
+                            activated_user_id,
+                            "send returned False",
+                        )
+                except Exception as e:
                     logger.warning(
-                        "admin_activation_notice_failed user_id=%s admin_email=%s",
-                        activated_user_id,
+                        "admin_activation_email_failed to=%s user_id=%s error=%s",
                         admin_email,
+                        activated_user_id,
+                        str(e)[:200],
                     )
 
                 # Log de auditoría (siempre, independiente del correo)
