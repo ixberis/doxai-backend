@@ -40,7 +40,7 @@ router = APIRouter(prefix="/auth", tags=["auth-public"])
 
 @router.post(
     "/register",
-    response_model=RegisterResponse,
+    response_model=None,  # Respuesta dinámica según resultado
     status_code=status.HTTP_201_CREATED,
     summary="Registro de usuario",
     dependencies=[Depends(RateLimitDep(endpoint="auth:register", key_type="ip"))],
@@ -60,12 +60,24 @@ async def register(
       4. Creación del usuario.
       5. Emisión de token de activación.
       6. Envío de correo de activación.
+    
+    ANTI-ENUMERACIÓN ESTRICTA:
+      - Siempre responde 201 Created (para no filtrar existencia por status code)
+      - Email nuevo: payload incluye user_id y access_token
+      - Email existente: payload solo incluye message genérico
     """
+    from app.shared.utils.json_response import UTF8JSONResponse
+    
     # Inyectar metadatos de request para auditoría
     meta = get_request_meta(request)
     data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     data.update(meta)
-    return await facade.register_user(data)
+    
+    result = await facade.register_user(data)
+    
+    # ANTI-ENUMERACIÓN: siempre 201 para no filtrar existencia por status code
+    # El payload difiere (con/sin user_id) pero el status code es uniforme
+    return UTF8JSONResponse(content=result.payload, status_code=status.HTTP_201_CREATED)
 
 
 @router.post(

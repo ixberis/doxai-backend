@@ -3,30 +3,30 @@
 """
 backend/app/modules/auth/services/registration_flow_service.py
 
-Flujo de registro de usuario:
+Flujo de registro de usuario con anti-enumeración estricta:
 - Verifica existencia de usuario (la verificación de reCAPTCHA se hace antes,
   en AuthService.register_user).
-- Maneja el caso de usuario ya existente:
-    - Si está activo: 409
-    - Si no está activo: reenvía activación y devuelve access_token + mensaje.
+- Maneja el caso de usuario ya existente (activo o no) con respuesta genérica
+  que NO revela si el email existe en el sistema.
 - Crea usuario nuevo si no existe.
 - Emite token de activación.
 - Envía correo de activación.
 - Registra eventos en AuditService.
 
-Devuelve fields compatibles con RegisterResponse:
-    - message: str
-    - user_id: int
-    - access_token: str
+ANTI-ENUMERACIÓN:
+- Email existente (activo o no) → 200 OK + mensaje genérico
+- Email nuevo → 201 Created + user_id + access_token
+- El mensaje para email existente es idéntico independientemente del estado
 
 Autor: Ixchel Beristain
-Actualizado: 20/11/2025
+Actualizado: 20/12/2025
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Mapping, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from fastapi import status
 from sqlalchemy.exc import IntegrityError
@@ -40,9 +40,23 @@ from app.modules.auth.services.token_issuer_service import TokenIssuerService
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.shared.integrations.email_sender import EmailSender
 from app.shared.utils.security import hash_password, PasswordTooLongError, MAX_PASSWORD_LENGTH
-from app.shared.utils.http_exceptions import BadRequestException, ConflictException, UnprocessableEntityException
+from app.shared.utils.http_exceptions import BadRequestException, UnprocessableEntityException
 
 logger = logging.getLogger(__name__)
+
+
+# Mensaje genérico para anti-enumeración (usado cuando email ya existe)
+GENERIC_REGISTER_MESSAGE = (
+    "Si el correo es válido, recibirás instrucciones para activar tu cuenta. "
+    "Si no llega, revisa Spam o usa 'Reenviar activación'."
+)
+
+
+@dataclass
+class RegistrationResult:
+    """Resultado interno del registro (no expuesto en API)."""
+    payload: Dict[str, Any]
+    created: bool
 
 
 class RegistrationFlowService:
@@ -78,9 +92,13 @@ class RegistrationFlowService:
         # AuditService es básicamente estático; usamos la clase directamente si no se inyecta otra cosa
         self.audit_service = audit_service or AuditService
 
-    async def register_user(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
+    async def register_user(self, data: Mapping[str, Any] | Any) -> RegistrationResult:
         """
-        Registra un usuario nuevo o reenvía activación si ya existe.
+        Registra un usuario nuevo o maneja caso de email existente.
+
+        ANTI-ENUMERACIÓN ESTRICTA:
+        - Email existente (activo o no) → respuesta genérica sin user_id/access_token
+        - Email nuevo → respuesta con user_id y access_token
 
         data esperado:
             - email
@@ -88,13 +106,11 @@ class RegistrationFlowService:
             - full_name (opcional)
             - ip_address (opcional)
             - user_agent (opcional)
-            - recaptcha_token ya debió haberse validado en AuthService.
 
         Returns:
-            Dict con:
-                - message: str
-                - user_id: int
-                - access_token: str
+            RegistrationResult con:
+                - payload: Dict (message, y opcionalmente user_id/access_token)
+                - created: bool (True solo si se creó usuario nuevo)
         """
         payload = as_dict(data)
 
@@ -116,61 +132,50 @@ class RegistrationFlowService:
             )
 
         # ------------------------------------------------------------------
-        # 1) Usuario ya existe
+        # 1) Usuario ya existe (ANTI-ENUMERACIÓN: mismo tratamiento activo/inactivo)
         # ------------------------------------------------------------------
         existing = await self.user_service.get_by_email(email)
         if existing:
-            # Si ya está activo -> 409
-            if await self.activation_service.is_active(existing):
+            is_active = await self.activation_service.is_active(existing)
+            
+            if is_active:
+                # Usuario activo: log como intento duplicado, respuesta genérica
+                logger.info(
+                    "register_duplicate_active email=%s ip=%s",
+                    email[:3] + "***",
+                    ip_address,
+                )
                 self.audit_service.log_register_failed(
                     email=email,
                     ip_address=ip_address,
-                    error_message="email_already_registered",
+                    error_message="email_already_registered_active",
                     user_agent=user_agent,
                     extra_data={"user_id": str(existing.user_id)},
                 )
-                raise ConflictException(
-                    detail="No se pudo completar el registro. Si ya tiene una cuenta, inicie sesión o recupere su contraseña.",
-                    error_code="email_already_registered",
+            else:
+                # Usuario no activo: reenviar activación best-effort
+                token = await self.activation_service.issue_activation_token(
+                    user_id=existing.user_id,
+                )
+                await self._send_activation_email_best_effort(
+                    email=existing.user_email,
+                    full_name=existing.user_full_name,
+                    token=token,
+                    user_id=existing.user_id,
+                    ip_address=ip_address,
+                )
+                logger.info(
+                    "register_duplicate_inactive email=%s ip=%s",
+                    email[:3] + "***",
+                    ip_address,
                 )
 
-            # Usuario existe pero NO está activo: reenviar activación
-            token = await self.activation_service.issue_activation_token(
-                user_id=existing.user_id,
+            # ANTI-ENUMERACIÓN: misma respuesta para activo e inactivo
+            # NO incluye user_id ni access_token
+            return RegistrationResult(
+                payload={"message": GENERIC_REGISTER_MESSAGE},
+                created=False,
             )
-            
-            # Best-effort: intentar enviar email, pero no fallar el registro
-            email_sent = await self._send_activation_email_best_effort(
-                email=existing.user_email,
-                full_name=existing.user_full_name,
-                token=token,
-                user_id=existing.user_id,
-                ip_address=ip_address,
-            )
-
-            access_token = self.token_issuer.create_access_token(
-                sub=str(existing.user_id),
-            )
-
-            self.audit_service.log_register_success(
-                user_id=str(existing.user_id),
-                email=existing.user_email,
-                ip_address=ip_address,
-                user_agent=user_agent,
-            )
-
-            # Mensaje depende de si se envió el email
-            message = (
-                "Correo de activación reenviado. Revise su bandeja de entrada."
-                if email_sent
-                else "Cuenta creada. Si no recibes el correo de activación, usa 'Reenviar activación' en inicio de sesión."
-            )
-
-            return {
-                "user_id": existing.user_id,
-                "access_token": access_token,
-                "message": message,
-            }
 
         # ------------------------------------------------------------------
         # 2) Usuario nuevo
@@ -194,20 +199,27 @@ class RegistrationFlowService:
             user_password_hash=password_hash,
         )
 
-        logger.info("REGISTRATION: crear usuario nuevo %s", email)
+        logger.info("REGISTRATION: crear usuario nuevo %s", email[:3] + "***")
         try:
             created = await self.user_service.add(user)
         except IntegrityError as e:
-            logger.error("Error de integridad al registrar usuario %s: %s", email, e)
+            # Race condition: email insertado entre get_by_email y add
+            # ANTI-ENUMERACIÓN: respuesta genérica (no 409)
+            logger.warning(
+                "register_integrity_error email=%s ip=%s error=%s",
+                email[:3] + "***",
+                ip_address,
+                str(e)[:100],
+            )
             self.audit_service.log_register_failed(
                 email=email,
                 ip_address=ip_address,
-                error_message="integrity_error_email_in_use",
+                error_message="integrity_error_race_condition",
                 user_agent=user_agent,
             )
-            raise ConflictException(
-                detail="No se pudo completar el registro. Si ya tiene una cuenta, inicie sesión o recupere su contraseña.",
-                error_code="email_already_registered",
+            return RegistrationResult(
+                payload={"message": GENERIC_REGISTER_MESSAGE},
+                created=False,
             )
 
         logger.info("REGISTRATION: crear token de activación y enviar correo")
@@ -242,11 +254,14 @@ class RegistrationFlowService:
             else "Cuenta creada. Si no recibes el correo de activación, usa 'Reenviar activación' en inicio de sesión."
         )
 
-        return {
-            "user_id": created.user_id,
-            "access_token": access_token,
-            "message": message,
-        }
+        return RegistrationResult(
+            payload={
+                "user_id": created.user_id,
+                "access_token": access_token,
+                "message": message,
+            },
+            created=True,
+        )
 
 
     async def _send_activation_email_best_effort(
@@ -298,6 +313,6 @@ class RegistrationFlowService:
             return False
 
 
-__all__ = ["RegistrationFlowService"]
+__all__ = ["RegistrationFlowService", "RegistrationResult", "GENERIC_REGISTER_MESSAGE"]
 
 # Fin del script backend/app/modules/auth/services/registration_flow_service.py
