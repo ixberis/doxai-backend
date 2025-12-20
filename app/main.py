@@ -301,19 +301,62 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
-# CORS
+# CORS - Configuración robusta para preflight OPTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+# REGLAS:
+# 1. En PRODUCTION: CORS_ORIGINS DEBE venir de env var; si falta → CORS cerrado
+# 2. En DEVELOPMENT: fallback permisivo a localhost
+# 3. "*" con allow_credentials=True es inválido → se filtra
+# ═══════════════════════════════════════════════════════════════════════════════
 settings = get_settings()
-origins = getattr(
-    settings,
-    "allowed_origins",
-    "http://localhost:5173,http://localhost:3000",
-)
+_is_production = _ENVIRONMENT == "production"
+
+# Obtener origins de configuración
+if hasattr(settings, "get_cors_origins"):
+    origins_list = settings.get_cors_origins()
+else:
+    origins_raw = getattr(settings, "allowed_origins", "")
+    origins_list = [o.strip() for o in origins_raw.split(",") if o.strip()]
+
+# Sanitizar: "*" con credentials=True es inválido en navegadores
+# Filtrar "*" y mantener solo origins explícitos
+if "*" in origins_list:
+    origins_list = [o for o in origins_list if o != "*"]
+    if not origins_list:
+        # Solo tenía "*", ahora está vacío
+        pass  # Se manejará abajo
+
+# Determinar origins finales según ambiente
+if not origins_list:
+    if _is_production:
+        # PRODUCCIÓN SIN CORS_ORIGINS = ERROR CRÍTICO
+        logger.error(
+            "❌ CORS_ORIGINS missing in production; CORS disabled. "
+            "Configure CORS_ORIGINS env var with explicit origins."
+        )
+        origins_list = []  # CORS cerrado - ningún origen permitido
+    else:
+        # DESARROLLO: fallback permisivo a localhost
+        logger.warning(
+            "⚠️ CORS_ORIGINS no configurado en desarrollo. "
+            "Usando fallback: localhost:5173, localhost:3000, localhost:8080"
+        )
+        origins_list = [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://localhost:8080",
+        ]
+
+logger.info(f"🌐 CORS origins configurados ({_ENVIRONMENT}): {origins_list}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in origins.split(",") if o],
+    allow_origins=origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+    max_age=600,  # Cache preflight por 10 minutos
 )
 
 # Observabilidad Prometheus (/metrics)
