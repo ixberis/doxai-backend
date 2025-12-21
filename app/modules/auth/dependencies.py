@@ -94,13 +94,26 @@ async def require_admin(
     Para endpoints administrativos internos.
     
     Raises:
-        HTTPException 401: Token inválido
+        HTTPException 401: Token inválido o user_id no válido
         HTTPException 403: Usuario no es admin
     
     Returns:
         str: El user_id del admin
     """
     user_id = validate_jwt_token(token)
+    
+    # Convertir user_id a int (DB column es integer/bigint)
+    try:
+        uid_int = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "invalid_user_id",
+                "message": "Invalid user id format",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     # Import here to avoid circular dependency
     from app.shared.database.database import SessionLocal
@@ -112,7 +125,7 @@ async def require_admin(
             FROM public.app_users 
             WHERE user_id = :uid
         """)
-        result = await db.execute(query, {"uid": user_id})
+        result = await db.execute(query, {"uid": uid_int})
         row = result.first()
         
         if not row or row[0] != "admin":
