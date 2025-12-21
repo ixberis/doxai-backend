@@ -28,24 +28,30 @@ class AuthAggregators:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_active_sessions(self) -> int:
-        """Cuenta sesiones activas (no revocadas y no expiradas)."""
-        q = text("SELECT active_sessions FROM v_auth_active_sessions")
+    async def get_active_sessions(self) -> Optional[int]:
+        """
+        Cuenta sesiones activas usando función SECURITY DEFINER.
+        Returns None if no data available (allows caller to distinguish from 0).
+        """
+        q = text("SELECT public.f_auth_active_sessions_count()")
         res = await self.db.execute(q)
         row = res.first()
-        return int(row[0] or 0) if row else 0
+        if row and row[0] is not None:
+            return int(row[0])
+        return None
 
-    async def get_latest_activation_conversion_ratio(self) -> float:
-        """Obtiene el ratio más reciente de conversión registro→activación."""
-        q = text("""
-            SELECT conversion_ratio
-            FROM v_auth_activation_conversion_daily
-            ORDER BY day DESC
-            LIMIT 1
-        """)
+    async def get_latest_activation_conversion_ratio(self) -> Optional[float]:
+        """
+        Obtiene el ratio más reciente de conversión registro→activación.
+        Uses SECURITY DEFINER function to avoid permission issues.
+        Returns None if no data available.
+        """
+        q = text("SELECT public.f_auth_activation_rate_latest()")
         res = await self.db.execute(q)
         row = res.first()
-        return float(row[0]) if row and row[0] is not None else 0.0
+        if row and row[0] is not None:
+            return float(row[0])
+        return None
 
     async def get_login_attempts_hourly(self, p_from, p_to):
         """
