@@ -77,7 +77,7 @@ async def register(
     
     # ANTI-ENUMERACIÓN: siempre 201 para no filtrar existencia por status code
     # El payload difiere (con/sin user_id) pero el status code es uniforme
-    return UTF8JSONResponse(content=result.payload, status_code=status.HTTP_201_CREATED)
+    return UTF8JSONResponse(content=result, status_code=status.HTTP_201_CREATED)
 
 
 @router.post(

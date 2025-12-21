@@ -100,7 +100,9 @@ class AuthService:
             action="register",
             ip_address=ip_address,
         )
-        return await self._registration_flow.register_user(payload)
+        result = await self._registration_flow.register_user(payload)
+        # RegistrationFlowService retorna RegistrationResult, extraemos el payload
+        return result.payload
 
     async def register(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """Alias para mantener compatibilidad."""

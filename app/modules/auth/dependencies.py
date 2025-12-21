@@ -84,7 +84,51 @@ async def get_current_user_id(
     return validate_jwt_token(token)
 
 
+async def require_admin(
+    token: str = Depends(oauth2_scheme),
+) -> str:
+    """
+    Dependencia que requiere rol admin.
+    
+    Valida JWT y verifica que el usuario tenga rol 'admin' en app_users.
+    Para endpoints administrativos internos.
+    
+    Raises:
+        HTTPException 401: Token inválido
+        HTTPException 403: Usuario no es admin
+    
+    Returns:
+        str: El user_id del admin
+    """
+    user_id = validate_jwt_token(token)
+    
+    # Import here to avoid circular dependency
+    from app.shared.database.database import SessionLocal
+    from sqlalchemy import text
+    
+    async with SessionLocal() as db:
+        query = text("""
+            SELECT user_role::text 
+            FROM public.app_users 
+            WHERE user_id = :uid
+        """)
+        result = await db.execute(query, {"uid": user_id})
+        row = result.first()
+        
+        if not row or row[0] != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "message": "Admin access required",
+                },
+            )
+    
+    return user_id
+
+
 __all__ = [
     "get_current_user_id",
     "validate_jwt_token",
+    "require_admin",
 ]

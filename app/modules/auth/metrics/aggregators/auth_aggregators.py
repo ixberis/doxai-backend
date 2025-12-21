@@ -44,13 +44,14 @@ class AuthAggregators:
         """
         Obtiene el ratio más reciente de conversión registro→activación.
         Uses SECURITY DEFINER function to avoid permission issues.
-        Returns None if no data available.
+        Returns ratio (0-1), not percentage. Frontend multiplies by 100.
         """
         q = text("SELECT public.f_auth_activation_rate_latest()")
         res = await self.db.execute(q)
         row = res.first()
         if row and row[0] is not None:
-            return float(row[0])
+            # SQL returns percentage (e.g., 11.11), convert to ratio (0.1111)
+            return float(row[0]) / 100.0
         return None
 
     async def get_login_attempts_hourly(self, p_from, p_to):

@@ -12,6 +12,7 @@ Fecha: 05/11/2025
 
 from .cache_routes import router as cache_router
 from .scheduler_routes import router as scheduler_router
+from .users_routes import router as users_router
 
 
 def get_admin_routers():
@@ -21,7 +22,7 @@ def get_admin_routers():
     Returns:
         Lista de APIRouter
     """
-    return [cache_router, scheduler_router]
+    return [cache_router, scheduler_router, users_router]
 
 
-__all__ = ["get_admin_routers", "cache_router", "scheduler_router"]
+__all__ = ["get_admin_routers", "cache_router", "scheduler_router", "users_router"]
