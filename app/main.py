@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/main.py
@@ -8,21 +7,15 @@ Punto de entrada principal del backend DoxAI.
 Ajustes clave:
 - Uso de app.core.settings como fachada de configuración.
 - Montaje de observabilidad Prometheus (/metrics) vía app.observability.prom
-- Scheduler con job de limpieza de cachés (cache_cleanup_hourly).
+- Scheduler con job de limpieza de cachés (cache_cleanup_hourly)
 - Compatibilidad Windows con asyncio.WindowsSelectorEventLoopPolicy
 - Warm-up y ciclo de vida con limpieza segura en shutdown
 - Health principal /health delegado al paquete app.routes (health_routes.py)
+- CORS robusto: allow_origins + allow_origin_regex para *.vercel.app
 
 Autor: Ixchel Beristain
 Fecha: 17/11/2025
 """
-
-from pathlib import Path
-from dotenv import load_dotenv
-
-ENV_PATH = Path(__file__).resolve().parents[2] / ".env"   # backend/.env
-load_dotenv(dotenv_path=ENV_PATH, override=False)
-
 
 import sys
 import asyncio
@@ -43,19 +36,24 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 from dotenv import load_dotenv
 
-_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
-# Normalizar env tolerando comillas y espacios (ej. "staging" → staging)
+_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"  # backend/.env
 _ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().strip('"').strip("'").lower()
 _override_env = _ENVIRONMENT != "production"
 load_dotenv(dotenv_path=_ENV_PATH, override=_override_env)
 
-logging.getLogger(__name__).info(
-    f"[dotenv] Loaded {_ENV_PATH} (override={_override_env}, ENVIRONMENT={_ENVIRONMENT})"
+# Logging base (temprano)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, Request
+logger.info(f"[dotenv] Loaded {_ENV_PATH} (override={_override_env}, ENVIRONMENT={_ENVIRONMENT})")
+logger.info(f"[LoopPolicy] {type(asyncio.get_event_loop_policy()).__name__}")
+
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import uvicorn
 import anyio
 
@@ -65,9 +63,7 @@ import anyio
 try:
     from app.core.settings import get_settings
 except Exception as _cfg_err:
-    logging.getLogger(__name__).warning(
-        f"[config] get_settings no disponible ({_cfg_err}). Usando defaults de DEV."
-    )
+    logger.warning(f"[config] get_settings no disponible ({_cfg_err}). Usando defaults de DEV.")
 
     class _FallbackSettings:
         WARMUP_ENABLE = False
@@ -144,21 +140,10 @@ except Exception:
     job_registry = _JR()
 
 
-import asyncio as _asyncio
-
-logging.getLogger("uvicorn.error").info(
-    f"[LoopPolicy] {type(_asyncio.get_event_loop_policy()).__name__}"
-)
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-
-
 def _safe_log(level: int, msg: str):
+    """
+    Log seguro para evitar errores al cerrar streams durante shutdown/atexit.
+    """
     try:
         has_open_stream = False
         for h in logger.handlers:
@@ -229,15 +214,9 @@ async def lifespan(app: FastAPI):
         # Job 1: limpieza (si existe)
         try:
             from app.shared.scheduler.jobs import register_cache_cleanup_job
-
             register_cache_cleanup_job(scheduler)
         except Exception as e:
             logger.debug(f"Cache cleanup job no disponible: {e}")
-
-        # NOTA:
-        # El job de refresco de métricas de Auth se delega a la capa de
-        # métricas del módulo Auth o se habilitará en una fase posterior.
-        # Aquí evitamos acoplar main.py a detalles de implementación de DB.
 
         scheduler.start()
         logger.info("⏰ Scheduler iniciado con jobs programados")
@@ -264,7 +243,7 @@ async def lifespan(app: FastAPI):
 
                 logger.info("🚫 Cancelling active analysis jobs...")
                 await job_registry.cancel_all_tasks(timeout=30.0)
-                
+
                 # Cerrar clientes HTTP de PayPal
                 try:
                     from app.modules.payments.services.webhooks.signature_verification import (
@@ -274,7 +253,13 @@ async def lifespan(app: FastAPI):
                     logger.info("💳 Clientes HTTP de PayPal cerrados")
                 except Exception as e:
                     logger.warning(f"⚠️ Error cerrando clientes PayPal: {e}")
-                    
+
+                # Cierre de recursos cacheados
+                try:
+                    await shutdown_all()
+                except Exception:
+                    pass
+
             except Exception as e:
                 logger.error(f"❌ Error durante shutdown ordenado: {e}")
 
@@ -282,10 +267,7 @@ async def lifespan(app: FastAPI):
 
 
 openapi_tags = [
-    {
-        "name": "Authentication",
-        "description": "Registro, Login, Refresh tokens y Activación de cuenta",
-    },
+    {"name": "Authentication", "description": "Registro, Login, Refresh tokens y Activación de cuenta"},
     {"name": "User Profile", "description": "Perfil de usuario y suscripción"},
     {"name": "Files", "description": "Gestión de archivos"},
     {"name": "Projects", "description": "Gestión de proyectos"},
@@ -296,10 +278,6 @@ openapi_tags = [
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTF-8 JSON Response Class (Opción A - más limpia)
 # ═══════════════════════════════════════════════════════════════════════════════
-# Usar UTF8JSONResponse como default_response_class garantiza que TODAS las
-# respuestas JSON (return {...}) incluyan charset=utf-8 automáticamente.
-# Esto soluciona el mojibake sin necesidad de middleware.
-# ═══════════════════════════════════════════════════════════════════════════════
 from app.shared.utils.json_response import UTF8JSONResponse
 
 app = FastAPI(
@@ -308,75 +286,56 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     openapi_tags=openapi_tags,
-    default_response_class=UTF8JSONResponse,  # ← Fuerza charset=utf-8 en todas las respuestas JSON
+    default_response_class=UTF8JSONResponse,  # Fuerza charset=utf-8 en todas las respuestas JSON (return {...})
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CORS - Configuración robusta para preflight OPTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
-# REGLAS:
-# 1. En PRODUCTION: CORS_ORIGINS DEBE venir de env var; si falta → CORS cerrado
-# 2. En DEVELOPMENT: fallback permisivo a localhost
-# 3. "*" con allow_credentials=True es inválido → se fuerza credentials=False
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _configure_cors(app_instance: FastAPI) -> dict:
     """
     Configura CORS middleware de forma verificable.
-    
+
     Returns:
         dict con la configuración aplicada para logging.
     """
     settings = get_settings()
-    
+
     # Detectar ambiente
     env_name = _ENVIRONMENT
     python_env = os.getenv("PYTHON_ENV", "NOT_SET")
     is_production = env_name == "production" or python_env == "production"
-    
-    # Leer CORS_ORIGINS raw desde env
+
+    # Leer origins desde env y/o settings
     cors_origins_raw = os.getenv("CORS_ORIGINS", "")
     settings_origins = getattr(settings, "allowed_origins", "")
-    
-    # Usar CORS_ORIGINS env var primero, luego settings
     origins_raw = cors_origins_raw or settings_origins
-    
+
     # Parsear origins
     if hasattr(settings, "get_cors_origins") and cors_origins_raw:
-        # Si hay env var, parsear manualmente para evitar cache de settings
         origins_list = [o.strip().strip('"').strip("'") for o in origins_raw.split(",") if o.strip()]
     elif hasattr(settings, "get_cors_origins"):
         origins_list = settings.get_cors_origins()
     else:
         origins_list = [o.strip() for o in origins_raw.split(",") if o.strip()]
-    
-    # Configuración por defecto
+
     allow_credentials = True
     allow_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
     allow_headers = ["*"]
-    
-    # ═══════════════════════════════════════════════════════════════════════════
-    # CASO ESPECIAL: "*" con allow_credentials=True es inválido en navegadores
-    # ═══════════════════════════════════════════════════════════════════════════
+
+    # "*" con allow_credentials=True es inválido en navegadores
     if "*" in origins_list:
         if len(origins_list) == 1:
-            # Solo "*" → forzar credentials=False para que funcione
             logger.warning(
                 "⚠️ CORS: origins='*' con allow_credentials=True es inválido. "
                 "Forzando allow_credentials=False para permitir cualquier origen."
             )
             allow_credentials = False
-            # Mantener "*" ya que credentials será False
         else:
-            # Mezcla de "*" con otros origins → filtrar "*"
-            logger.warning(
-                "⚠️ CORS: Filtrando '*' de origins porque hay otros origins explícitos."
-            )
+            logger.warning("⚠️ CORS: Filtrando '*' de origins porque hay otros origins explícitos.")
             origins_list = [o for o in origins_list if o != "*"]
-    
-    # ═══════════════════════════════════════════════════════════════════════════
-    # CASO: origins vacío
-    # ═══════════════════════════════════════════════════════════════════════════
+
+    # origins vacío
     if not origins_list:
         if is_production:
             logger.error(
@@ -384,31 +343,36 @@ def _configure_cors(app_instance: FastAPI) -> dict:
                 "Set CORS_ORIGINS env var (e.g., CORS_ORIGINS=https://app.doxai.site). "
                 "All cross-origin requests will be BLOCKED."
             )
-            # Fail-closed: lista vacía = ningún origen permitido
         else:
-            logger.warning(
-                "⚠️ CORS: No origins configured in development. "
-                "Using localhost fallback."
-            )
+            logger.warning("⚠️ CORS: No origins configured in development. Using localhost fallback.")
             origins_list = [
                 "http://localhost:5173",
-                "http://localhost:3000", 
+                "http://localhost:3000",
                 "http://localhost:8080",
             ]
-    
-    # Configuración final
+
+    # Regex para Vercel
+    allow_origin_regex = os.getenv(
+        "CORS_ALLOW_ORIGIN_REGEX",
+        r"^https://.*\.vercel\.app$",
+    )
+
+    # Asegurar dominios prod
+    production_origins = ["https://app.doxai.site", "https://doxai.site"]
+    for prod_origin in production_origins:
+        if prod_origin not in origins_list:
+            origins_list.append(prod_origin)
+
     cors_config = {
         "allow_origins": origins_list,
+        "allow_origin_regex": allow_origin_regex,
         "allow_credentials": allow_credentials,
         "allow_methods": allow_methods,
         "allow_headers": allow_headers,
         "expose_headers": ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
         "max_age": 600,
     }
-    
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LOGGING COMPLETO DE CONFIGURACIÓN CORS
-    # ═══════════════════════════════════════════════════════════════════════════
+
     logger.info("=" * 70)
     logger.info("🌐 CORS CONFIGURATION STARTUP")
     logger.info("=" * 70)
@@ -418,51 +382,37 @@ def _configure_cors(app_instance: FastAPI) -> dict:
     logger.info(f"  CORS_ORIGINS (raw):   '{cors_origins_raw}' (env var)")
     logger.info(f"  settings.allowed_origins: '{settings_origins}'")
     logger.info(f"  origins_parsed:       {origins_list}")
+    logger.info(f"  allow_origin_regex:   '{allow_origin_regex}'")
     logger.info(f"  allow_credentials:    {allow_credentials}")
     logger.info(f"  allow_methods:        {allow_methods}")
     logger.info(f"  allow_headers:        {allow_headers}")
-    logger.info(f"  CORS ACTIVE:          {bool(origins_list)}")
+    logger.info(f"  CORS ACTIVE:          {bool(origins_list) or bool(allow_origin_regex)}")
     logger.info("=" * 70)
-    
-    if not origins_list:
+
+    if not origins_list and not allow_origin_regex:
         logger.error("🚫 CORS IS DISABLED - No origins will be allowed!")
     else:
-        logger.info(f"✅ CORS ENABLED for {len(origins_list)} origin(s)")
-    
-    # Agregar middleware
-    app_instance.add_middleware(
-        CORSMiddleware,
-        **cors_config,
-    )
-    
+        logger.info(f"✅ CORS ENABLED for {len(origins_list)} origin(s) + regex pattern")
+
+    app_instance.add_middleware(CORSMiddleware, **cors_config)
     return cors_config
 
 
-# Observabilidad Prometheus (/metrics) - DEBE agregarse ANTES de CORS
-# para que CORS se ejecute PRIMERO (orden inverso en Starlette)
+# Observabilidad Prometheus (/metrics)
+# IMPORTANTE: el orden real de ejecución de middlewares en Starlette es inverso al registro.
+# Registramos CORS AL FINAL para que se ejecute PRIMERO (outermost).
 setup_observability(app)
 
-# Observabilidad Prometheus (/metrics) - DEBE agregarse ANTES de CORS
-# para que CORS se ejecute PRIMERO (orden inverso en Starlette)
-setup_observability(app)
-
-# CORS middleware - SE AGREGA AL FINAL para que se ejecute PRIMERO
-# En Starlette, los middlewares se ejecutan en orden INVERSO al de registro.
+# CORS middleware - se registra al final para ejecutarse primero
 _cors_config = _configure_cors(app)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXCEPTION HANDLERS CON UTF-8
 # ═══════════════════════════════════════════════════════════════════════════════
-# Los exception handlers deben usar UTF8JSONResponse explícitamente porque
-# default_response_class NO aplica a excepciones (solo a return {...}).
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from fastapi import HTTPException
 from app.shared.security.rate_limit_dep import RateLimitExceeded, rate_limit_response
 from app.shared.utils.json_response import json_response_utf8
 
 
-# Exception handler for rate limiting (consistent 429 response with UTF-8)
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
     """Ensure RateLimitExceeded always returns consistent 429 JSON response with UTF-8."""
@@ -472,14 +422,12 @@ async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded)
     )
 
 
-# Exception handler for HTTPException (forces UTF-8 charset on all HTTP errors)
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """
     Custom HTTPException handler that ensures UTF-8 charset on JSON responses.
-    
-    This fixes mojibake (broken accents) in error messages like:
-    - "La cuenta aún no ha sido activada" → displays correctly instead of "aÃºn"
+
+    Fixes mojibake in error messages (acentos).
     """
     return json_response_utf8(
         content={"detail": exc.detail},
@@ -487,8 +435,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         headers=getattr(exc, "headers", None),
     )
 
+
 # Incluye router maestro
-from app.routes import router as main_router  # import dentro del scope
+from app.routes import router as main_router
 
 app.include_router(main_router)
 
@@ -525,18 +474,14 @@ async def health_ready():
 
 
 if __name__ == "__main__":
+    settings = get_settings()
+
     is_production = os.getenv("PYTHON_ENV") == "production"
-    disable_reload_env = os.getenv("DISABLE_RELOAD", "").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
+    disable_reload_env = os.getenv("DISABLE_RELOAD", "").lower() in ("true", "1", "yes")
     dev_reload = os.getenv("DEV_RELOAD") == "1"
     enable_reload = not is_production and not disable_reload_env and not dev_reload
 
-    logging.getLogger(__name__).info(
-        f"🔧 Starting server with reload={enable_reload} (production={is_production})"
-    )
+    logger.info(f"🔧 Starting server with reload={enable_reload} (production={is_production})")
 
     reload_excludes = (
         [
