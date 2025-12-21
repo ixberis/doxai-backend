@@ -170,15 +170,21 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ADMIN (solo API por seguridad)
+# ADMIN (internal routes sin /api prefix para consistencia con auth internal)
 # ═══════════════════════════════════════════════════════════════════════════
 try:
     from app.modules.admin.routes import get_admin_routers
 
     for r in get_admin_routers():
-        _include_once(api, r, "admin", _mounted_api)
+        # Routers con prefix /_internal van en public (sin /api) para consistencia
+        # con auth internal que también vive en /_internal/...
+        if r.prefix and r.prefix.startswith("/_internal"):
+            _include_once(public, r, "admin", _mounted_public)
+        else:
+            # Routers sin /_internal van en api (con /api prefix)
+            _include_once(api, r, "admin", _mounted_api)
 except Exception as e:
-    logger.warning("Admin routers no montados: %s", e)
+    logger.exception("❌ Admin routers no montados (ver traceback): %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
