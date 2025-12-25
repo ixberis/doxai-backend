@@ -193,22 +193,26 @@ async def update_user(
 
     # Update status if provided (using user_status enum)
     if payload.status is not None:
+        # Use CAST() instead of :: to avoid conflict with SQLAlchemy :param syntax
         update_status_q = text("""
             UPDATE public.app_users 
-            SET user_status = :status::user_status_enum 
+            SET user_status = CAST(:status AS user_status_enum)
             WHERE user_id = :uid
         """)
         await db.execute(update_status_q, {"status": payload.status, "uid": resolved_id})
+        logger.info(f"admin_user_status_updated user_id={resolved_id} new_status={payload.status}")
 
     # Update role if provided (using user_role enum in app_users)
     if payload.role is not None:
+        # Use CAST() instead of :: to avoid conflict with SQLAlchemy :param syntax
         update_role_q = text("""
             UPDATE public.app_users 
-            SET user_role = :role::user_role_enum 
+            SET user_role = CAST(:role AS user_role_enum)
             WHERE user_id = :uid
         """)
         try:
             await db.execute(update_role_q, {"role": payload.role, "uid": resolved_id})
+            logger.info(f"admin_user_role_updated user_id={resolved_id} new_role={payload.role}")
         except Exception as e:
             logger.exception(f"Could not update role for {resolved_id}: {e}")
             raise HTTPException(status_code=500, detail="Error al actualizar rol")
