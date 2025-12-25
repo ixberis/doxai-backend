@@ -49,6 +49,11 @@ async def refund(
     amount_cents: Optional[int] = None,
     idempotency_key: Optional[str] = None,
     reason: Optional[str] = None,
+    # Dependency injection for testing
+    payment_service: Optional[Any] = None,
+    credit_service: Optional[Any] = None,
+    refund_service: Optional[Any] = None,
+    provider_refund_fn: Optional[Any] = None,  # inyección del stub de proveedor
 ) -> Tuple[Refund, Payment]:
     """
     Función principal para procesar un refund completo.
@@ -60,28 +65,35 @@ async def refund(
     - amount_cents: monto a reembolsar (None = total)
     - idempotency_key: clave para idempotencia
     - reason: razón del refund
+    - payment_service: (opcional) servicio de pagos inyectado (para tests)
+    - credit_service: (opcional) servicio de créditos inyectado (para tests)
+    - refund_service: (opcional) servicio de refunds inyectado (para tests)
     """
-    # Construir repositorios y servicios
-    payment_repo = PaymentRepository()
-    refund_repo = RefundRepository()
-    wallet_repo = WalletRepository()
-    credit_repo = CreditTransactionRepository()
+    # Construir repositorios y servicios si no fueron inyectados
+    if payment_service is None or credit_service is None or refund_service is None:
+        payment_repo = PaymentRepository()
+        refund_repo = RefundRepository()
+        wallet_repo = WalletRepository()
+        credit_repo = CreditTransactionRepository()
 
-    credit_service = CreditService(credit_repo)
-    wallet_service = WalletService(wallet_repo=wallet_repo, credit_repo=credit_repo)
-    payment_service = PaymentService(
-        payment_repo=payment_repo,
-        wallet_repo=wallet_repo,
-        wallet_service=wallet_service,
-        credit_service=credit_service,
-    )
-    refund_service = RefundService(
-        refund_repo=refund_repo,
-        payment_repo=payment_repo,
-        credit_service=credit_service,
-    )
+        if credit_service is None:
+            credit_service = CreditService(credit_repo)
+        if payment_service is None:
+            wallet_service = WalletService(wallet_repo=wallet_repo, credit_repo=credit_repo)
+            payment_service = PaymentService(
+                payment_repo=payment_repo,
+                wallet_repo=wallet_repo,
+                wallet_service=wallet_service,
+                credit_service=credit_service,
+            )
+        if refund_service is None:
+            refund_service = RefundService(
+                refund_repo=refund_repo,
+                payment_repo=payment_repo,
+                credit_service=credit_service,
+            )
 
-    # 1) Obtener payment
+    # 1) Obtener payment (usando el servicio para compatibilidad con tests)
     payment = await payment_service.get_payment_by_id(session, payment_id)
     if not payment:
         raise ValueError(f"Payment {payment_id} not found")
@@ -110,9 +122,10 @@ async def refund(
         if existing_refund:
             return existing_refund, payment
 
-    # 5) Crear refund interno - llamar al stub que puede ser parcheado por tests
+    # 5) Crear refund interno - llamar al stub (inyectado o por defecto)
+    _provider_fn = provider_refund_fn or refund_provider.provider_refund_stub
     try:
-        provider_refund_id, provider_confirmed = await refund_provider.provider_refund_stub(
+        provider_refund_id, provider_confirmed = await _provider_fn(
             payment_id=payment_id,
             amount=Decimal(amount_cents) / 100,
         )

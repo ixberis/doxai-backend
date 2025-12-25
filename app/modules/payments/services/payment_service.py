@@ -53,6 +53,17 @@ class PaymentService:
         self.credit_service = credit_service
 
     # ------------------------------------------------------------------ #
+    # Obtener payment por ID
+    # ------------------------------------------------------------------ #
+    async def get_payment_by_id(
+        self,
+        session: AsyncSession,
+        payment_id: int,
+    ) -> Optional["Payment"]:
+        """Obtiene un pago por su ID."""
+        return await self.payment_repo.get(session, payment_id)
+
+    # ------------------------------------------------------------------ #
     # Inicio de pago (checkout) - idempotente por idempotency_key
     # ------------------------------------------------------------------ #
     async def create_payment(

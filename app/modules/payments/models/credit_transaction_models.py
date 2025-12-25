@@ -106,10 +106,10 @@ class CreditTransaction(Base):
         ),
     )
 
-    # Relaciones
+    # Relaciones (back_populates con AppUser se configura en el bootstrap ORM)
     user: Mapped["AppUser"] = relationship(
         "AppUser",
-        back_populates="credit_transactions",
+        foreign_keys=[user_id],
         lazy="noload",
     )
 

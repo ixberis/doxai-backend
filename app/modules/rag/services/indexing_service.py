@@ -84,22 +84,22 @@ class IndexingService:
             self.db,
             project_id=data.project_id,
             file_id=data.file_id,
-            created_by=data.user_id,
             status=RagJobPhase.queued,
         )
         
-        # Registrar evento inicial
+        # Registrar evento inicial (incluye user_id para audit trail)
         await rag_job_event_repository.log_event(
             self.db,
             job_id=job.job_id,
             event_type="job_queued",
             message="Job de indexación creado",
+            event_payload={"user_id": str(data.user_id)},
         )
         
         return IndexingJobResponse(
             job_id=job.job_id,
             project_id=job.project_id,
-            started_by=job.created_by,
+            started_by=data.user_id,  # user_id del request, no del modelo
             phase=job.status,
             created_at=job.created_at,
             updated_at=job.updated_at,

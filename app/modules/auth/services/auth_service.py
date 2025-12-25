@@ -55,6 +55,7 @@ class AuthService:
         email_sender: Optional[EmailSender] = None,
         recaptcha_verifier: Optional[Any] = None,
         token_issuer: Optional[TokenIssuerService] = None,
+        verify_recaptcha_fn: Optional[Any] = None,
     ) -> None:
         self.db = db
         self.settings = get_settings()
@@ -62,6 +63,8 @@ class AuthService:
         self.email_sender = email_sender or EmailSender.from_env()
         self.recaptcha_verifier = recaptcha_verifier
         self.token_issuer = token_issuer or TokenIssuerService()
+        # Inyección de función de verificación de reCAPTCHA (con default si no se provee)
+        self._verify_recaptcha = verify_recaptcha_fn if verify_recaptcha_fn is not None else verify_recaptcha_or_raise
 
         # Flow services
         self._registration_flow = RegistrationFlowService(
@@ -94,7 +97,7 @@ class AuthService:
         recaptcha_token = payload.get("recaptcha_token")
         ip_address = payload.get("ip_address", "unknown")
         
-        await verify_recaptcha_or_raise(
+        await self._verify_recaptcha(
             recaptcha_token,
             self.recaptcha_verifier,
             action="register",
@@ -127,7 +130,7 @@ class AuthService:
         ip_address = payload.get("ip_address", "unknown")
         
         # Validar CAPTCHA antes de procesar (anti-abuso)
-        await verify_recaptcha_or_raise(
+        await self._verify_recaptcha(
             recaptcha_token,
             self.recaptcha_verifier,
             action="activation_resend",
@@ -149,7 +152,7 @@ class AuthService:
         ip_address = payload.get("ip_address", "unknown")
         
         # Validar CAPTCHA antes de procesar (anti-abuso)
-        await verify_recaptcha_or_raise(
+        await self._verify_recaptcha(
             recaptcha_token,
             self.recaptcha_verifier,
             action="password_forgot",

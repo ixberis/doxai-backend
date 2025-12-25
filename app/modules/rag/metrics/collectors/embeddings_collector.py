@@ -19,7 +19,7 @@ Autor: Ixchel Beristáin Mendoza
 Fecha: 17/11/2025
 """
 
-from prometheus_client import Gauge
+from app.shared.core.metrics_helpers import get_or_create_gauge
 
 from app.modules.rag.metrics.schemas.snapshot_schemas import (
     RagMetricsDbSnapshot,
@@ -31,25 +31,25 @@ from app.modules.rag.metrics.schemas.snapshot_schemas import (
 # Definición de métricas Prometheus para embeddings
 # ============================================================================
 
-EMBEDDINGS_TOTAL = Gauge(
+EMBEDDINGS_TOTAL = get_or_create_gauge(
     "rag_embeddings_total",
     "Número total de embeddings por modelo y estado (activo/inactivo).",
     labelnames=("embedding_model", "is_active"),
 )
 
-EMBEDDING_COVERAGE_PCT = Gauge(
+EMBEDDING_COVERAGE_PCT = get_or_create_gauge(
     "rag_embeddings_coverage_pct",
     "Porcentaje de documentos con embeddings activos por proyecto.",
     labelnames=("project_id",),
 )
 
-DOCUMENTS_WITH_EMBEDDINGS = Gauge(
+DOCUMENTS_WITH_EMBEDDINGS = get_or_create_gauge(
     "rag_documents_with_embeddings",
     "Número de documentos con embeddings activos por proyecto.",
     labelnames=("project_id",),
 )
 
-DOCUMENTS_TOTAL_WITH_RAG = Gauge(
+DOCUMENTS_TOTAL_WITH_RAG = get_or_create_gauge(
     "rag_documents_total_with_rag",
     "Número total de documentos considerados para embeddings por proyecto.",
     labelnames=("project_id",),

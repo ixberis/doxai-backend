@@ -43,7 +43,6 @@ class RagJobRepository:
         *,
         project_id: UUID,
         file_id: UUID,
-        created_by: UUID,
         status: RagJobPhase = RagJobPhase.queued,
         phase_current: RagPhase = RagPhase.convert,
         needs_ocr: bool = False,
@@ -55,7 +54,6 @@ class RagJobRepository:
             session: Sesión async de SQLAlchemy
             project_id: ID del proyecto
             file_id: ID del archivo a procesar
-            created_by: ID del usuario que crea el job
             status: Estado inicial del job (queued, running, etc.)
             phase_current: Fase RAG inicial (convert, ocr, etc.)
             
@@ -66,7 +64,6 @@ class RagJobRepository:
         job = RagJob(
             project_id=project_id,
             file_id=file_id,
-            created_by=created_by,
             status=status,
             phase_current=phase_current,
             needs_ocr=needs_ocr,

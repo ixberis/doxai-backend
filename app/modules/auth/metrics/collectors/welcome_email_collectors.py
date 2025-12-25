@@ -12,33 +12,33 @@ Define contadores para:
 Autor: Ixchel Beristain
 Fecha: 2025-12-14
 """
-from prometheus_client import Counter
+from app.shared.core.metrics_helpers import get_or_create_counter
 
 NAMESPACE = "doxai"
 SUBSYSTEM = "auth"
 
 # Contador de correos enviados exitosamente
-welcome_email_sent_total = Counter(
+welcome_email_sent_total = get_or_create_counter(
     f"{NAMESPACE}_{SUBSYSTEM}_welcome_email_sent_total",
     "Welcome emails sent successfully",
     labelnames=("provider",),
 )
 
 # Contador de correos fallidos
-welcome_email_failed_total = Counter(
+welcome_email_failed_total = get_or_create_counter(
     f"{NAMESPACE}_{SUBSYSTEM}_welcome_email_failed_total",
     "Welcome emails that failed to send",
     labelnames=("provider", "reason"),
 )
 
 # Contador de claims exitosos (anti-race)
-welcome_email_claimed_total = Counter(
+welcome_email_claimed_total = get_or_create_counter(
     f"{NAMESPACE}_{SUBSYSTEM}_welcome_email_claimed_total",
     "Welcome email claims (anti-race condition protection)",
 )
 
 # Contador de reintentos automáticos
-welcome_email_retry_total = Counter(
+welcome_email_retry_total = get_or_create_counter(
     f"{NAMESPACE}_{SUBSYSTEM}_welcome_email_retry_total",
     "Welcome email retry outcomes",
     labelnames=("outcome",),  # sent|failed|skipped

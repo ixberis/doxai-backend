@@ -1,8 +1,20 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/models/user_models.py
-Ajustado: relaciones hacia Payments resueltas con callables (no strings).
+
+Modelo principal de usuarios (AppUser).
+
+IMPORTANTE - RESOLUCIÓN DE RELATIONSHIPS:
+SQLAlchemy resuelve relationships con strings ("ClassName") buscando en el
+mapper registry. Para que esto funcione, las clases referenciadas DEBEN estar
+importadas y registradas ANTES de que configure_mappers() se ejecute.
+
+Este módulo importa explícitamente los modelos hijos (AccountActivation,
+LoginAttempt, etc.) para garantizar que estén registrados cuando se importe
+AppUser directamente (no solo vía el barrel __init__.py).
+
+Autor: Ixchel Beristáin
+Fecha: 18/10/2025
 """
 
 from __future__ import annotations
@@ -15,14 +27,22 @@ from app.shared.database.database import Base
 from app.modules.auth.enums import UserRole, user_role_pg_enum
 from app.modules.auth.enums import UserStatus, user_status_pg_enum
 
-if TYPE_CHECKING:
-    from app.modules.auth.models.activation_models import AccountActivation
-    from app.modules.auth.models.password_reset_models import PasswordReset
-    from app.modules.auth.models.login_models import LoginAttempt, UserSession
-    from app.modules.payments.models.payment_models import Payment
-    from app.modules.payments.models.wallet_models import CreditWallet
-    from app.modules.payments.models.credit_transaction_models import CreditTransaction
-    from app.modules.payments.models.usage_reservation_models import UsageReservation
+# ═══════════════════════════════════════════════════════════════════════════════
+# IMPORTS OBLIGATORIOS PARA RESOLVER RELATIONSHIPS
+# ═══════════════════════════════════════════════════════════════════════════════
+# Estos imports aseguran que los modelos hijos estén registrados en el mapper
+# registry de SQLAlchemy ANTES de que AppUser intente resolver sus relationships.
+# Sin estos imports, "LoginAttempt" y otros strings no se resuelven si alguien
+# importa AppUser directamente (from .user_models import AppUser).
+# ═══════════════════════════════════════════════════════════════════════════════
+from app.modules.auth.models.activation_models import AccountActivation  # noqa: F401
+from app.modules.auth.models.password_reset_models import PasswordReset  # noqa: F401
+from app.modules.auth.models.login_models import LoginAttempt, UserSession  # noqa: F401
+
+# NOTA: Las relaciones cross-module (payments, wallet, credit_transactions,
+# usage_reservations) se registran en app/shared/orm/cross_module_relationships.py
+# para evitar dependencias circulares y permitir que el módulo auth ejecute
+# configure_mappers() de forma aislada.
 
 
 class AppUser(Base):
@@ -59,7 +79,7 @@ class AppUser(Base):
     user_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     user_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # --- Auth relationships ---
+    # --- Auth relationships (strings simples, el __init__.py garantiza el orden correcto) ---
     account_activations: Mapped[List["AccountActivation"]] = relationship(
         "AccountActivation", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -73,32 +93,9 @@ class AppUser(Base):
         "UserSession", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
     )
 
-    # --- Payments relationships (callables diferidos, NO strings) ---
-    payments: Mapped[List["Payment"]] = relationship(
-        lambda: __import__("app.modules.payments.models.payment_models", fromlist=["Payment"]).Payment,
-        back_populates="user",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
-    wallet: Mapped[Optional["CreditWallet"]] = relationship(
-        lambda: __import__("app.modules.payments.models.wallet_models", fromlist=["CreditWallet"]).CreditWallet,
-        back_populates="user",
-        uselist=False,
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
-    credit_transactions: Mapped[List["CreditTransaction"]] = relationship(
-        "CreditTransaction",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
-    usage_reservations: Mapped[List["UsageReservation"]] = relationship(
-        lambda: __import__("app.modules.payments.models.usage_reservation_models", fromlist=["UsageReservation"]).UsageReservation,
-        back_populates="user",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
+    # NOTA: Las relaciones payments, wallet, credit_transactions, usage_reservations
+    # se registran dinámicamente en app/shared/orm/cross_module_relationships.py
+    # para evitar dependencias con el módulo payments durante configure_mappers().
 
     def __repr__(self) -> str:
         return f"<AppUser user_id={self.user_id} email={self.user_email!r} active={self.user_is_activated}>"

@@ -86,8 +86,6 @@ def create(
             project_description=description,
             state=ProjectState.created,
             status=ProjectStatus.in_process,
-            created_by=user_id,
-            updated_by=user_id
         )
         
         db.add(project)
@@ -161,8 +159,6 @@ def update(
             old_value = getattr(project, key, None)
             change_details[key] = {"from": old_value, "to": value}
             setattr(project, key, value)
-        
-        project.updated_by = user_id
         
         # Registrar acción con detalles
         audit.log_action(

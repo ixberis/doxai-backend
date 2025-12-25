@@ -23,19 +23,24 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from prometheus_client import (
     CollectorRegistry, multiprocess, generate_latest, CONTENT_TYPE_LATEST,
-    Counter, Histogram,
 )
 
+from app.shared.core.metrics_helpers import (
+    get_or_create_counter,
+    get_or_create_histogram,
+)
+
+
 # Contadores/Histogramas de capa HTTP (labels saneados: method/path/status)
-REQUEST_COUNT = Counter(
+REQUEST_COUNT = get_or_create_counter(
     "http_requests_total",
     "Total HTTP requests",
-    ["method", "path", "status"],
+    labelnames=("method", "path", "status"),
 )
-REQUEST_LATENCY = Histogram(
+REQUEST_LATENCY = get_or_create_histogram(
     "http_request_latency_seconds",
     "Latency per request (s)",
-    ["method", "path", "status"],
+    labelnames=("method", "path", "status"),
 )
 
 

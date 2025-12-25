@@ -179,6 +179,8 @@ async def generate_receipt(
     user_billing_info: Optional[Dict[str, Any]] = None,
     company_info: Optional[Dict[str, Any]] = None,
     force_regenerate: bool = False,
+    # Inyección de dependencias para testing
+    payment_repo: Optional[PaymentRepository] = None,
 ) -> Dict[str, Any]:
     """
     Genera o regenera un recibo para un pago.
@@ -195,8 +197,8 @@ async def generate_receipt(
             force_regenerate,
         )
 
-        payment_repo = PaymentRepository()
-        payment = await payment_repo.get(db, payment_id)
+        _payment_repo = payment_repo or PaymentRepository()
+        payment = await _payment_repo.get(db, payment_id)
 
         if not payment:
             raise HTTPException(

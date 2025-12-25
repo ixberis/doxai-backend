@@ -28,18 +28,25 @@ from app.shared.config.settings_payments import get_payments_settings
 logger = logging.getLogger(__name__)
 
 
-def verify_stripe_signature(raw_body: bytes, headers: Dict[str, str]) -> bool:
+def verify_stripe_signature(
+    raw_body: bytes,
+    headers: Dict[str, str],
+    # Inyección de dependencias para testing
+    settings=None,
+) -> bool:
     """
     Verifica la firma de un webhook de Stripe.
     
     Args:
         raw_body: Body crudo del request
         headers: Headers del request (debe incluir Stripe-Signature)
+        settings: Configuración de pagos (opcional, para testing)
     
     Returns:
         True si la firma es válida
     """
-    settings = get_payments_settings()
+    if settings is None:
+        settings = get_payments_settings()
     
     # Extraer header de firma (case-insensitive)
     signature_header = None

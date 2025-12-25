@@ -30,6 +30,10 @@ from sqlalchemy.orm import Session
 
 from app.shared.database.database import get_db
 
+# Dependencia de DB para este endpoint
+# Se usa directamente get_db que puede ser overrideado en tests con sesión sync
+get_db_for_metrics = get_db
+
 # Agregadores DB
 from app.modules.projects.metrics.aggregators.db.projects import ProjectsDBAggregator
 from app.modules.projects.metrics.aggregators.db.files import FilesDBAggregator
@@ -53,7 +57,7 @@ router = APIRouter(prefix="/metrics/snapshot", tags=["projects:metrics"])
     summary="Snapshot de métricas desde BD",
     description="Obtiene métricas consolidadas (proyectos, estados, archivos, eventos) directamente desde la base de datos.",
 )
-def snapshot_db_metrics(db: Session = Depends(get_db)) -> SnapshotDBResponse:
+def snapshot_db_metrics(db: Session = Depends(get_db_for_metrics)) -> SnapshotDBResponse:
     """
     Lee las métricas desde los agregadores de BD y devuelve un snapshot unificado.
     También registra métricas de latencia y conteo de requests usando el

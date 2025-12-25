@@ -41,9 +41,13 @@ class CreditService:
         """
         Acepta AsyncSession (para ActivationService) o CreditTransactionRepository.
         """
-        if isinstance(db_or_repo, CreditTransactionRepository):
+        # Verificar si es CreditTransactionRepository por clase o herencia de BaseRepository
+        # sin método execute (duck-typing para evitar problemas de isinstance con imports)
+        if isinstance(db_or_repo, CreditTransactionRepository) or (
+            hasattr(db_or_repo, 'model') and not hasattr(db_or_repo, 'execute')
+        ):
             self._db: Optional[AsyncSession] = None
-            self.credit_repo = db_or_repo
+            self.credit_repo = db_or_repo if isinstance(db_or_repo, CreditTransactionRepository) else CreditTransactionRepository()
         else:
             # AsyncSession u otro objeto (incluyendo mocks en tests)
             self._db = db_or_repo

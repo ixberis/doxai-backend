@@ -78,9 +78,9 @@ class FileUploadStorage:
             content = data
         
         # Verificar colisión (simular con gateway fake)
-        if hasattr(self, 'gateway'):
+        if self.gateway is not None:
             if await self.gateway.exists(storage_path):
-                raise StoragePathCollision(f"Ruta ya existente: {storage_path}")
+                raise StoragePathCollision(storage_path)
             result = await self.gateway.upload(storage_path, content, content_type=content_type)
         else:
             await self.upload(storage_path, content, content_type)

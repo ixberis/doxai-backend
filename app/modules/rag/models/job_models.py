@@ -72,11 +72,8 @@ class RagJob(Base):
         comment="ID del archivo a procesar"
     )
 
-    created_by = Column(
-        UUID(as_uuid=True), 
-        nullable=False,
-        comment="ID del usuario que creó el job"
-    )
+    # Nota: Audit trail (created_by) se maneja en rag_job_events,
+    # no en la tabla rag_jobs (diseño por eventos/logs).
 
     status = Column(RagJobPhaseType(), nullable=False)
     phase_current = Column(RagPhaseType(), nullable=True)

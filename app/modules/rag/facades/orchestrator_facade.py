@@ -197,7 +197,6 @@ async def run_indexing_job(
             db,
             project_id=project_id,
             file_id=file_id,
-            created_by=user_id,
             status=RagJobPhase.queued,
             phase_current=RagPhase.convert,
             needs_ocr=needs_ocr,

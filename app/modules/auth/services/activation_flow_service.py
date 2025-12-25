@@ -22,11 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auth.services.activation_service import ActivationService
 from app.modules.auth.services.user_service import UserService
 from app.modules.auth.services.audit_service import AuditService
+from app.modules.auth.services.welcome_email_service import WelcomeEmailService, IWelcomeEmailService
 from app.modules.auth.repositories import UserRepository
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import (
     send_activation_email_safely,
-    send_welcome_email_safely,
     send_admin_activation_notice_safely,
 )
 from app.modules.auth.utils.error_classifier import classify_email_error
@@ -48,13 +48,21 @@ class ActivationFlowService:
         self,
         db: AsyncSession,
         email_sender: EmailSender,
+        welcome_email_service: IWelcomeEmailService | None = None,
+        audit_service: type | None = None,
     ) -> None:
         self.db = db
         self.email_sender = email_sender
         self.settings = get_settings()
         self.activation_service = ActivationService(db)
         self.user_service = UserService.with_session(db)
-        self.user_repo = UserRepository(db)  # Para operación atómica anti-race
+        self.user_repo = UserRepository(db)
+        self.welcome_email_service: IWelcomeEmailService = (
+            welcome_email_service if welcome_email_service is not None
+            else WelcomeEmailService(email_sender)
+        )
+        # Inyección de AuditService (con default si no se provee)
+        self.audit_service = audit_service if audit_service is not None else AuditService
 
     async def activate_account(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """
@@ -204,7 +212,7 @@ class ActivationFlowService:
 
                 # Log de auditoría (siempre, independiente del correo)
                 try:
-                    AuditService.log_activation_success(
+                    self.audit_service.log_activation_success(
                         user_id=str(user.user_id),
                         email=user.user_email,
                         ip_address=payload.get("ip_address"),
@@ -266,8 +274,8 @@ class ActivationFlowService:
         )
 
         try:
-            await send_welcome_email_safely(
-                self.email_sender,
+            # Usar el servicio inyectado para enviar el email
+            await self.welcome_email_service.send_welcome_email(
                 email=user.user_email,
                 full_name=user.user_full_name,
                 credits_assigned=credits_assigned,
@@ -385,8 +393,7 @@ class ActivationFlowService:
         )
 
         # Envío best-effort (no falla si el email no se puede enviar)
-        email_sent = await send_activation_email_safely(
-            self.email_sender,
+        email_sent = await self._send_activation_email(
             email=user.user_email,
             full_name=user.user_full_name,
             token=token,
@@ -397,7 +404,7 @@ class ActivationFlowService:
 
         # Auditoría (siempre, independiente del resultado del email)
         try:
-            AuditService.log_activation_resend(
+            self.audit_service.log_activation_resend(
                 user_id=str(user.user_id),
                 email=user.user_email,
                 ip_address=ip_address,
@@ -407,6 +414,28 @@ class ActivationFlowService:
             logger.warning(f"Audit log_activation_resend failed: {e}")
 
         return {"message": generic_message}
+
+    async def _send_activation_email(
+        self,
+        email: str,
+        full_name: str,
+        token: str,
+        user_id: int,
+        ip_address: str,
+        user_agent: str,
+    ) -> bool:
+        """
+        Wrapper para enviar activation email (inyectable para tests).
+        """
+        return await send_activation_email_safely(
+            self.email_sender,
+            email=email,
+            full_name=full_name,
+            token=token,
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
 
 
 __all__ = ["ActivationFlowService"]

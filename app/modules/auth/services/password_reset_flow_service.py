@@ -38,12 +38,15 @@ class PasswordResetFlowService:
         self,
         db: AsyncSession,
         email_sender: EmailSender,
+        audit_service: type | None = None,
     ) -> None:
         self.db = db
         self.email_sender = email_sender
         self.user_service = UserService.with_session(db)
         # PasswordResetService ya se encarga de tokens + persistencia + correo
         self.reset_service = PasswordResetService(db, email_sender=self.email_sender)
+        # Inyección de AuditService (con default si no se provee)
+        self.audit_service = audit_service if audit_service is not None else AuditService
 
     async def start_password_reset(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """
@@ -76,7 +79,7 @@ class PasswordResetFlowService:
         result = await self.reset_service.start_password_reset(email)
 
         # Auditoría: registramos solicitud de reset (no revela existencia real de la cuenta)
-        AuditService.log_password_reset_request(
+        self.audit_service.log_password_reset_request(
             email=email,
             ip_address=ip,
             user_agent=ua,

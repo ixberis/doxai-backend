@@ -11,7 +11,7 @@ Fecha: 2025-12-21
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -32,16 +32,31 @@ router = APIRouter(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schemas
+# Schemas - Canonical contract for Admin Users
 # ─────────────────────────────────────────────────────────────────────────────
 
+from typing import Literal
+
+# Canonical ID type - currently int, exposed as string for frontend consistency
+UserIdType = Literal["int", "uuid"]
+
 class AdminUserResponse(BaseModel):
-    user_id: str
+    """
+    Canonical Admin User DTO.
+    
+    Contract:
+    - user_id: always string (even if DB uses int), canonical ID for operations
+    - user_id_type: "int" or "uuid" - for traceability/future migration
+    - account_status: single source of truth for account state (active/suspended/etc)
+    - activation_status: separate from account status (activated/pending)
+    """
+    user_id: str                        # Canonical ID (string always)
+    user_id_type: UserIdType = "int"    # Current backend uses int
     email: str
     full_name: Optional[str] = None
-    role: str = "customer"  # Default role per user_role_enum
-    status: str = "active"
-    activated: bool = False
+    role: str = "customer"
+    account_status: str = "active"      # Single source for Estado column
+    activation_status: str = "pending"  # activated | pending
     created_at: str
 
 
@@ -57,6 +72,39 @@ class UpdateUserRequest(BaseModel):
     role: Optional[str] = Field(None, pattern="^(admin|staff|customer)$")
     # Aligned with user_status_enum: 'active', 'cancelled', 'no_payment', 'not_active', 'suspended'
     status: Optional[str] = Field(None, pattern="^(active|cancelled|no_payment|not_active|suspended)$")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ID Resolution - supports both int and UUID
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve_user_id(user_id: str) -> tuple[Union[int, UUID], UserIdType]:
+    """
+    Resolve canonical user_id string to appropriate type.
+    
+    Returns:
+        tuple: (resolved_id_for_query, id_type)
+        - For int IDs: returns (int, "int")
+        - For UUID IDs: returns (UUID, "uuid")
+        
+    Current backend uses int IDs, but this supports future UUID migration.
+    """
+    # If all digits, treat as int
+    if user_id.isdigit():
+        return int(user_id), "int"
+    
+    # Try to parse as UUID
+    try:
+        parsed_uuid = UUID(user_id)
+        return parsed_uuid, "uuid"
+    except ValueError:
+        pass
+    
+    # Invalid format
+    raise HTTPException(
+        status_code=400, 
+        detail=f"ID inválido: '{user_id}'. Debe ser numérico o UUID válido."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,8 +136,8 @@ async def list_users(
             u.user_email AS email,
             u.user_full_name AS full_name,
             u.user_role::text AS role,
-            u.user_status::text AS status,
-            u.user_is_activated AS activated,
+            u.user_status::text AS account_status,
+            u.user_is_activated AS is_activated,
             u.user_created_at::text AS created_at
         FROM public.app_users u
         ORDER BY u.user_created_at DESC
@@ -102,11 +150,12 @@ async def list_users(
     users = [
         AdminUserResponse(
             user_id=row.user_id,
+            user_id_type="int",  # Current backend uses int IDs
             email=row.email,
             full_name=row.full_name,
             role=row.role,
-            status=row.status,
-            activated=row.activated,
+            account_status=row.account_status,
+            activation_status="activated" if row.is_activated else "pending",
             created_at=row.created_at,
         )
         for row in rows
@@ -122,20 +171,23 @@ async def list_users(
 
 @router.patch("/{user_id}", response_model=AdminUserResponse)
 async def update_user(
-    user_id: UUID,
+    user_id: str,
     payload: UpdateUserRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Update user role or status.
-    - role: updates user_roles table
-    - status: updates app_users.is_active
+    Accepts canonical user_id as string (int or UUID).
+    - role: updates app_users.user_role
+    - status: updates app_users.user_status
     """
-    user_id_str = str(user_id)
+    # Resolve canonical ID
+    resolved_id, id_type = resolve_user_id(user_id)
+    logger.debug(f"Resolving user_id={user_id} -> {resolved_id} (type={id_type})")
 
-    # Verify user exists
+    # Verify user exists (current schema uses int)
     check_q = text("SELECT user_id FROM public.app_users WHERE user_id = :uid")
-    check_res = await db.execute(check_q, {"uid": user_id_str})
+    check_res = await db.execute(check_q, {"uid": resolved_id})
     if not check_res.first():
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
@@ -146,7 +198,7 @@ async def update_user(
             SET user_status = :status::user_status_enum 
             WHERE user_id = :uid
         """)
-        await db.execute(update_status_q, {"status": payload.status, "uid": user_id_str})
+        await db.execute(update_status_q, {"status": payload.status, "uid": resolved_id})
 
     # Update role if provided (using user_role enum in app_users)
     if payload.role is not None:
@@ -156,9 +208,9 @@ async def update_user(
             WHERE user_id = :uid
         """)
         try:
-            await db.execute(update_role_q, {"role": payload.role, "uid": user_id_str})
+            await db.execute(update_role_q, {"role": payload.role, "uid": resolved_id})
         except Exception as e:
-            logger.exception(f"Could not update role for {user_id_str}: {e}")
+            logger.exception(f"Could not update role for {resolved_id}: {e}")
             raise HTTPException(status_code=500, detail="Error al actualizar rol")
 
     await db.commit()
@@ -170,13 +222,13 @@ async def update_user(
             u.user_email AS email,
             u.user_full_name AS full_name,
             u.user_role::text AS role,
-            u.user_status::text AS status,
-            u.user_is_activated AS activated,
+            u.user_status::text AS account_status,
+            u.user_is_activated AS is_activated,
             u.user_created_at::text AS created_at
         FROM public.app_users u
         WHERE u.user_id = :uid
     """)
-    res = await db.execute(fetch_q, {"uid": user_id_str})
+    res = await db.execute(fetch_q, {"uid": resolved_id})
     row = res.first()
 
     if not row:
@@ -184,13 +236,17 @@ async def update_user(
 
     return AdminUserResponse(
         user_id=row.user_id,
+        user_id_type=id_type,
         email=row.email,
         full_name=row.full_name,
         role=row.role,
-        status=row.status,
-        activated=row.activated,
+        account_status=row.account_status,
+        activation_status="activated" if row.is_activated else "pending",
         created_at=row.created_at,
     )
+
+
+# Fin del archivo
 
 
 # Fin del archivo

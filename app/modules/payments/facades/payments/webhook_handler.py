@@ -68,6 +68,10 @@ async def handle_webhook(
     refund_service: RefundService,
     refund_repo: RefundRepository,
     event_service: PaymentEventService,
+    # Inyección de dependencias para testing
+    normalize_fn=None,
+    verify_fn=None,
+    success_handler_fn=None,
 ) -> Dict[str, Any]:
     """
     Procesa un webhook del proveedor (Stripe o PayPal).
@@ -95,10 +99,15 @@ async def handle_webhook(
     """
     provider_name = provider.value.upper()
     
+    # Usar funciones inyectadas o las reales
+    _normalize = normalize_fn or normalize_webhook_payload
+    _verify = verify_fn or verify_webhook_signature
+    _handle_success = success_handler_fn or handle_payment_success
+    
     # 1) VERIFICAR FIRMA (OBLIGATORIO EN PRODUCCIÓN)
     logger.info(f"Procesando webhook de {provider_name}")
     
-    signature_valid = await verify_webhook_signature(provider, raw_body, headers)
+    signature_valid = await _verify(provider, raw_body, headers)
     
     if not signature_valid:
         logger.error(f"Webhook {provider_name} rechazado: firma inválida")
@@ -111,7 +120,7 @@ async def handle_webhook(
     
     # 2) NORMALIZAR PAYLOAD
     try:
-        normalized = normalize_webhook_payload(provider, raw_body, headers)
+        normalized = _normalize(provider, raw_body, headers)
     except WebhookNormalizationError as e:
         logger.error(f"Webhook {provider_name} error de normalización: {e}")
         raise WebhookProcessingError(f"Failed to normalize webhook: {e}")
@@ -180,7 +189,7 @@ async def handle_webhook(
     # Éxito de pago
     if normalized.is_success:
         try:
-            payment = await handle_payment_success(
+            payment = await _handle_success(
                 session=session,
                 payment_service=payment_service,
                 payment_repo=payment_repo,

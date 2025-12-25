@@ -61,6 +61,8 @@ async def reconcile_provider_transactions(
     provider_transactions: List[Dict[str, Any]],
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    # Inyección de dependencias para testing
+    load_payments_fn=None,
 ) -> ReconciliationResult:
     """
     Concilia transacciones del proveedor con registros internos.
@@ -80,7 +82,8 @@ async def reconcile_provider_transactions(
         result = ReconciliationResult()
 
         # 1) Cargar pagos internos del período
-        internal_payments = await load_internal_payments(
+        _load_payments = load_payments_fn or load_internal_payments
+        internal_payments = await _load_payments(
             db,
             provider=provider,
             start_date=start_date,
@@ -213,6 +216,9 @@ async def find_discrepancies(
     provider: PaymentProvider,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    # Inyección de dependencias para testing
+    load_payments_fn=None,
+    has_success_events_fn=None,
 ) -> Dict[str, Any]:
     """
     Encuentra discrepancias internas (sin consultar proveedor).
@@ -234,7 +240,8 @@ async def find_discrepancies(
             "failed_with_success_events": [],
         }
 
-        payments = await load_internal_payments(
+        _load_payments = load_payments_fn or load_internal_payments
+        payments = await _load_payments(
             db,
             provider=provider,
             start_date=start_date,
@@ -271,7 +278,8 @@ async def find_discrepancies(
 
             # Pagos FAILED con eventos de éxito
             if payment.status == PaymentStatus.FAILED:
-                success_events = await has_success_events(db, payment.id)
+                _has_success = has_success_events_fn or has_success_events
+                success_events = await _has_success(db, payment.id)
                 if success_events:
                     discrepancies["failed_with_success_events"].append(
                         {

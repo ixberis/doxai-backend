@@ -23,7 +23,7 @@ Autor: Ixchel Beristáin Mendoza
 Fecha: 17/11/2025
 """
 
-from prometheus_client import Gauge
+from app.shared.core.metrics_helpers import get_or_create_gauge
 
 from app.modules.rag.metrics.schemas.snapshot_schemas import (
     RagMetricsDbSnapshot,
@@ -34,31 +34,31 @@ from app.modules.rag.metrics.schemas.snapshot_schemas import (
 # Definición de métricas Prometheus para OCR
 # ============================================================================
 
-OCR_REQUESTS_TOTAL = Gauge(
+OCR_REQUESTS_TOTAL = get_or_create_gauge(
     "rag_ocr_requests_total",
     "Número total de requests OCR por día, proveedor, modelo y estrategia.",
     labelnames=("completed_date", "provider", "provider_model", "ocr_optimization"),
 )
 
-OCR_PAGES_TOTAL = Gauge(
+OCR_PAGES_TOTAL = get_or_create_gauge(
     "rag_ocr_pages_total",
     "Número total de páginas procesadas por OCR por día, proveedor, modelo y estrategia.",
     labelnames=("completed_date", "provider", "provider_model", "ocr_optimization"),
 )
 
-OCR_CHARACTERS_TOTAL = Gauge(
+OCR_CHARACTERS_TOTAL = get_or_create_gauge(
     "rag_ocr_characters_total",
     "Número total de caracteres procesados por OCR por día, proveedor, modelo y estrategia.",
     labelnames=("completed_date", "provider", "provider_model", "ocr_optimization"),
 )
 
-OCR_RETRIES_TOTAL = Gauge(
+OCR_RETRIES_TOTAL = get_or_create_gauge(
     "rag_ocr_retries_total",
     "Número total de reintentos de OCR por día, proveedor, modelo y estrategia.",
     labelnames=("completed_date", "provider", "provider_model", "ocr_optimization"),
 )
 
-OCR_COST_USD_TOTAL = Gauge(
+OCR_COST_USD_TOTAL = get_or_create_gauge(
     "rag_ocr_cost_usd_total",
     "Costo total diario de OCR en USD por día, proveedor, modelo y estrategia.",
     labelnames=("completed_date", "provider", "provider_model", "ocr_optimization"),

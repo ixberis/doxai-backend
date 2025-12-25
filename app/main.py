@@ -189,6 +189,15 @@ atexit.register(atexit_cleanup)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ────────── STARTUP ──────────
+    
+    # Registrar relaciones ORM cross-module (auth <-> payments)
+    # Esto debe ocurrir antes de cualquier uso de las relaciones
+    try:
+        from app.shared.orm import register_cross_module_relationships
+        register_cross_module_relationships()
+    except Exception as e:
+        logger.warning(f"⚠️ Error registrando ORM cross-module relationships: {e}")
+    
     try:
         if _should_warmup():
             logger.info("🌡️ Ejecutando warm-up de recursos...")
@@ -299,6 +308,19 @@ def _configure_cors(app_instance: FastAPI) -> dict:
     Returns:
         dict con la configuración aplicada para logging.
     """
+    # FAST PATH: Test mode con wildcard puro (bypass completo)
+    if os.getenv("CORS_TEST_WILDCARD") == "1":
+        logger.warning("🧪 CORS_TEST_WILDCARD=1: Usando config wildcard pura para tests")
+        cors_config = {
+            "allow_origins": ["*"],
+            "allow_credentials": False,
+            "allow_methods": ["*"],
+            "allow_headers": ["*"],
+            "max_age": 600,
+        }
+        app_instance.add_middleware(CORSMiddleware, **cors_config)
+        return cors_config
+
     settings = get_settings()
 
     # Detectar ambiente
@@ -306,44 +328,65 @@ def _configure_cors(app_instance: FastAPI) -> dict:
     python_env = os.getenv("PYTHON_ENV", "NOT_SET")
     is_production = env_name == "production" or python_env == "production"
 
-    # Leer origins desde env y/o settings
-    cors_origins_raw = os.getenv("CORS_ORIGINS", "")
-    settings_origins = getattr(settings, "allowed_origins", "")
-    origins_raw = cors_origins_raw or settings_origins
-
-    # Parsear origins
-    if hasattr(settings, "get_cors_origins") and cors_origins_raw:
-        origins_list = [o.strip().strip('"').strip("'") for o in origins_raw.split(",") if o.strip()]
-    elif hasattr(settings, "get_cors_origins"):
-        origins_list = settings.get_cors_origins()
-    else:
-        origins_list = [o.strip() for o in origins_raw.split(",") if o.strip()]
-
-    allow_credentials = True
-    allow_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-    allow_headers = ["*"]
-
-    # "*" con allow_credentials=True es inválido en navegadores
-    if "*" in origins_list:
-        if len(origins_list) == 1:
-            logger.warning(
-                "⚠️ CORS: origins='*' con allow_credentials=True es inválido. "
-                "Forzando allow_credentials=False para permitir cualquier origen."
-            )
-            allow_credentials = False
-        else:
-            logger.warning("⚠️ CORS: Filtrando '*' de origins porque hay otros origins explícitos.")
-            origins_list = [o for o in origins_list if o != "*"]
-
-    # origins vacío
-    if not origins_list:
-        if is_production:
+    # =========================================================================
+    # FAIL-CLOSED EN PRODUCCIÓN: Solo usar CORS_ORIGINS explícito de env
+    # =========================================================================
+    cors_origins_raw = os.getenv("CORS_ORIGINS", "").strip()
+    
+    # Log inmediato para debug
+    logger.info(f"🔍 CORS DEBUG: cors_origins_raw='{cors_origins_raw}', is_production={is_production}")
+    
+    # En producción: SOLO usar lo que viene de CORS_ORIGINS env var (fail-closed)
+    # En desarrollo: permitir fallback a settings
+    if is_production:
+        # PRODUCCIÓN: fail-closed - solo env var explícita
+        if not cors_origins_raw:
+            # CORS DESHABILITADO en producción sin configuración explícita
             logger.error(
-                "❌ CORS DISABLED: No origins configured in production! "
+                "❌ CORS DISABLED: No CORS_ORIGINS env var in production! "
                 "Set CORS_ORIGINS env var (e.g., CORS_ORIGINS=https://app.doxai.site). "
                 "All cross-origin requests will be BLOCKED."
             )
+            # NO añadir middleware CORS = todas las requests cross-origin fallarán
+            return {
+                "cors_disabled": True,
+                "reason": "No CORS_ORIGINS configured in production (fail-closed)",
+                "allow_origins": [],
+            }
+        
+        # Verificar wildcard en producción
+        if cors_origins_raw == "*":
+            if os.getenv("ALLOW_CORS_WILDCARD_IN_PROD") == "1":
+                logger.warning(
+                    "⚠️ CORS WILDCARD IN PRODUCTION: Explicitly allowed via ALLOW_CORS_WILDCARD_IN_PROD=1. "
+                    "This is a security risk!"
+                )
+            else:
+                logger.error(
+                    "❌ REFUSING WILDCARD CORS IN PRODUCTION! "
+                    "Set explicit origins or ALLOW_CORS_WILDCARD_IN_PROD=1 to override."
+                )
+                return {
+                    "cors_disabled": True,
+                    "reason": "Wildcard CORS rejected in production (security)",
+                    "allow_origins": [],
+                }
+        
+        origins_list = [o.strip().strip('"').strip("'") for o in cors_origins_raw.split(",") if o.strip()]
+    else:
+        # DESARROLLO: permitir fallback a settings
+        settings_origins = getattr(settings, "allowed_origins", "")
+        origins_raw = cors_origins_raw or settings_origins
+        
+        if hasattr(settings, "get_cors_origins") and cors_origins_raw:
+            origins_list = [o.strip().strip('"').strip("'") for o in origins_raw.split(",") if o.strip()]
+        elif hasattr(settings, "get_cors_origins"):
+            origins_list = settings.get_cors_origins()
         else:
+            origins_list = [o.strip() for o in origins_raw.split(",") if o.strip()]
+        
+        # Fallback localhost en desarrollo si no hay origins
+        if not origins_list:
             logger.warning("⚠️ CORS: No origins configured in development. Using localhost fallback.")
             origins_list = [
                 "http://localhost:5173",
@@ -351,27 +394,61 @@ def _configure_cors(app_instance: FastAPI) -> dict:
                 "http://localhost:8080",
             ]
 
-    # Regex para Vercel
-    allow_origin_regex = os.getenv(
-        "CORS_ALLOW_ORIGIN_REGEX",
-        r"^https://.*\.vercel\.app$",
-    )
+    allow_credentials = True
+    allow_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    allow_headers = ["*"]
+    allow_origin_regex = None
 
-    # Asegurar dominios prod
-    production_origins = ["https://app.doxai.site", "https://doxai.site"]
-    for prod_origin in production_origins:
-        if prod_origin not in origins_list:
-            origins_list.append(prod_origin)
+    # Detectar si es wildcard puro
+    is_wildcard_only = (len(origins_list) == 1 and origins_list[0] == "*")
+    
+    logger.info(f"🔍 CORS DEBUG: origins_list={origins_list}, is_wildcard_only={is_wildcard_only}")
+    
+    # "*" con allow_credentials=True es inválido en navegadores
+    if is_wildcard_only:
+        logger.warning(
+            "⚠️ CORS WILDCARD MODE: origins='*' detectado. "
+            "Configurando allow_credentials=False y allow_methods=['*'] para permitir cualquier origen."
+        )
+        allow_credentials = False
+        allow_methods = ["*"]
+        allow_headers = ["*"]
+        # allow_origin_regex ya es None
+    elif "*" in origins_list:
+        # Mezcla de "*" con otros - filtrar el "*"
+        logger.warning("⚠️ CORS: Filtrando '*' de origins porque hay otros origins explícitos.")
+        origins_list = [o for o in origins_list if o != "*"]
+        allow_origin_regex = os.getenv(
+            "CORS_ALLOW_ORIGIN_REGEX",
+            r"^https://.*\.vercel\.app$",
+        )
+    else:
+        # Lista explícita de origins
+        allow_origin_regex = os.getenv(
+            "CORS_ALLOW_ORIGIN_REGEX",
+            r"^https://.*\.vercel\.app$",
+        )
 
+    # Asegurar dominios prod (SOLO si NO es wildcard puro y estamos en prod)
+    if not is_wildcard_only and is_production:
+        production_origins = ["https://app.doxai.site", "https://doxai.site"]
+        for prod_origin in production_origins:
+            if prod_origin not in origins_list:
+                origins_list.append(prod_origin)
+
+    # Construir config - NO incluir allow_origin_regex si es None (wildcard mode)
     cors_config = {
         "allow_origins": origins_list,
-        "allow_origin_regex": allow_origin_regex,
         "allow_credentials": allow_credentials,
         "allow_methods": allow_methods,
         "allow_headers": allow_headers,
         "expose_headers": ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
         "max_age": 600,
     }
+    
+    # Solo agregar regex si está definido (no en wildcard mode)
+    if allow_origin_regex:
+        cors_config["allow_origin_regex"] = allow_origin_regex
 
     logger.info("=" * 70)
     logger.info("🌐 CORS CONFIGURATION STARTUP")
@@ -379,8 +456,8 @@ def _configure_cors(app_instance: FastAPI) -> dict:
     logger.info(f"  ENVIRONMENT:          {env_name}")
     logger.info(f"  PYTHON_ENV:           {python_env}")
     logger.info(f"  is_production:        {is_production}")
+    logger.info(f"  is_wildcard_only:     {is_wildcard_only}")
     logger.info(f"  CORS_ORIGINS (raw):   '{cors_origins_raw}' (env var)")
-    logger.info(f"  settings.allowed_origins: '{settings_origins}'")
     logger.info(f"  origins_parsed:       {origins_list}")
     logger.info(f"  allow_origin_regex:   '{allow_origin_regex}'")
     logger.info(f"  allow_credentials:    {allow_credentials}")

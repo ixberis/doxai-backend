@@ -145,7 +145,7 @@ async def log_activity(
         event_by=payload.performed_by,
         details=payload.details,
     )
-    return {"activity_id": entry.activity_id}
+    return {"activity_id": entry.product_file_activity_id}
 
 
 @router.get(
@@ -180,7 +180,7 @@ async def product_history(
         else:
             result.append(
                 ActivityEntry(
-                    activity_id=row.activity_id,
+                    activity_id=row.product_file_activity_id,
                     project_id=row.project_id,
                     product_file_id=row.product_file_id,
                     event_type=_normalize_event_type(row.event_type),
@@ -228,7 +228,7 @@ async def project_recent_activity(
         else:
             result.append(
                 ActivityEntry(
-                    activity_id=row.activity_id,
+                    activity_id=row.product_file_activity_id,
                     project_id=row.project_id,
                     product_file_id=row.product_file_id,
                     event_type=_normalize_event_type(row.event_type),

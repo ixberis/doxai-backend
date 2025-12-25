@@ -30,7 +30,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.shared.database.base import Base
 from app.modules.payments.enums import Currency, PaymentProvider, PaymentStatus
-from app.modules.payments.models.refund_models import Refund
 
 if TYPE_CHECKING:
     from .payment_event_models import PaymentEvent
@@ -171,11 +170,11 @@ class Payment(Base):
         doc="Momento en que el webhook fue verificado exitosamente.",
     )
 
-    # Relaciones
+    # Relaciones (back_populates con AppUser se configura en el bootstrap ORM)
     user: Mapped["AppUser"] = relationship(
         "AppUser",
-        back_populates="payments",
-        lazy="noload",  # Evitar carga automática que causa el error
+        foreign_keys=[user_id],
+        lazy="noload",
     )
 
     events: Mapped[List["PaymentEvent"]] = relationship(

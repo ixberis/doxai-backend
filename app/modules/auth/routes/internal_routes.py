@@ -25,10 +25,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
-from app.shared.integrations.email_sender import EmailSender
+from app.shared.integrations.email_sender import EmailSender, IEmailSender
 from app.shared.internal_auth import InternalServiceAuth
 from app.modules.auth.services.welcome_email_retry_service import (
     WelcomeEmailRetryService,
+    RetryResult,
 )
 from app.modules.auth.services.password_reset_email_retry_service import (
     PasswordResetEmailRetryService,
@@ -40,6 +41,31 @@ router = APIRouter(
     prefix="/_internal/auth",
     tags=["auth-internal"],
 )
+
+
+# -----------------------------------------------------------------------------
+# Dependency Factories (para DI y testing)
+# -----------------------------------------------------------------------------
+
+def get_email_sender() -> IEmailSender:
+    """Factory para obtener EmailSender. Override en tests."""
+    return EmailSender.from_env()
+
+
+async def get_welcome_email_retry_service(
+    db: AsyncSession = Depends(get_db),
+    email_sender: IEmailSender = Depends(get_email_sender),
+) -> WelcomeEmailRetryService:
+    """Factory para WelcomeEmailRetryService. Override en tests."""
+    return WelcomeEmailRetryService(db, email_sender)
+
+
+async def get_password_reset_email_retry_service(
+    db: AsyncSession = Depends(get_db),
+    email_sender: IEmailSender = Depends(get_email_sender),
+) -> PasswordResetEmailRetryService:
+    """Factory para PasswordResetEmailRetryService. Override en tests."""
+    return PasswordResetEmailRetryService(db, email_sender)
 
 
 # -----------------------------------------------------------------------------
@@ -105,18 +131,18 @@ class RetryPasswordResetEmailsResponse(BaseModel):
 async def retry_welcome_emails(
     request: RetryWelcomeEmailsRequest,
     _auth: InternalServiceAuth,  # Requiere service token
-    db: AsyncSession = Depends(get_db),
+    service: WelcomeEmailRetryService = Depends(get_welcome_email_retry_service),
 ) -> RetryWelcomeEmailsResponse:
     """
     Ejecuta una ronda de reintentos de welcome emails.
     
     Este endpoint es idempotente y seguro para llamar múltiples veces.
     El claim atómico garantiza que no se envíen correos duplicados.
+    
+    BEST-EFFORT: Nunca devuelve 500 por errores SMTP/SSL.
+    Los fallos se registran y reportan en la respuesta.
     """
     try:
-        email_sender = EmailSender.from_env()
-        service = WelcomeEmailRetryService(db, email_sender)
-        
         result = await service.retry_batch(
             batch_size=request.batch_size,
             max_attempts=request.max_attempts,
@@ -140,10 +166,18 @@ async def retry_welcome_emails(
         )
         
     except Exception as e:
-        logger.error(f"retry_welcome_emails_error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during retry: {str(e)}",
+        # Best-effort: loguear pero NO devolver 500
+        logger.error(
+            "retry_welcome_emails_batch_error: %s",
+            str(e),
+            exc_info=True,
+        )
+        return RetryWelcomeEmailsResponse(
+            processed=0,
+            sent=0,
+            failed=0,
+            skipped=0,
+            message=f"Batch processing error: {str(e)[:100]}",
         )
 
 
@@ -171,7 +205,7 @@ async def retry_welcome_emails(
 async def retry_password_reset_emails(
     request: RetryPasswordResetEmailsRequest,
     _auth: InternalServiceAuth,  # Requiere service token
-    db: AsyncSession = Depends(get_db),
+    service: PasswordResetEmailRetryService = Depends(get_password_reset_email_retry_service),
 ) -> RetryPasswordResetEmailsResponse:
     """
     Ejecuta una ronda de reintentos de correos de password reset.
@@ -179,11 +213,10 @@ async def retry_password_reset_emails(
     Este endpoint es idempotente y seguro para llamar múltiples veces.
     El claim atómico garantiza que no se envíen correos duplicados.
     Solo procesa tokens que no han expirado.
+    
+    BEST-EFFORT: Nunca devuelve 500 por errores SMTP/SSL.
     """
     try:
-        email_sender = EmailSender.from_env()
-        service = PasswordResetEmailRetryService(db, email_sender)
-        
         result = await service.retry_batch(
             batch_size=request.batch_size,
             max_attempts=request.max_attempts,
@@ -206,10 +239,17 @@ async def retry_password_reset_emails(
         )
         
     except Exception as e:
-        logger.error(f"retry_password_reset_emails_error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during retry: {str(e)}",
+        logger.error(
+            "retry_password_reset_emails_batch_error: %s",
+            str(e),
+            exc_info=True,
+        )
+        return RetryPasswordResetEmailsResponse(
+            processed=0,
+            sent=0,
+            failed=0,
+            skipped=0,
+            message=f"Batch processing error: {str(e)[:100]}",
         )
 
 

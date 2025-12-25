@@ -14,19 +14,15 @@ from __future__ import annotations
 
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Query, Depends, HTTPException, status
 from starlette.responses import JSONResponse
 
 from ..collectors.metrics_collector import get_metrics_collector
 
-# Importar dependencia de autenticación
-try:
-    from app.modules.auth.dependencies import get_current_user_admin
-except ImportError:
-    # Definir stub que será sobrescrito por dependency_overrides en tests
-    async def get_current_user_admin():
-        """Stub - será sobrescrito en tests vía dependency_overrides."""
-        raise RuntimeError("get_current_user_admin not configured")
+# Dependencia canónica de autenticación admin (sin fallback)
+# Si el import falla, debe fallar early - no silenciar con 401
+from app.modules.auth.dependencies import require_admin
+
 
 router_snapshot_memory = APIRouter(tags=["payments-metrics"])
 
@@ -36,7 +32,7 @@ async def snapshot(
     hours: int = Query(1, ge=1, le=24, description="Ventana de tiempo en horas"),
     endpoint: Optional[str] = Query(None, description="Filtrar métricas por endpoint"),
     provider: Optional[str] = Query(None, description="Filtrar métricas por proveedor"),
-    current_user: Any = Depends(get_current_user_admin),
+    current_user: str = Depends(require_admin),
 ) -> JSONResponse:
     """
     Snapshot JSON para el módulo de Administración (sin PII).

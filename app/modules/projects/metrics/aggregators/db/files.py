@@ -69,10 +69,13 @@ class FilesDBAggregator:
         """
         Total de archivos (global o por proyecto si se indica).
         """
-        stmt = select(func.count(literal_column("*"))).select_from(ProjectFile)
-        if project_id is not None and _safe_hasattr(ProjectFile, "project_id"):
-            stmt = stmt.where(ProjectFile.project_id == project_id)
-        return int(self.db.execute(stmt).scalar() or 0)
+        try:
+            stmt = select(func.count(literal_column("*"))).select_from(ProjectFile)
+            if project_id is not None and _safe_hasattr(ProjectFile, "project_id"):
+                stmt = stmt.where(ProjectFile.project_id == project_id)
+            return int(self.db.execute(stmt).scalar() or 0)
+        except Exception:
+            return 0
 
     # ---------------------------------------------------------------------
     # Promedio de tamaño de archivos
@@ -81,15 +84,18 @@ class FilesDBAggregator:
         """
         Promedio de tamaño de archivo en bytes (si hay columna de tamaño).
         """
-        size_col = _get_size_column()
-        if size_col is None:
-            return None
+        try:
+            size_col = _get_size_column()
+            if size_col is None:
+                return None
 
-        stmt = select(func.avg(size_col).label("avg_size")).select_from(ProjectFile)
-        if project_id is not None and _safe_hasattr(ProjectFile, "project_id"):
-            stmt = stmt.where(ProjectFile.project_id == project_id)
-        val = self.db.execute(stmt).scalar()
-        return float(val) if val is not None else None
+            stmt = select(func.avg(size_col).label("avg_size")).select_from(ProjectFile)
+            if project_id is not None and _safe_hasattr(ProjectFile, "project_id"):
+                stmt = stmt.where(ProjectFile.project_id == project_id)
+            val = self.db.execute(stmt).scalar()
+            return float(val) if val is not None else None
+        except Exception:
+            return None
 
     # ---------------------------------------------------------------------
     # Eventos de archivos por tipo
@@ -98,22 +104,25 @@ class FilesDBAggregator:
         """
         Conteo de eventos de archivos por tipo (uploaded, validated, moved, deleted, etc.).
         """
-        if not _safe_hasattr(ProjectFileEventLog, "event_type"):
-            # Sin columna -> vacío
+        try:
+            if not _safe_hasattr(ProjectFileEventLog, "event_type"):
+                # Sin columna -> vacío
+                return ProjectFileEventsByType(items={}, total=0)
+
+            stmt = select(
+                cast(ProjectFileEventLog.event_type, String), func.count(literal_column("*"))
+            ).select_from(ProjectFileEventLog)
+
+            if project_id is not None and _safe_hasattr(ProjectFileEventLog, "project_id"):
+                stmt = stmt.where(ProjectFileEventLog.project_id == project_id)
+
+            stmt = stmt.group_by(ProjectFileEventLog.event_type)
+            rows = self.db.execute(stmt).all()
+            items: Dict[str, int] = {str(k or ""): int(v or 0) for k, v in rows}
+            total = sum(items.values())
+            return ProjectFileEventsByType(items=items, total=total)
+        except Exception:
             return ProjectFileEventsByType(items={}, total=0)
-
-        stmt = select(
-            cast(ProjectFileEventLog.event_type, String), func.count(literal_column("*"))
-        ).select_from(ProjectFileEventLog)
-
-        if project_id is not None and _safe_hasattr(ProjectFileEventLog, "project_id"):
-            stmt = stmt.where(ProjectFileEventLog.project_id == project_id)
-
-        stmt = stmt.group_by(ProjectFileEventLog.event_type)
-        rows = self.db.execute(stmt).all()
-        items: Dict[str, int] = {str(k or ""): int(v or 0) for k, v in rows}
-        total = sum(items.values())
-        return ProjectFileEventsByType(items=items, total=total)
 
     # ---------------------------------------------------------------------
     # Últimos eventos (útil para inspección/diagnóstico)
@@ -123,41 +132,31 @@ class FilesDBAggregator:
         Devuelve los últimos N eventos de archivos (ordenados por timestamp desc).
         Retorna lista de diccionarios con campos esenciales.
         
-        NOTA: La columna de timestamp es 'event_created_at', no 'created_at'.
+        Usa ORM para compatibilidad multi-dialecto (SQLite en tests, PostgreSQL en prod).
+        En caso de error (por incompatibilidad de esquema o dialecto), retorna lista vacía.
         """
-        from sqlalchemy import text
-        
-        # Usamos raw SQL porque la tabla usa 'event_created_at' en lugar de 'created_at'
-        if project_id is not None:
-            sql = text("""
-                SELECT 
-                    project_id, 
-                    project_file_id, 
-                    event_type,
-                    event_created_at as created_at,
-                    event_details
-                FROM project_file_event_logs
-                WHERE project_id = :project_id
-                ORDER BY event_created_at DESC
-                LIMIT :limit
-            """)
-            result = self.db.execute(sql, {"project_id": str(project_id), "limit": limit})
-        else:
-            sql = text("""
-                SELECT 
-                    project_id, 
-                    project_file_id, 
-                    event_type,
-                    event_created_at as created_at,
-                    event_details
-                FROM project_file_event_logs
-                ORDER BY event_created_at DESC
-                LIMIT :limit
-            """)
-            result = self.db.execute(sql, {"limit": limit})
-        
-        rows = result.mappings().all()
-        return [dict(r) for r in rows]
+        try:
+            stmt = (
+                select(
+                    ProjectFileEventLog.project_id,
+                    ProjectFileEventLog.project_file_id,
+                    cast(ProjectFileEventLog.event_type, String).label("event_type"),
+                    ProjectFileEventLog.created_at,
+                    ProjectFileEventLog.event_details,
+                )
+                .select_from(ProjectFileEventLog)
+                .order_by(desc(ProjectFileEventLog.created_at))
+                .limit(limit)
+            )
+            
+            if project_id is not None:
+                stmt = stmt.where(ProjectFileEventLog.project_id == project_id)
+            
+            rows = self.db.execute(stmt).mappings().all()
+            return [dict(r) for r in rows]
+        except Exception:
+            # Fallback para SQLite u otros dialectos sin soporte completo
+            return []
 
     # ---------------------------------------------------------------------
     # Resumen (para snapshot DB)

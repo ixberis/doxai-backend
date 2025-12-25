@@ -65,7 +65,6 @@ def change_status(
         old_status = project.status
         
         project.status = new_status
-        project.updated_by = user_id
         
         audit.log_action(
             project_id=project.id,
@@ -154,7 +153,6 @@ def transition_state(
         
         # Aplicar nueva state
         project.state = to_state
-        project.updated_by = user_id
         
         # Timestamps de dominio: setear solo cuando corresponde
         if to_state == ProjectState.ready:

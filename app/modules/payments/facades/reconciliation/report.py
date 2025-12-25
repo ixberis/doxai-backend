@@ -33,6 +33,9 @@ async def generate_reconciliation_report(
     start_date: datetime,
     end_date: datetime,
     include_matched: bool = False,
+    # Inyección de dependencias para testing
+    load_payments_fn=None,
+    has_success_events_fn=None,
 ) -> Dict[str, Any]:
     """
     Genera un reporte completo de reconciliación para auditoría.
@@ -50,9 +53,12 @@ async def generate_reconciliation_report(
             provider=provider,
             start_date=start_date,
             end_date=end_date,
+            load_payments_fn=load_payments_fn,
+            has_success_events_fn=has_success_events_fn,
         )
 
-        payments = await load_internal_payments(
+        _load_payments = load_payments_fn or load_internal_payments
+        payments = await _load_payments(
             db,
             provider=provider,
             start_date=start_date,

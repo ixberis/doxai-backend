@@ -26,6 +26,7 @@ from typing import Optional
 
 from prometheus_client import Gauge
 
+from app.shared.core.metrics_helpers import get_or_create_gauge
 from app.modules.rag.metrics.schemas.snapshot_schemas import (
     RagMetricsDbSnapshot,
     RagDocumentReadinessKpi,
@@ -37,44 +38,44 @@ from app.modules.rag.metrics.schemas.snapshot_schemas import (
 # ============================================================================
 
 # Readiness de documentos por proyecto
-DOCUMENT_READINESS_PCT = Gauge(
+DOCUMENT_READINESS_PCT = get_or_create_gauge(
     "rag_document_readiness_pct",
     "Porcentaje de documentos en estado ready por proyecto (RAG Fase 1).",
     labelnames=("project_id",),
 )
 
-DOCUMENTS_TOTAL = Gauge(
+DOCUMENTS_TOTAL = get_or_create_gauge(
     "rag_documents_total",
     "Número total de documentos indexados por proyecto en el módulo RAG.",
     labelnames=("project_id",),
 )
 
-DOCUMENTS_READY = Gauge(
+DOCUMENTS_READY = get_or_create_gauge(
     "rag_documents_ready",
     "Número de documentos con estado ready por proyecto en el módulo RAG.",
     labelnames=("project_id",),
 )
 
-DOCUMENTS_NOT_READY = Gauge(
+DOCUMENTS_NOT_READY = get_or_create_gauge(
     "rag_documents_not_ready",
     "Número de documentos aún no ready por proyecto en el módulo RAG.",
     labelnames=("project_id",),
 )
 
 # Latencias agregadas del pipeline por día
-PIPELINE_JOBS_COUNT = Gauge(
+PIPELINE_JOBS_COUNT = get_or_create_gauge(
     "rag_pipeline_jobs_count",
     "Número de jobs RAG procesados por día de inicio.",
     labelnames=("job_started_date",),
 )
 
-PIPELINE_AVG_LATENCY_SECONDS = Gauge(
+PIPELINE_AVG_LATENCY_SECONDS = get_or_create_gauge(
     "rag_pipeline_avg_latency_seconds",
     "Latencia promedio del pipeline RAG por etapa y día (segundos).",
     labelnames=("job_started_date", "stage"),
 )
 
-PIPELINE_P90_LATENCY_SECONDS = Gauge(
+PIPELINE_P90_LATENCY_SECONDS = get_or_create_gauge(
     "rag_pipeline_p90_latency_seconds",
     "Latencia p90 del pipeline RAG por etapa y día (segundos).",
     labelnames=("job_started_date", "stage"),

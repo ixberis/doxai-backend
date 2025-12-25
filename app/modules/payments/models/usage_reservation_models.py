@@ -140,10 +140,10 @@ class UsageReservation(Base):
         server_default="NOW()",
     )
 
-    # Relaciones
+    # Relaciones (back_populates con AppUser se configura en el bootstrap ORM)
     user: Mapped["AppUser"] = relationship(
         "AppUser",
-        back_populates="usage_reservations",
+        foreign_keys=[user_id],
         lazy="noload",
     )
 

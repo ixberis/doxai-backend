@@ -133,7 +133,7 @@ async def create_indexing_job(
         return IndexingJobResponse(
             job_id=job.job_id,
             project_id=job.project_id,
-            started_by=job.created_by,
+            started_by=payload.user_id,  # user_id del request, no del modelo
             phase=job.status,
             created_at=job.created_at,
             updated_at=job.updated_at,

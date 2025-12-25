@@ -67,10 +67,10 @@ class Wallet(Base):
     # ------------------------------------------------------------------ #
     # Relaciones - usar noload para evitar carga automática
     # ------------------------------------------------------------------ #
-    # Relación inversa con AppUser.wallet (definida en el módulo auth)
+    # Relación con AppUser (back_populates se configura en el bootstrap ORM)
     user: Mapped["AppUser"] = relationship(
         "AppUser",
-        back_populates="wallet",
+        foreign_keys=[user_id],
         lazy="noload",
         doc="Usuario dueño de esta wallet.",
     )

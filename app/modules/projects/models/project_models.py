@@ -57,17 +57,8 @@ class Project(Base):
     # Usamos String en ORM; la columna real es CITEXT en PostgreSQL
     user_email = Column(String(255), nullable=False, index=True)
 
-    # Audit Trail
-    created_by = Column(
-        UUID(as_uuid=True),
-        ForeignKey("app_users.user_id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    updated_by = Column(
-        UUID(as_uuid=True),
-        ForeignKey("app_users.user_id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # Nota: Audit trail (created_by/updated_by) se maneja en tablas de log,
+    # no en la tabla projects (diseño por eventos/logs).
 
     # Project Identity
     project_name = Column(String(255), nullable=False)

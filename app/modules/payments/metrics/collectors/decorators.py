@@ -13,16 +13,23 @@ import functools
 import logging
 import time
 import inspect
-from typing import Callable, Optional, Any
+from typing import Callable, Optional, Any, TYPE_CHECKING
 
 from fastapi import Request, Response
 
-from ..collectors.metrics_collector import get_metrics_collector
+from .metrics_collector import get_metrics_collector
+
+if TYPE_CHECKING:
+    from .metrics_collector import MetricsCollector
 
 logger = logging.getLogger(__name__)
 
 
-def track_endpoint_metrics(endpoint_name: Optional[str] = None):
+def track_endpoint_metrics(
+    endpoint_name: Optional[str] = None,
+    *,
+    _collector: Optional["MetricsCollector"] = None,
+):
     """
     Decorator para capturar métricas de un endpoint automáticamente.
 
@@ -30,6 +37,11 @@ def track_endpoint_metrics(endpoint_name: Optional[str] = None):
     - Latencia de la llamada
     - Código de estado HTTP
     - Errores y excepciones
+
+    Args:
+        endpoint_name: Nombre del endpoint (ej. "POST /payments/checkout")
+        _collector: (Solo para tests) Collector inyectado directamente.
+                   En producción se usa get_metrics_collector().
 
     Uso:
         @router.post("/checkout")
@@ -85,8 +97,8 @@ def track_endpoint_metrics(endpoint_name: Optional[str] = None):
                 # Calcular latencia
                 latency_ms = (time.time() - start_time) * 1000
 
-                # Registrar métricas
-                collector = get_metrics_collector()
+                # Usar collector inyectado o el global
+                collector = _collector if _collector is not None else get_metrics_collector()
                 collector.record_endpoint_call(
                     endpoint=ep_name,
                     latency_ms=latency_ms,
@@ -102,7 +114,7 @@ def track_endpoint_metrics(endpoint_name: Optional[str] = None):
 
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            # Versión síncrona (por si acaso)
+            # Versión síncrona
             ep_name = endpoint_name or f"{func.__module__}.{func.__name__}"
             start_time = time.time()
             status_code = 200
@@ -125,7 +137,7 @@ def track_endpoint_metrics(endpoint_name: Optional[str] = None):
 
             finally:
                 latency_ms = (time.time() - start_time) * 1000
-                collector = get_metrics_collector()
+                collector = _collector if _collector is not None else get_metrics_collector()
                 collector.record_endpoint_call(
                     endpoint=ep_name,
                     latency_ms=latency_ms,
@@ -142,7 +154,11 @@ def track_endpoint_metrics(endpoint_name: Optional[str] = None):
     return decorator
 
 
-def track_payment_conversion(provider_param: str = "provider"):
+def track_payment_conversion(
+    provider_param: str = "provider",
+    *,
+    _collector: Optional["MetricsCollector"] = None,
+):
     """
     Decorator para rastrear conversiones de pago.
 
@@ -150,6 +166,7 @@ def track_payment_conversion(provider_param: str = "provider"):
 
     Args:
         provider_param: Nombre del parámetro que contiene el proveedor
+        _collector: (Solo para tests) Collector inyectado directamente.
 
     Uso:
         @router.post("/checkout")
@@ -179,8 +196,8 @@ def track_payment_conversion(provider_param: str = "provider"):
                 raise
 
             finally:
-                # Registrar intento de conversión
-                collector = get_metrics_collector()
+                # Usar collector inyectado o el global
+                collector = _collector if _collector is not None else get_metrics_collector()
                 collector.record_payment_attempt(
                     provider=str(provider),
                     status=status,
@@ -206,7 +223,7 @@ def track_payment_conversion(provider_param: str = "provider"):
                 raise
 
             finally:
-                collector = get_metrics_collector()
+                collector = _collector if _collector is not None else get_metrics_collector()
                 collector.record_payment_attempt(
                     provider=str(provider),
                     status=status,
@@ -220,10 +237,18 @@ def track_payment_conversion(provider_param: str = "provider"):
     return decorator
 
 
-def track_method_metrics(method_name: Optional[str] = None):
+def track_method_metrics(
+    method_name: Optional[str] = None,
+    *,
+    _collector: Optional["MetricsCollector"] = None,
+):
     """
     Decorator genérico para métodos de servicio.
     Similar a track_endpoint_metrics pero para servicios internos.
+
+    Args:
+        method_name: Nombre del método (ej. "PaymentService.create_payment")
+        _collector: (Solo para tests) Collector inyectado directamente.
     """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
@@ -240,7 +265,7 @@ def track_method_metrics(method_name: Optional[str] = None):
                 raise
             finally:
                 latency_ms = (time.time() - start_time) * 1000
-                collector = get_metrics_collector()
+                collector = _collector if _collector is not None else get_metrics_collector()
                 collector.record_endpoint_call(
                     endpoint=f"SERVICE:{name}",
                     latency_ms=latency_ms,

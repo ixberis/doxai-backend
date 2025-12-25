@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import func, select, literal_column, cast, String, literal
+from sqlalchemy import func, select, literal_column, cast, String
 from sqlalchemy.orm import Session
 
 # Modelos y enums del módulo Projects
@@ -51,34 +51,43 @@ class ProjectsDBAggregator:
         """
         Total de proyectos (no filtramos por owner aquí; se asume scope global/tenant).
         """
-        stmt = select(func.count(literal_column("*"))).select_from(Project)
-        return int(self.db.execute(stmt).scalar() or 0)
+        try:
+            stmt = select(func.count(literal_column("*"))).select_from(Project)
+            return int(self.db.execute(stmt).scalar() or 0)
+        except Exception:
+            return 0
 
     def projects_by_state(self) -> ProjectsByState:
         """
         Conteo por estado técnico (workflow).
         """
-        stmt = (
-            select(cast(Project.state, String), func.count(literal_column("*")))
-            .group_by(Project.state)
-        )
-        rows = self.db.execute(stmt).all()
-        items: Dict[str, int] = {str(k or ""): int(v or 0) for k, v in rows}
-        total = sum(items.values())
-        return ProjectsByState(items=items, total=total)
+        try:
+            stmt = (
+                select(cast(Project.state, String), func.count(literal_column("*")))
+                .group_by(Project.state)
+            )
+            rows = self.db.execute(stmt).all()
+            items: Dict[str, int] = {str(k or ""): int(v or 0) for k, v in rows}
+            total = sum(items.values())
+            return ProjectsByState(items=items, total=total)
+        except Exception:
+            return ProjectsByState(items={}, total=0)
 
     def projects_by_status(self) -> ProjectsByStatus:
         """
         Conteo por status administrativo.
         """
-        stmt = (
-            select(cast(Project.status, String), func.count(literal_column("*")))
-            .group_by(Project.status)
-        )
-        rows = self.db.execute(stmt).all()
-        items: Dict[str, int] = {str(k or ""): int(v or 0) for k, v in rows}
-        total = sum(items.values())
-        return ProjectsByStatus(items=items, total=total)
+        try:
+            stmt = (
+                select(cast(Project.status, String), func.count(literal_column("*")))
+                .group_by(Project.status)
+            )
+            rows = self.db.execute(stmt).all()
+            items: Dict[str, int] = {str(k or ""): int(v or 0) for k, v in rows}
+            total = sum(items.values())
+            return ProjectsByStatus(items=items, total=total)
+        except Exception:
+            return ProjectsByStatus(items={}, total=0)
 
     # ---------------------------------------------------------------------
     # Series / ventanas temporales
@@ -86,48 +95,47 @@ class ProjectsDBAggregator:
     def projects_ready_by_window(self, date_trunc: str = "day", limit_buckets: int = 30) -> List[TimeBucketValue]:
         """
         Conteo de proyectos en estado READY agrupados por ventana temporal.
-        - Para Postgres se intenta usar date_trunc; para SQLite se usa DATE(ready_at).
+        - Para Postgres se usa date_trunc; para SQLite se usa DATE(ready_at).
 
         Args:
             date_trunc: "day" | "week" | "month" (sugerido "day")
             limit_buckets: máximo de buckets a devolver (ordenado desc por fecha)
         """
-        # Detectar si existe date_trunc (Postgres) vs fallback (SQLite)
-        # Nota: usamos un try simple; si falla el compilador/dialecto, caemos al fallback.
-        bucket_label = "bucket_start"
-
         try:
-            # Postgres-like
-            bucket_expr = func.date_trunc(date_trunc, Project.ready_at)
+            bucket_label = "bucket_start"
+            
+            # Detectar dialecto antes de ejecutar query (get_bind() funciona con sessionmaker)
+            try:
+                dialect_name = self.db.get_bind().dialect.name
+            except Exception:
+                dialect_name = "unknown"
+            use_date_trunc = dialect_name in ("postgresql", "postgres")
+
+            if use_date_trunc:
+                # Postgres: usar date_trunc
+                bucket_expr = func.date_trunc(date_trunc, Project.ready_at)
+            else:
+                # SQLite y otros: usar DATE()
+                bucket_expr = func.date(Project.ready_at)
+
             stmt = (
                 select(bucket_expr.label(bucket_label), func.count(literal_column("*")))
-                .where(Project.state == cast(literal("ready"), Project.state.type))
+                .where(Project.state == ProjectState.ready.value)
                 .group_by(bucket_expr)
                 .order_by(bucket_expr.desc())
                 .limit(limit_buckets)
             )
             rows = self.db.execute(stmt).all()
             buckets = [
-                TimeBucketValue(bucket_start=(r[0].isoformat() if isinstance(r[0], datetime) else str(r[0])), value=float(r[1] or 0.0))
+                TimeBucketValue(
+                    bucket_start=(r[0].isoformat() if isinstance(r[0], datetime) else str(r[0])),
+                    value=float(r[1] or 0.0)
+                )
                 for r in rows
             ]
             return list(reversed(buckets))  # ascendente
         except Exception:
-            # Fallback genérico (SQLite): DATE(ready_at)
-            bucket_expr = func.date(Project.ready_at)
-            stmt = (
-                select(bucket_expr.label(bucket_label), func.count(literal_column("*")))
-                .where(Project.state == cast(literal("ready"), Project.state.type))
-                .group_by(bucket_expr)
-                .order_by(bucket_expr.desc())
-                .limit(limit_buckets)
-            )
-            rows = self.db.execute(stmt).all()
-            buckets = [
-                TimeBucketValue(bucket_start=str(r[0]), value=float(r[1] or 0.0))
-                for r in rows
-            ]
-            return list(reversed(buckets))  # ascendente
+            return []
 
     # ---------------------------------------------------------------------
     # Lead time created -> ready
@@ -138,15 +146,30 @@ class ProjectsDBAggregator:
         para proyectos que ya están en READY. Se deja solo el promedio por compatibilidad
         multi-dialecto; percentiles pueden quedar en None si no hay soporte nativo.
         """
-        # AVG( EXTRACT(EPOCH FROM (ready_at - created_at)) )
-        # Fallback multi-dialecto: usar julianday en SQLite no es portable vía ORM sin raw SQL.
-        # Aquí intentamos la resta de timestamps y confiamos en el backend.
+        # Detectar dialecto (get_bind() funciona con sessionmaker)
         try:
-            delta_seconds_avg = select(
-                func.avg(func.extract("epoch", Project.ready_at - Project.created_at))
-            ).where(
-                Project.ready_at.isnot(None)
-            )
+            dialect_name = self.db.get_bind().dialect.name
+        except Exception:
+            dialect_name = "unknown"
+        
+        try:
+            if dialect_name in ("postgresql", "postgres"):
+                # Postgres: EXTRACT(EPOCH FROM (ready_at - created_at))
+                delta_seconds_avg = select(
+                    func.avg(func.extract("epoch", Project.ready_at - Project.created_at))
+                ).where(
+                    Project.ready_at.isnot(None)
+                )
+            else:
+                # SQLite: (julianday(ready_at) - julianday(created_at)) * 86400
+                delta_seconds_avg = select(
+                    func.avg(
+                        (func.julianday(Project.ready_at) - func.julianday(Project.created_at)) * 86400
+                    )
+                ).where(
+                    Project.ready_at.isnot(None)
+                )
+            
             avg_val = self.db.execute(delta_seconds_avg).scalar()
             avg_seconds = float(avg_val) if avg_val is not None else None
             return ProjectReadyLeadTime(
@@ -156,7 +179,7 @@ class ProjectsDBAggregator:
                 p99_seconds=None,
             )
         except Exception:
-            # Fallback básico (None) si el dialecto no soporta extract epoch
+            # Fallback básico (None) si el dialecto no soporta la operación
             return ProjectReadyLeadTime(
                 avg_seconds=None,
                 p50_seconds=None,

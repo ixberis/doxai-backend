@@ -15,12 +15,30 @@ Fecha: 2025-11-05
 """
 
 from fastapi import APIRouter, HTTPException, Header, Depends
-from typing import Optional, List
+from typing import Optional, List, Protocol, runtime_checkable
 from datetime import datetime, timedelta
 import os
 
-from app.shared.scheduler import get_scheduler
+from app.shared.scheduler import get_scheduler, SchedulerService
 from app.modules.files.services.cache import get_metadata_cache
+from app.modules.admin.services.cache_stats_normalizer import normalize_cache_stats
+
+
+@runtime_checkable
+class SchedulerServiceProtocol(Protocol):
+    """Protocol para abstracción del scheduler en tests."""
+    
+    @property
+    def is_running(self) -> bool: ...
+    
+    def get_jobs(self) -> list: ...
+    
+    def get_job_status(self, job_id: str) -> Optional[dict]: ...
+
+
+def get_scheduler_service() -> SchedulerServiceProtocol:
+    """Dependency inyectable para obtener el scheduler."""
+    return get_scheduler()
 
 router = APIRouter(
     prefix="/admin/scheduler",
@@ -55,7 +73,8 @@ def verify_admin_key(x_admin_key: str = Header(...)):
 
 @router.get("/jobs")
 async def list_scheduled_jobs(
-    _: None = Depends(verify_admin_key)
+    _: None = Depends(verify_admin_key),
+    scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Lista todos los jobs programados activos.
@@ -78,8 +97,6 @@ async def list_scheduled_jobs(
           ]
         }
     """
-    scheduler = get_scheduler()
-    
     return {
         "is_running": scheduler.is_running,
         "jobs": scheduler.get_jobs()
@@ -89,7 +106,8 @@ async def list_scheduled_jobs(
 @router.get("/jobs/{job_id}")
 async def get_job_status(
     job_id: str,
-    _: None = Depends(verify_admin_key)
+    _: None = Depends(verify_admin_key),
+    scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Obtiene información detallada de un job específico.
@@ -117,7 +135,6 @@ async def get_job_status(
           "pending": false
         }
     """
-    scheduler = get_scheduler()
     status = scheduler.get_job_status(job_id)
     
     if not status:
@@ -132,7 +149,8 @@ async def get_job_status(
 @router.post("/jobs/{job_id}/pause")
 async def pause_job(
     job_id: str,
-    _: None = Depends(verify_admin_key)
+    _: None = Depends(verify_admin_key),
+    scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Pausa un job programado.
@@ -146,8 +164,6 @@ async def pause_job(
     Raises:
         HTTPException 404: Si el job no existe
     """
-    scheduler = get_scheduler()
-    
     try:
         scheduler._scheduler.pause_job(job_id)
         return {
@@ -165,7 +181,8 @@ async def pause_job(
 @router.post("/jobs/{job_id}/resume")
 async def resume_job(
     job_id: str,
-    _: None = Depends(verify_admin_key)
+    _: None = Depends(verify_admin_key),
+    scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Reanuda un job pausado.
@@ -179,8 +196,6 @@ async def resume_job(
     Raises:
         HTTPException 404: Si el job no existe
     """
-    scheduler = get_scheduler()
-    
     try:
         scheduler._scheduler.resume_job(job_id)
         return {
@@ -198,7 +213,8 @@ async def resume_job(
 @router.post("/jobs/{job_id}/run-now")
 async def run_job_now(
     job_id: str,
-    _: None = Depends(verify_admin_key)
+    _: None = Depends(verify_admin_key),
+    scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Ejecuta un job manualmente de inmediato.
@@ -212,8 +228,6 @@ async def run_job_now(
     Raises:
         HTTPException 404: Si el job no existe
     """
-    scheduler = get_scheduler()
-    
     try:
         # Obtener el job
         job = scheduler._scheduler.get_job(job_id)
@@ -290,9 +304,10 @@ async def get_cache_cleanup_stats(
         persistencia real. En producción, deberías almacenar las estadísticas
         en una tabla de base de datos.
     """
-    # Obtener estadísticas actuales del caché
+    # Obtener estadísticas actuales del caché y normalizarlas
     cache = get_metadata_cache()
-    current_stats = cache.get_stats()
+    raw_stats = cache.get_stats()
+    current_stats = normalize_cache_stats(raw_stats)
     
     # En producción, estas estadísticas vendrían de la BD
     # Por ahora, simulamos datos históricos basados en el estado actual
@@ -341,7 +356,8 @@ async def get_cache_cleanup_stats(
 
 @router.get("/health")
 async def scheduler_health(
-    _: None = Depends(verify_admin_key)
+    _: None = Depends(verify_admin_key),
+    scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Verifica el estado de salud del scheduler.
@@ -361,7 +377,6 @@ async def scheduler_health(
           "warnings": []
         }
     """
-    scheduler = get_scheduler()
     jobs = scheduler.get_jobs()
     
     warnings = []

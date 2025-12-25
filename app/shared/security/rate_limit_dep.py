@@ -101,6 +101,16 @@ class RateLimitDep:
     
     async def __call__(self, request: Request) -> RateLimitResult:
         """Execute rate limit check."""
+        # Skip rate limiting for OPTIONS requests (CORS preflight)
+        # CORSMiddleware handles these; rate limiting them breaks preflight
+        if request.method == "OPTIONS":
+            return RateLimitResult(
+                allowed=True,
+                current_count=0,
+                limit=self.limit or 0,
+                retry_after=0,
+            )
+        
         limiter = get_rate_limiter()
         
         # Extract identifier
