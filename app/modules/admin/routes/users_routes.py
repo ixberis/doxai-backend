@@ -118,29 +118,104 @@ def resolve_user_id(user_id: str) -> tuple[Union[int, UUID], UserIdType]:
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Whitelist for sortable columns
+SORT_COLUMNS = {
+    "email": "u.user_email",
+    "name": "u.user_full_name",
+    "role": "u.user_role",
+    "status": "u.user_status",
+    "activated": "u.user_is_activated",
+    "created_at": "u.user_created_at",
+}
+
+VALID_ROLES = {"admin", "staff", "customer"}
+VALID_STATUSES = {"active", "cancelled", "no_payment", "not_active", "suspended"}
+
+
 @router.get("", response_model=AdminUsersListResponse)
 async def list_users(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     include_deleted: bool = Query(False),
+    q: Optional[str] = Query(None, description="Búsqueda libre (email, nombre, rol, estado)"),
+    role: Optional[str] = Query(None, description="Filtro por rol"),
+    status: Optional[str] = Query(None, description="Filtro por estado"),
+    activated: Optional[bool] = Query(None, description="Filtro por activado"),
+    sort_by: str = Query("created_at", description="Columna para ordenar"),
+    sort_dir: str = Query("desc", description="Dirección: asc o desc"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List all users with pagination.
-    Returns user info including role (from user_roles) and activation status.
-    Excludes soft-deleted users by default (deleted_at IS NOT NULL).
+    List all users with pagination, search, filters, and sorting.
     """
-    offset = (page - 1) * per_page
+    # Validate sort_by
+    if sort_by not in SORT_COLUMNS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"sort_by inválido: '{sort_by}'. Valores permitidos: {list(SORT_COLUMNS.keys())}"
+        )
+    
+    # Validate sort_dir
+    if sort_dir.lower() not in ("asc", "desc"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"sort_dir inválido: '{sort_dir}'. Valores permitidos: asc, desc"
+        )
+    
+    # Validate role filter
+    if role and role not in VALID_ROLES:
+        raise HTTPException(status_code=422, detail=f"role inválido: '{role}'")
+    
+    # Validate status filter
+    if status and status not in VALID_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status inválido: '{status}'")
 
-    # Count total (excluding deleted unless requested)
-    deleted_filter = "" if include_deleted else "WHERE deleted_at IS NULL"
-    count_q = text(f"SELECT COUNT(*) FROM public.app_users {deleted_filter}")
-    count_res = await db.execute(count_q)
+    offset = (page - 1) * per_page
+    sort_column = SORT_COLUMNS[sort_by]
+    sort_direction = sort_dir.upper()
+
+    # Build WHERE conditions
+    conditions = []
+    params: dict = {"limit": per_page, "offset": offset}
+    
+    if not include_deleted:
+        conditions.append("u.deleted_at IS NULL")
+    
+    if role:
+        conditions.append("u.user_role::text = :role")
+        params["role"] = role
+    
+    if status:
+        conditions.append("u.user_status::text = :status")
+        params["status"] = status
+    
+    if activated is not None:
+        conditions.append("u.user_is_activated = :activated")
+        params["activated"] = activated
+    
+    if q:
+        q_lower = q.lower().strip()
+        # Check if q matches a role or status value
+        search_conditions = ["u.user_email ILIKE :q_like", "u.user_full_name ILIKE :q_like"]
+        
+        # Add role/status matching
+        if q_lower in VALID_ROLES:
+            search_conditions.append("u.user_role::text = :q_exact")
+        if q_lower in VALID_STATUSES:
+            search_conditions.append("u.user_status::text = :q_exact")
+        
+        conditions.append(f"({' OR '.join(search_conditions)})")
+        params["q_like"] = f"%{q}%"
+        params["q_exact"] = q_lower
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    # Count total
+    count_q = text(f"SELECT COUNT(*) FROM public.app_users u {where_clause}")
+    count_res = await db.execute(count_q, params)
     total = count_res.scalar() or 0
 
-    # Get users with role from app_users table and activation status
-    # Note: app_users uses user_* column names and user_status enum
-    deleted_where = "" if include_deleted else "WHERE u.deleted_at IS NULL"
+    # Get users
     users_q = text(f"""
         SELECT 
             u.user_id::text AS user_id,
@@ -151,18 +226,18 @@ async def list_users(
             u.user_is_activated AS is_activated,
             u.user_created_at::text AS created_at
         FROM public.app_users u
-        {deleted_where}
-        ORDER BY u.user_created_at DESC
+        {where_clause}
+        ORDER BY {sort_column} {sort_direction}
         LIMIT :limit OFFSET :offset
     """)
 
-    res = await db.execute(users_q, {"limit": per_page, "offset": offset})
+    res = await db.execute(users_q, params)
     rows = res.fetchall()
 
     users = [
         AdminUserResponse(
             user_id=row.user_id,
-            user_id_type="int",  # Current backend uses int IDs
+            user_id_type="int",
             email=row.email,
             full_name=row.full_name,
             role=row.role,
