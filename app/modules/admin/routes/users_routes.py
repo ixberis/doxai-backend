@@ -49,6 +49,7 @@ class AdminUserResponse(BaseModel):
     - user_id_type: "int" or "uuid" - for traceability/future migration
     - account_status: single source of truth for account state (active/suspended/etc)
     - activation_status: separate from account status (activated/pending)
+    - deleted_at: soft-delete timestamp (null if active)
     """
     user_id: str                        # Canonical ID (string always)
     user_id_type: UserIdType = "int"    # Current backend uses int
@@ -58,6 +59,7 @@ class AdminUserResponse(BaseModel):
     account_status: str = "active"      # Single source for Estado column
     activation_status: str = "pending"  # activated | pending
     created_at: str
+    deleted_at: Optional[str] = None    # Soft-delete timestamp
 
 
 class AdminUsersListResponse(BaseModel):
@@ -212,10 +214,11 @@ async def list_users(
     
     # Log for debugging - verify no hidden activation filter
     logger.debug(
-        "admin_users_query conditions=%s where_clause=%s params=%s",
+        "admin_users_query conditions=%s where_clause=%s params=%s include_deleted=%s",
         conditions,
         where_clause,
-        {k: v for k, v in params.items() if k not in ('limit', 'offset')}
+        {k: v for k, v in params.items() if k not in ('limit', 'offset')},
+        include_deleted,
     )
 
     # Count total
@@ -223,7 +226,7 @@ async def list_users(
     count_res = await db.execute(count_q, params)
     total = count_res.scalar() or 0
     
-    logger.info("admin_users_list total=%d page=%d", total, page)
+    logger.info("admin_users_list total=%d page=%d include_deleted=%s", total, page, include_deleted)
 
     # Get users
     users_q = text(f"""
@@ -234,7 +237,8 @@ async def list_users(
             u.user_role::text AS role,
             u.user_status::text AS account_status,
             u.user_is_activated AS is_activated,
-            u.user_created_at::text AS created_at
+            u.user_created_at::text AS created_at,
+            u.deleted_at::text AS deleted_at
         FROM public.app_users u
         {where_clause}
         ORDER BY {sort_column} {sort_direction}
@@ -254,6 +258,7 @@ async def list_users(
             account_status=row.account_status,
             activation_status="activated" if row.is_activated else "pending",
             created_at=row.created_at,
+            deleted_at=row.deleted_at,
         )
         for row in rows
     ]
