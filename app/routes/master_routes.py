@@ -153,14 +153,17 @@ def _try_import_router(
 # AUTH
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth routers se montan en AMBAS capas (api y public) para compatibilidad
+# EXCEPCIÓN: rutas /_internal/* van SOLO en public (sin prefix /api)
+# para que sean accesibles en /_internal/... directamente.
 try:
     from app.modules.auth.routes import get_auth_routers
 
     for r in get_auth_routers():
         name = _get_router_name(r)
-        # Routers internos (/_internal/*) solo en API
+        # Routers internos (/_internal/*) solo en PUBLIC (sin /api prefix)
+        # Esto permite acceso directo a /_internal/auth/metrics/snapshot
         if r.prefix and r.prefix.startswith("/_internal"):
-            _include_once(api, r, "auth", _mounted_api)
+            _include_once(public, r, "auth", _mounted_public)
         else:
             # Routers públicos en ambas capas
             _include_once(api, r, "auth", _mounted_api)
