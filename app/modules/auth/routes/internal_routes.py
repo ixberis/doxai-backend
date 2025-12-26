@@ -308,7 +308,7 @@ class ActivationTokenResponse(BaseModel):
 )
 async def get_activation_token_for_qa(
     email: EmailStr = Query(..., description="Email del usuario"),
-    _auth: InternalServiceAuth,  # InternalServiceAuth ya incluye Depends()
+    _auth: bool = Depends(require_internal_service_token),  # Explícito con default
     db: AsyncSession = Depends(get_db),
 ) -> ActivationTokenResponse:
     """
