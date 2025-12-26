@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
 from app.shared.integrations.email_sender import EmailSender, IEmailSender
-from app.shared.internal_auth import InternalServiceAuth
+from app.shared.internal_auth import InternalServiceAuth, require_internal_service_token
 from app.modules.auth.services.welcome_email_retry_service import (
     WelcomeEmailRetryService,
     RetryResult,
