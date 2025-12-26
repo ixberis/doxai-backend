@@ -209,11 +209,21 @@ async def list_users(
         params["q_exact"] = q_lower
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    
+    # Log for debugging - verify no hidden activation filter
+    logger.debug(
+        "admin_users_query conditions=%s where_clause=%s params=%s",
+        conditions,
+        where_clause,
+        {k: v for k, v in params.items() if k not in ('limit', 'offset')}
+    )
 
     # Count total
     count_q = text(f"SELECT COUNT(*) FROM public.app_users u {where_clause}")
     count_res = await db.execute(count_q, params)
     total = count_res.scalar() or 0
+    
+    logger.info("admin_users_list total=%d page=%d", total, page)
 
     # Get users
     users_q = text(f"""
