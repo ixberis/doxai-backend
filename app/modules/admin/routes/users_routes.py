@@ -325,8 +325,12 @@ async def list_users(
         """Build email health object based on user's activation status."""
         is_activated = row.is_activated
         
-        # Activation email status
-        if row.activation_status_email:
+        # Activation email status - if user is activated, activation email is no longer relevant
+        if is_activated:
+            # User already activated - activation email status is 'n/a' (not applicable)
+            activation_detail = EmailStatusDetail(status="n/a", attempts=0)
+        elif row.activation_status_email:
+            # User not activated - show latest activation email status
             activation_detail = EmailStatusDetail(
                 status=row.activation_status_email,
                 sent_at=row.activation_sent_at,
@@ -336,7 +340,7 @@ async def list_users(
         else:
             activation_detail = EmailStatusDetail(status="n/a", attempts=0)
         
-        # Welcome email status
+        # Welcome email status - only relevant for activated users
         if is_activated:
             welcome_detail = EmailStatusDetail(
                 status=row.welcome_status or "pending",
@@ -347,17 +351,19 @@ async def list_users(
         else:
             welcome_detail = EmailStatusDetail(status="n/a", attempts=0)
         
-        # Calculate overall status
+        # Calculate overall status based on the relevant email for this user
         if not is_activated:
             # User not activated - check activation email
             if activation_detail.status == "sent":
                 overall = "ok"
             elif activation_detail.status == "failed":
                 overall = "failed"
+            elif activation_detail.status == "n/a":
+                overall = "pending"  # No activation email sent yet
             else:
                 overall = "pending"
         else:
-            # User activated - check welcome email
+            # User activated - check welcome email only
             if welcome_detail.status == "sent":
                 overall = "ok"
             elif welcome_detail.status == "failed":
