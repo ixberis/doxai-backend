@@ -104,26 +104,41 @@ class EmailAggregators:
         
         # Build queries based on type
         if email_type in ("activation", "all"):
+            # Use DISTINCT ON to get only the latest activation attempt per user
             activation_q = text("""
                 SELECT 
-                    u.user_id::text AS user_id,
-                    u.user_email AS email,
-                    u.user_full_name AS name,
-                    'activation' AS email_type,
-                    a.activation_email_status::text AS status,
-                    a.activation_email_attempts AS attempts,
-                    a.activation_email_sent_at::text AS sent_at,
-                    a.activation_email_last_error AS last_error,
-                    a.created_at::text AS created_at
-                FROM public.account_activations a
-                JOIN public.app_users u ON a.user_id = u.user_id
-                WHERE a.activation_email_status = :status
-                ORDER BY a.created_at DESC
+                    user_id,
+                    email,
+                    name,
+                    email_type,
+                    status,
+                    attempts,
+                    sent_at,
+                    last_error,
+                    created_at
+                FROM (
+                    SELECT DISTINCT ON (u.user_id)
+                        u.user_id::text AS user_id,
+                        u.user_email AS email,
+                        u.user_full_name AS name,
+                        'activation' AS email_type,
+                        a.activation_email_status::text AS status,
+                        a.activation_email_attempts AS attempts,
+                        a.activation_email_sent_at::text AS sent_at,
+                        a.activation_email_last_error AS last_error,
+                        a.created_at::text AS created_at
+                    FROM public.account_activations a
+                    JOIN public.app_users u ON a.user_id = u.user_id
+                    WHERE a.activation_email_status = :status
+                    ORDER BY u.user_id, a.created_at DESC
+                ) AS latest_activations
+                ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset
             """)
             
+            # Count distinct users, not total records
             count_activation_q = text("""
-                SELECT COUNT(*) FROM public.account_activations
+                SELECT COUNT(DISTINCT user_id) FROM public.account_activations
                 WHERE activation_email_status = :status
             """)
             

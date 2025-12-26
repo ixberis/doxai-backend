@@ -7,13 +7,14 @@ Rutas para métricas de correos del módulo Auth.
 Endpoints:
 - GET /_internal/auth/metrics/emails: métricas agregadas
 - GET /_internal/auth/emails/backlog: lista de pendientes/fallidos
+- POST /_internal/auth/emails/{type}/{user_id}/retry: reintentar envío (stub)
 
 Autor: Sistema
 Fecha: 2025-12-26
 """
 import logging
 from typing import Optional, Literal, List, Any
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Path, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +56,14 @@ class BacklogResponse(BaseModel):
     total: int
     page: int
     per_page: int
+
+
+class RetryResponse(BaseModel):
+    """Respuesta del endpoint de reintento."""
+    accepted: bool = Field(..., description="Si el reintento fue aceptado")
+    message: str = Field(..., description="Mensaje descriptivo")
+    user_id: str = Field(..., description="ID del usuario")
+    email_type: str = Field(..., description="Tipo de correo")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +142,53 @@ async def get_email_backlog(
         total=result["total"],
         page=result["page"],
         per_page=result["per_page"],
+    )
+
+
+@router.post(
+    "/_internal/auth/emails/{email_type}/{user_id}/retry",
+    response_model=RetryResponse,
+)
+async def retry_email(
+    email_type: Literal["activation", "welcome"] = Path(
+        ..., description="Tipo de correo"
+    ),
+    user_id: str = Path(..., description="ID del usuario"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Endpoint stub para reintentar envío de correo.
+    
+    Actualmente solo registra la solicitud y devuelve éxito.
+    La lógica real de reintento se implementará en una fase posterior.
+    
+    Args:
+        email_type: Tipo de correo (activation o welcome)
+        user_id: ID del usuario
+        
+    Returns:
+        RetryResponse indicando que el reintento fue programado.
+    """
+    logger.info(
+        "email_retry_request received: type=%s user_id=%s",
+        email_type,
+        user_id,
+    )
+    
+    # TODO: Implementar lógica real de reintento
+    # Por ahora solo es un stub que acepta la solicitud
+    
+    logger.info(
+        "email_retry_request accepted (stub): type=%s user_id=%s",
+        email_type,
+        user_id,
+    )
+    
+    return RetryResponse(
+        accepted=True,
+        message="Reintento programado (pendiente de implementación)",
+        user_id=user_id,
+        email_type=email_type,
     )
 
 
