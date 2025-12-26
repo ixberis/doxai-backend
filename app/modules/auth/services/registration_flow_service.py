@@ -303,13 +303,16 @@ class RegistrationFlowService:
                 activation_token=token,
             )
             
-            # Persistir éxito: status='sent', sent_at=now, last_error=null
+            # Persistir éxito: status='sent', attempts++, sent_at=now, last_error=null
             # WHERE solo por token (es UNIQUE, suficiente para identificar)
             result = await self.db.execute(
                 update(AccountActivation)
                 .where(AccountActivation.token == token)
                 .values(
                     activation_email_status='sent',
+                    activation_email_attempts=func.coalesce(
+                        AccountActivation.activation_email_attempts, 0
+                    ) + 1,
                     activation_email_sent_at=now_utc,
                     activation_email_last_error=None,
                 )

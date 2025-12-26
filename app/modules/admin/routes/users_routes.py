@@ -312,8 +312,12 @@ async def list_users(
                 ORDER BY a.created_at DESC
                 LIMIT 1
             ) AS activation_sent_at,
+            -- For historical data where attempts wasn't tracked: GREATEST ensures minimum 1 when sent
             (
-                SELECT a.activation_email_attempts
+                SELECT GREATEST(
+                    COALESCE(a.activation_email_attempts, 0),
+                    CASE WHEN a.activation_email_sent_at IS NOT NULL OR a.activation_email_status = 'sent' THEN 1 ELSE 0 END
+                )
                 FROM public.account_activations a
                 WHERE a.user_id = u.user_id
                   AND (
