@@ -105,6 +105,9 @@ class EmailAggregators:
         # Build queries based on type
         if email_type in ("activation", "all"):
             # Use DISTINCT ON to get only the latest activation attempt per user
+            # ONLY show users who:
+            # 1. Are NOT yet activated (user_is_activated = false)
+            # 2. Their LATEST token has status = pending/failed (not 'sent')
             activation_q = text("""
                 SELECT 
                     user_id,
@@ -129,17 +132,27 @@ class EmailAggregators:
                         a.created_at::text AS created_at
                     FROM public.account_activations a
                     JOIN public.app_users u ON a.user_id = u.user_id
-                    WHERE a.activation_email_status = :status
+                    WHERE u.user_is_activated = false
                     ORDER BY u.user_id, a.created_at DESC
                 ) AS latest_activations
+                WHERE status = :status
                 ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset
             """)
             
-            # Count distinct users, not total records
+            # Count distinct users with latest token matching status
+            # (excludes already activated users)
             count_activation_q = text("""
-                SELECT COUNT(DISTINCT user_id) FROM public.account_activations
-                WHERE activation_email_status = :status
+                SELECT COUNT(*) FROM (
+                    SELECT DISTINCT ON (u.user_id)
+                        u.user_id,
+                        a.activation_email_status AS status
+                    FROM public.account_activations a
+                    JOIN public.app_users u ON a.user_id = u.user_id
+                    WHERE u.user_is_activated = false
+                    ORDER BY u.user_id, a.created_at DESC
+                ) AS latest
+                WHERE status = :status
             """)
             
             res = await self.db.execute(
