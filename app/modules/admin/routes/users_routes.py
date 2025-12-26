@@ -408,4 +408,63 @@ async def delete_user(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Restore User (Undelete)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RestoreUserResponse(BaseModel):
+    ok: bool
+    user_id: str
+    deleted_at: None = None
+
+
+@router.post("/{user_id}/restore", response_model=RestoreUserResponse)
+async def restore_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Restore a soft-deleted user (sets deleted_at = NULL).
+    Idempotent: if user is not deleted, returns success without changes.
+    """
+    resolved_id, id_type = resolve_user_id(user_id)
+    logger.info(f"admin_user_restore_started user_id={resolved_id}")
+
+    # Verify user exists
+    check_q = text("""
+        SELECT user_id, user_email, deleted_at 
+        FROM public.app_users 
+        WHERE user_id = :uid
+    """)
+    check_res = await db.execute(check_q, {"uid": resolved_id})
+    user_row = check_res.first()
+    
+    if not user_row:
+        logger.warning(f"admin_user_restore_failed user_id={resolved_id} reason=not_found")
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Idempotent: if not deleted, return success
+    if user_row.deleted_at is None:
+        logger.info(f"admin_user_restore_not_deleted user_id={resolved_id} email={user_row.user_email}")
+        return RestoreUserResponse(ok=True, user_id=str(resolved_id))
+
+    # Restore user
+    try:
+        restore_q = text("""
+            UPDATE public.app_users 
+            SET deleted_at = NULL,
+                updated_at = NOW()
+            WHERE user_id = :uid
+        """)
+        await db.execute(restore_q, {"uid": resolved_id})
+        await db.commit()
+        
+        logger.info(f"admin_user_restore_success user_id={resolved_id} email={user_row.user_email}")
+        
+        return RestoreUserResponse(ok=True, user_id=str(resolved_id))
+    except Exception as e:
+        logger.exception(f"admin_user_restore_failed user_id={resolved_id} error={e}")
+        raise HTTPException(status_code=500, detail="Error al restaurar usuario")
+
+
 # Fin del archivo
