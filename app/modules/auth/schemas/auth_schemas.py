@@ -116,6 +116,7 @@ class RegisterResponse(UTF8SafeModel):
     message: str
     user_id: int
     access_token: str
+    activation_email_sent: bool = True  # False cuando falla envío (MailerSend trial limit, etc.)
 
 
 class LoginResponse(UTF8SafeModel):

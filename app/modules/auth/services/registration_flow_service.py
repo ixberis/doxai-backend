@@ -26,12 +26,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from fastapi import status
+from sqlalchemy import update, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.auth.models.activation_models import AccountActivation
 from app.modules.auth.models.user_models import AppUser
 from app.modules.auth.services.user_service import UserService
 from app.modules.auth.services.activation_service import ActivationService
@@ -259,6 +262,7 @@ class RegistrationFlowService:
                 "user_id": created.user_id,
                 "access_token": access_token,
                 "message": message,
+                "activation_email_sent": email_sent,
             },
             created=True,
         )
@@ -274,14 +278,19 @@ class RegistrationFlowService:
         ip_address: str,
     ) -> bool:
         """
-        Envía email de activación de forma best-effort.
+        Envía email de activación de forma best-effort y persiste tracking en DB.
         
         No propaga excepciones. Loguea resultado.
+        Actualiza activation_email_status/attempts/sent_at/last_error en account_activations.
+        
+        Usa WHERE user_id + token para máxima seguridad (aunque token es UNIQUE).
+        Usa func.coalesce para el incremento de attempts (robusto ante NULL).
         
         Returns:
             True si se envió correctamente, False si falló.
         """
         email_masked = email[:3] + "***" if email else "unknown"
+        now_utc = datetime.now(timezone.utc)
         
         try:
             await self.email_sender.send_activation_email(
@@ -289,6 +298,21 @@ class RegistrationFlowService:
                 full_name=full_name or "",
                 activation_token=token,
             )
+            
+            # Persistir éxito: status='sent', sent_at=now, last_error=null
+            await self.db.execute(
+                update(AccountActivation)
+                .where(
+                    AccountActivation.user_id == user_id,
+                    AccountActivation.token == token,
+                )
+                .values(
+                    activation_email_status='sent',
+                    activation_email_sent_at=now_utc,
+                    activation_email_last_error=None,
+                )
+            )
+            await self.db.flush()
             
             logger.info(
                 "activation_email_sent to=%s user_id=%s ip=%s",
@@ -301,6 +325,25 @@ class RegistrationFlowService:
         except Exception as e:
             # Extraer error_code si es MailerSendError
             error_code = getattr(e, "error_code", "unknown")
+            error_msg = f"{error_code}: {str(e)[:180]}"
+            
+            # Persistir fallo: status='failed', attempts++, last_error
+            # Usa coalesce para robusto ante NULL en activation_email_attempts
+            await self.db.execute(
+                update(AccountActivation)
+                .where(
+                    AccountActivation.user_id == user_id,
+                    AccountActivation.token == token,
+                )
+                .values(
+                    activation_email_status='failed',
+                    activation_email_attempts=func.coalesce(
+                        AccountActivation.activation_email_attempts, 0
+                    ) + 1,
+                    activation_email_last_error=error_msg,
+                )
+            )
+            await self.db.flush()
             
             logger.warning(
                 "activation_email_failed to=%s user_id=%s ip=%s error_code=%s error=%s",

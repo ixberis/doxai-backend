@@ -8,20 +8,25 @@ Incluye:
 - Endpoint de retry de welcome emails (para pg_cron/admin)
 - Endpoint de retry de password reset emails (para pg_cron/admin)
 - Health checks internos
+- Endpoint QA para recuperar activation token (solo staging/dev)
 
 SEGURIDAD: Todos los endpoints (excepto health) requieren service token.
 
 Autor: Ixchel Beristain
 Fecha: 2025-12-14
 Updated: 2025-12-15 - Añadido endpoint retry-password-reset-emails
+Updated: 2025-12-26 - Añadido endpoint QA activation-token
 """
 
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
@@ -34,6 +39,9 @@ from app.modules.auth.services.welcome_email_retry_service import (
 from app.modules.auth.services.password_reset_email_retry_service import (
     PasswordResetEmailRetryService,
 )
+from app.modules.auth.models.activation_models import AccountActivation
+from app.modules.auth.models.user_models import AppUser
+from app.modules.auth.enums import ActivationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +259,124 @@ async def retry_password_reset_emails(
             skipped=0,
             message=f"Batch processing error: {str(e)[:100]}",
         )
+
+
+# -----------------------------------------------------------------------------
+# QA Endpoint: Obtener activation token (solo staging/dev)
+# -----------------------------------------------------------------------------
+
+def _is_qa_endpoints_allowed() -> bool:
+    """
+    Verifica si los endpoints QA internos están permitidos.
+    
+    SEGURIDAD: Usa flag explícito ALLOW_INTERNAL_QA_ENDPOINTS=1.
+    NO inferimos de ENVIRONMENT para evitar inconsistencias en env vars.
+    
+    Returns:
+        True solo si ALLOW_INTERNAL_QA_ENDPOINTS == "1" o "true"
+    """
+    flag = os.getenv("ALLOW_INTERNAL_QA_ENDPOINTS", "").lower()
+    return flag in ("1", "true")
+
+
+class ActivationTokenResponse(BaseModel):
+    """Response con el token de activación para QA."""
+    email: str
+    token: str
+    expires_at: str
+    status: str
+    message: str = "Token recuperado para QA. Solo disponible si ALLOW_INTERNAL_QA_ENDPOINTS=1."
+
+
+@router.get(
+    "/activation-token",
+    response_model=ActivationTokenResponse,
+    summary="Obtener activation token para QA",
+    description="""
+    **SOLO DISPONIBLE SI ALLOW_INTERNAL_QA_ENDPOINTS=1**
+    
+    Endpoint de QA para recuperar el token de activación de un usuario
+    cuando el correo no se pudo enviar (ej: MailerSend trial limit).
+    
+    **REQUIERE**: 
+    - Env var: ALLOW_INTERNAL_QA_ENDPOINTS=1
+    - Authorization: Bearer <APP_SERVICE_TOKEN>
+    
+    Devuelve 403 si ALLOW_INTERNAL_QA_ENDPOINTS no está habilitado.
+    """,
+    include_in_schema=False,  # No exponer en OpenAPI público
+)
+async def get_activation_token_for_qa(
+    email: EmailStr = Query(..., description="Email del usuario"),
+    _auth: InternalServiceAuth = Depends(),  # Requiere service token
+    db: AsyncSession = Depends(get_db),
+) -> ActivationTokenResponse:
+    """
+    Recupera el token de activación pendiente más reciente para un email.
+    
+    SOLO disponible si ALLOW_INTERNAL_QA_ENDPOINTS=1.
+    Devuelve 403 Forbidden si no está habilitado.
+    """
+    # GUARD: Flag explícito - NO inferir de ENVIRONMENT
+    if not _is_qa_endpoints_allowed():
+        logger.warning(
+            "activation_token_qa_blocked flag_missing=true email=%s",
+            email[:3] + "***",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Endpoint QA no habilitado. Requiere ALLOW_INTERNAL_QA_ENDPOINTS=1.",
+        )
+    
+    # Buscar usuario por email
+    user_result = await db.execute(
+        select(AppUser).where(AppUser.user_email == email.lower())
+    )
+    user = user_result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Usuario no encontrado: {email}",
+        )
+    
+    # Buscar activation token pendiente más reciente
+    # Criterios: status='sent', no consumido, no expirado
+    now_utc = datetime.now(timezone.utc)
+    
+    activation_result = await db.execute(
+        select(AccountActivation)
+        .where(
+            AccountActivation.user_id == user.user_id,
+            AccountActivation.status == ActivationStatus.sent,  # Enum real: 'sent'
+            AccountActivation.consumed_at.is_(None),
+            AccountActivation.expires_at > now_utc,  # Solo tokens válidos
+        )
+        .order_by(AccountActivation.created_at.desc())
+        .limit(1)
+    )
+    activation = activation_result.scalar_one_or_none()
+    
+    if not activation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No hay token de activación pendiente/válido para: {email}. Puede estar expirado o ya consumido.",
+        )
+    
+    logger.info(
+        "activation_token_qa_retrieved email=%s user_id=%s token_preview=%s expires_at=%s",
+        email[:3] + "***",
+        user.user_id,
+        activation.token[:8] + "...",
+        activation.expires_at.isoformat(),
+    )
+    
+    return ActivationTokenResponse(
+        email=email,
+        token=activation.token,
+        expires_at=activation.expires_at.isoformat(),
+        status=activation.status.value,
+    )
 
 
 # -----------------------------------------------------------------------------
