@@ -284,11 +284,19 @@ async def list_users(
             u.welcome_email_sent_at::text AS welcome_sent_at,
             u.welcome_email_attempts AS welcome_attempts,
             u.welcome_email_last_error AS welcome_last_error,
-            -- Latest activation email (subquery)
+            -- For activated users: get last SENT activation email (with evidence)
+            -- For non-activated users: get latest activation token (to detect pending/failed)
             (
                 SELECT a.activation_email_status::text
                 FROM public.account_activations a
                 WHERE a.user_id = u.user_id
+                  AND (
+                    -- If user is activated, only consider tokens with evidence of sending
+                    (u.user_is_activated = true AND (a.activation_email_sent_at IS NOT NULL OR a.activation_email_status = 'sent'))
+                    OR
+                    -- If user not activated, consider all tokens (need to detect pending/failed)
+                    u.user_is_activated = false
+                  )
                 ORDER BY a.created_at DESC
                 LIMIT 1
             ) AS activation_status_email,
@@ -296,6 +304,11 @@ async def list_users(
                 SELECT a.activation_email_sent_at::text
                 FROM public.account_activations a
                 WHERE a.user_id = u.user_id
+                  AND (
+                    (u.user_is_activated = true AND (a.activation_email_sent_at IS NOT NULL OR a.activation_email_status = 'sent'))
+                    OR
+                    u.user_is_activated = false
+                  )
                 ORDER BY a.created_at DESC
                 LIMIT 1
             ) AS activation_sent_at,
@@ -303,6 +316,11 @@ async def list_users(
                 SELECT a.activation_email_attempts
                 FROM public.account_activations a
                 WHERE a.user_id = u.user_id
+                  AND (
+                    (u.user_is_activated = true AND (a.activation_email_sent_at IS NOT NULL OR a.activation_email_status = 'sent'))
+                    OR
+                    u.user_is_activated = false
+                  )
                 ORDER BY a.created_at DESC
                 LIMIT 1
             ) AS activation_attempts,
@@ -310,6 +328,11 @@ async def list_users(
                 SELECT a.activation_email_last_error
                 FROM public.account_activations a
                 WHERE a.user_id = u.user_id
+                  AND (
+                    (u.user_is_activated = true AND (a.activation_email_sent_at IS NOT NULL OR a.activation_email_status = 'sent'))
+                    OR
+                    u.user_is_activated = false
+                  )
                 ORDER BY a.created_at DESC
                 LIMIT 1
             ) AS activation_last_error
