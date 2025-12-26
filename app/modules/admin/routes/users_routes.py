@@ -40,6 +40,26 @@ from typing import Literal
 # Canonical ID type - currently int, exposed as string for frontend consistency
 UserIdType = Literal["int", "uuid"]
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Email Health Schemas
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EmailStatusDetail(BaseModel):
+    """Estado detallado de un tipo de correo."""
+    status: str = Field(..., description="sent|pending|failed|n/a")
+    sent_at: Optional[str] = None
+    attempts: int = 0
+    last_error: Optional[str] = None
+
+
+class EmailHealth(BaseModel):
+    """Estado de salud de correos por usuario."""
+    activation: EmailStatusDetail
+    welcome: EmailStatusDetail
+    overall: str = Field(..., description="ok|pending|failed")
+
+
 class AdminUserResponse(BaseModel):
     """
     Canonical Admin User DTO.
@@ -50,6 +70,7 @@ class AdminUserResponse(BaseModel):
     - account_status: single source of truth for account state (active/suspended/etc)
     - activation_status: separate from account status (activated/pending)
     - deleted_at: soft-delete timestamp (null if active)
+    - email_health: estado de correos de activación y bienvenida
     """
     user_id: str                        # Canonical ID (string always)
     user_id_type: UserIdType = "int"    # Current backend uses int
@@ -60,6 +81,7 @@ class AdminUserResponse(BaseModel):
     activation_status: str = "pending"  # activated | pending
     created_at: str
     deleted_at: Optional[str] = None    # Soft-delete timestamp
+    email_health: Optional[EmailHealth] = None  # Estado de correos
 
 
 class AdminUsersListResponse(BaseModel):
@@ -143,12 +165,14 @@ async def list_users(
     role: Optional[str] = Query(None, description="Filtro por rol"),
     status: Optional[str] = Query(None, description="Filtro por estado"),
     activated: Optional[bool] = Query(None, description="Filtro por activado"),
+    email_pending: Optional[bool] = Query(None, description="Filtro por correos pendientes"),
     sort_by: str = Query("created_at", description="Columna para ordenar"),
     sort_dir: str = Query("desc", description="Dirección: asc o desc"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     List all users with pagination, search, filters, and sorting.
+    Includes email_health for each user.
     """
     # Validate sort_by
     if sort_by not in SORT_COLUMNS:
@@ -195,6 +219,20 @@ async def list_users(
         conditions.append("u.user_is_activated = :activated")
         params["activated"] = activated
     
+    # Filter for pending emails (server-side)
+    if email_pending:
+        conditions.append("""(
+            -- Activation pending: user not activated and last activation has pending status
+            (u.user_is_activated = false AND EXISTS (
+                SELECT 1 FROM public.account_activations a
+                WHERE a.user_id = u.user_id
+                  AND a.activation_email_status IN ('pending', 'failed')
+            ))
+            OR
+            -- Welcome pending: user activated but welcome not sent
+            (u.user_is_activated = true AND u.welcome_email_status IN ('pending', 'failed'))
+        )""")
+    
     if q:
         q_lower = q.lower().strip()
         # Check if q matches a role or status value
@@ -214,11 +252,12 @@ async def list_users(
     
     # Log for debugging - verify no hidden activation filter
     logger.debug(
-        "admin_users_query conditions=%s where_clause=%s params=%s include_deleted=%s",
+        "admin_users_query conditions=%s where_clause=%s params=%s include_deleted=%s email_pending=%s",
         conditions,
         where_clause,
         {k: v for k, v in params.items() if k not in ('limit', 'offset')},
         include_deleted,
+        email_pending,
     )
 
     # Count total
@@ -228,7 +267,7 @@ async def list_users(
     
     logger.info("admin_users_list total=%d page=%d include_deleted=%s", total, page, include_deleted)
 
-    # Get users
+    # Get users with email health data
     users_q = text(f"""
         SELECT 
             u.user_id::text AS user_id,
@@ -238,7 +277,41 @@ async def list_users(
             u.user_status::text AS account_status,
             u.user_is_activated AS is_activated,
             u.user_created_at::text AS created_at,
-            u.deleted_at::text AS deleted_at
+            u.deleted_at::text AS deleted_at,
+            -- Welcome email fields
+            u.welcome_email_status::text AS welcome_status,
+            u.welcome_email_sent_at::text AS welcome_sent_at,
+            u.welcome_email_attempts AS welcome_attempts,
+            u.welcome_email_last_error AS welcome_last_error,
+            -- Latest activation email (subquery)
+            (
+                SELECT a.activation_email_status::text
+                FROM public.account_activations a
+                WHERE a.user_id = u.user_id
+                ORDER BY a.created_at DESC
+                LIMIT 1
+            ) AS activation_status_email,
+            (
+                SELECT a.activation_email_sent_at::text
+                FROM public.account_activations a
+                WHERE a.user_id = u.user_id
+                ORDER BY a.created_at DESC
+                LIMIT 1
+            ) AS activation_sent_at,
+            (
+                SELECT a.activation_email_attempts
+                FROM public.account_activations a
+                WHERE a.user_id = u.user_id
+                ORDER BY a.created_at DESC
+                LIMIT 1
+            ) AS activation_attempts,
+            (
+                SELECT a.activation_email_last_error
+                FROM public.account_activations a
+                WHERE a.user_id = u.user_id
+                ORDER BY a.created_at DESC
+                LIMIT 1
+            ) AS activation_last_error
         FROM public.app_users u
         {where_clause}
         ORDER BY {sort_column} {sort_direction}
@@ -247,6 +320,56 @@ async def list_users(
 
     res = await db.execute(users_q, params)
     rows = res.fetchall()
+
+    def build_email_health(row) -> EmailHealth:
+        """Build email health object based on user's activation status."""
+        is_activated = row.is_activated
+        
+        # Activation email status
+        if row.activation_status_email:
+            activation_detail = EmailStatusDetail(
+                status=row.activation_status_email,
+                sent_at=row.activation_sent_at,
+                attempts=row.activation_attempts or 0,
+                last_error=row.activation_last_error,
+            )
+        else:
+            activation_detail = EmailStatusDetail(status="n/a", attempts=0)
+        
+        # Welcome email status
+        if is_activated:
+            welcome_detail = EmailStatusDetail(
+                status=row.welcome_status or "pending",
+                sent_at=row.welcome_sent_at,
+                attempts=row.welcome_attempts or 0,
+                last_error=row.welcome_last_error,
+            )
+        else:
+            welcome_detail = EmailStatusDetail(status="n/a", attempts=0)
+        
+        # Calculate overall status
+        if not is_activated:
+            # User not activated - check activation email
+            if activation_detail.status == "sent":
+                overall = "ok"
+            elif activation_detail.status == "failed":
+                overall = "failed"
+            else:
+                overall = "pending"
+        else:
+            # User activated - check welcome email
+            if welcome_detail.status == "sent":
+                overall = "ok"
+            elif welcome_detail.status == "failed":
+                overall = "failed"
+            else:
+                overall = "pending"
+        
+        return EmailHealth(
+            activation=activation_detail,
+            welcome=welcome_detail,
+            overall=overall,
+        )
 
     users = [
         AdminUserResponse(
@@ -259,6 +382,7 @@ async def list_users(
             activation_status="activated" if row.is_activated else "pending",
             created_at=row.created_at,
             deleted_at=row.deleted_at,
+            email_health=build_email_health(row),
         )
         for row in rows
     ]
