@@ -518,6 +518,68 @@ from app.routes import router as main_router
 
 app.include_router(main_router)
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOG RUTAS CRÍTICAS (diagnóstico 404 en producción)
+# ═══════════════════════════════════════════════════════════════════════════════
+def _log_critical_routes():
+    """
+    Lista las rutas críticas de auth en startup para diagnóstico de 404.
+    Solo ejecuta si LOG_CRITICAL_ROUTES=1 o siempre en producción.
+    """
+    env_name = os.getenv("ENVIRONMENT", "development").lower()
+    force_log = os.getenv("LOG_CRITICAL_ROUTES", "0") == "1"
+    is_prod = env_name == "production"
+    
+    if not force_log and not is_prod:
+        return
+    
+    critical_paths = [
+        "/api/auth/register",
+        "/api/auth/login",
+        "/api/auth/activation",
+        "/api/auth/password/forgot",
+        "/api/auth/password/reset",
+        "/api/auth/token/refresh",
+        "/auth/register",  # public layer
+        "/auth/login",
+    ]
+    
+    # Collect all registered routes
+    registered_routes = set()
+    for route in app.routes:
+        if hasattr(route, "path"):
+            registered_routes.add(route.path)
+        # Include nested routes from routers
+        if hasattr(route, "routes"):
+            for nested in route.routes:
+                if hasattr(nested, "path"):
+                    # Construct full path
+                    prefix = getattr(route, "path", "")
+                    nested_path = getattr(nested, "path", "")
+                    full_path = f"{prefix}{nested_path}".replace("//", "/")
+                    registered_routes.add(full_path)
+    
+    logger.info("=" * 70)
+    logger.info("🔍 CRITICAL ROUTES CHECK (auth endpoints)")
+    logger.info("=" * 70)
+    
+    missing = []
+    for path in critical_paths:
+        found = path in registered_routes
+        status = "✅" if found else "❌ MISSING"
+        logger.info(f"  {status}: {path}")
+        if not found:
+            missing.append(path)
+    
+    if missing:
+        logger.error(f"⚠️ {len(missing)} critical route(s) NOT REGISTERED: {missing}")
+    else:
+        logger.info("✅ All critical auth routes registered")
+    
+    logger.info("=" * 70)
+
+_log_critical_routes()
+
 
 # Health básicos de conveniencia (no duplican /health de health_routes.py)
 @app.get("/")
