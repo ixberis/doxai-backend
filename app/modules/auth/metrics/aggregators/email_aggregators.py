@@ -29,33 +29,68 @@ class EmailAggregators:
         """
         Obtiene métricas agregadas de correos.
         
+        Usa lógica "accionable" alineada con el backlog:
+        - pending_activation: usuarios NO activados cuyo ÚLTIMO token tiene status='pending'
+        - pending_welcome: usuarios activados con welcome_email_status='pending'
+        - failed_activation: usuarios NO activados cuyo ÚLTIMO token tiene status='failed'
+        - failed_welcome: usuarios activados con welcome_email_status='failed'
+        
         Returns:
             {
                 "total_sent": int,
                 "activation_sent": int,
                 "welcome_sent": int,
                 "failed": int,
-                "pending": int
+                "pending": int,
+                "pending_activation": int,
+                "pending_welcome": int,
+                "failed_activation": int,
+                "failed_welcome": int
             }
         """
         q = text("""
             SELECT
-                -- Activation emails sent
+                -- Activation emails sent (cualquier token enviado)
                 (SELECT COUNT(*) FROM public.account_activations 
                  WHERE activation_email_sent_at IS NOT NULL) AS activation_sent,
+                
                 -- Welcome emails sent
                 (SELECT COUNT(*) FROM public.app_users 
                  WHERE welcome_email_sent_at IS NOT NULL) AS welcome_sent,
-                -- Failed emails (activation + welcome)
-                (SELECT COUNT(*) FROM public.account_activations 
-                 WHERE activation_email_status = 'failed') +
-                (SELECT COUNT(*) FROM public.app_users 
-                 WHERE welcome_email_status = 'failed') AS failed,
-                -- Pending emails (activation + welcome)
-                (SELECT COUNT(*) FROM public.account_activations 
-                 WHERE activation_email_status = 'pending') +
-                (SELECT COUNT(*) FROM public.app_users 
-                 WHERE welcome_email_status = 'pending') AS pending
+                
+                -- Pending activation (actionable): usuarios NO activados, último token = pending
+                (SELECT COUNT(*) FROM (
+                    SELECT DISTINCT ON (u.user_id)
+                        u.user_id,
+                        a.activation_email_status AS status
+                    FROM public.account_activations a
+                    JOIN public.app_users u ON a.user_id = u.user_id
+                    WHERE u.user_is_activated = false
+                    ORDER BY u.user_id, a.created_at DESC
+                ) AS latest_activation
+                WHERE status = 'pending') AS pending_activation,
+                
+                -- Pending welcome (actionable): usuarios activados con welcome pending
+                (SELECT COUNT(*) FROM public.app_users
+                 WHERE user_is_activated = true
+                   AND welcome_email_status = 'pending') AS pending_welcome,
+                
+                -- Failed activation (actionable): usuarios NO activados, último token = failed
+                (SELECT COUNT(*) FROM (
+                    SELECT DISTINCT ON (u.user_id)
+                        u.user_id,
+                        a.activation_email_status AS status
+                    FROM public.account_activations a
+                    JOIN public.app_users u ON a.user_id = u.user_id
+                    WHERE u.user_is_activated = false
+                    ORDER BY u.user_id, a.created_at DESC
+                ) AS latest_activation_failed
+                WHERE status = 'failed') AS failed_activation,
+                
+                -- Failed welcome (actionable): usuarios activados con welcome failed
+                (SELECT COUNT(*) FROM public.app_users
+                 WHERE user_is_activated = true
+                   AND welcome_email_status = 'failed') AS failed_welcome
         """)
         
         res = await self.db.execute(q)
@@ -64,12 +99,22 @@ class EmailAggregators:
         if row:
             activation_sent = int(row.activation_sent or 0)
             welcome_sent = int(row.welcome_sent or 0)
+            pending_activation = int(row.pending_activation or 0)
+            pending_welcome = int(row.pending_welcome or 0)
+            failed_activation = int(row.failed_activation or 0)
+            failed_welcome = int(row.failed_welcome or 0)
+            
             return {
                 "total_sent": activation_sent + welcome_sent,
                 "activation_sent": activation_sent,
                 "welcome_sent": welcome_sent,
-                "failed": int(row.failed or 0),
-                "pending": int(row.pending or 0),
+                "failed": failed_activation + failed_welcome,
+                "pending": pending_activation + pending_welcome,
+                # Breakdown para debug
+                "pending_activation": pending_activation,
+                "pending_welcome": pending_welcome,
+                "failed_activation": failed_activation,
+                "failed_welcome": failed_welcome,
             }
         
         return {
@@ -78,6 +123,10 @@ class EmailAggregators:
             "welcome_sent": 0,
             "failed": 0,
             "pending": 0,
+            "pending_activation": 0,
+            "pending_welcome": 0,
+            "failed_activation": 0,
+            "failed_welcome": 0,
         }
 
     async def get_backlog(
