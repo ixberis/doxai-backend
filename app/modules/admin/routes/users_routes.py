@@ -72,6 +72,13 @@ class UpdateUserRequest(BaseModel):
     role: Optional[str] = Field(None, pattern="^(admin|staff|customer)$")
     # Aligned with user_status_enum: 'active', 'cancelled', 'no_payment', 'not_active', 'suspended'
     status: Optional[str] = Field(None, pattern="^(active|cancelled|no_payment|not_active|suspended)$")
+    # Optional: update full_name
+    full_name: Optional[str] = Field(None, max_length=255)
+
+
+class DeleteUserResponse(BaseModel):
+    success: bool
+    message: str
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,22 +122,26 @@ def resolve_user_id(user_id: str) -> tuple[Union[int, UUID], UserIdType]:
 async def list_users(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    include_deleted: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
     """
     List all users with pagination.
     Returns user info including role (from user_roles) and activation status.
+    Excludes soft-deleted users by default (deleted_at IS NOT NULL).
     """
     offset = (page - 1) * per_page
 
-    # Count total
-    count_q = text("SELECT COUNT(*) FROM public.app_users")
+    # Count total (excluding deleted unless requested)
+    deleted_filter = "" if include_deleted else "WHERE deleted_at IS NULL"
+    count_q = text(f"SELECT COUNT(*) FROM public.app_users {deleted_filter}")
     count_res = await db.execute(count_q)
     total = count_res.scalar() or 0
 
     # Get users with role from app_users table and activation status
     # Note: app_users uses user_* column names and user_status enum
-    users_q = text("""
+    deleted_where = "" if include_deleted else "WHERE u.deleted_at IS NULL"
+    users_q = text(f"""
         SELECT 
             u.user_id::text AS user_id,
             u.user_email AS email,
@@ -140,6 +151,7 @@ async def list_users(
             u.user_is_activated AS is_activated,
             u.user_created_at::text AS created_at
         FROM public.app_users u
+        {deleted_where}
         ORDER BY u.user_created_at DESC
         LIMIT :limit OFFSET :offset
     """)
@@ -193,7 +205,6 @@ async def update_user(
 
     # Update status if provided (using user_status enum)
     if payload.status is not None:
-        # Use CAST() instead of :: to avoid conflict with SQLAlchemy :param syntax
         update_status_q = text("""
             UPDATE public.app_users 
             SET user_status = CAST(:status AS user_status_enum)
@@ -204,7 +215,6 @@ async def update_user(
 
     # Update role if provided (using user_role enum in app_users)
     if payload.role is not None:
-        # Use CAST() instead of :: to avoid conflict with SQLAlchemy :param syntax
         update_role_q = text("""
             UPDATE public.app_users 
             SET user_role = CAST(:role AS user_role_enum)
@@ -216,6 +226,16 @@ async def update_user(
         except Exception as e:
             logger.exception(f"Could not update role for {resolved_id}: {e}")
             raise HTTPException(status_code=500, detail="Error al actualizar rol")
+
+    # Update full_name if provided
+    if payload.full_name is not None:
+        update_name_q = text("""
+            UPDATE public.app_users 
+            SET user_full_name = :name
+            WHERE user_id = :uid
+        """)
+        await db.execute(update_name_q, {"name": payload.full_name, "uid": resolved_id})
+        logger.info(f"admin_user_name_updated user_id={resolved_id}")
 
     await db.commit()
 
@@ -250,7 +270,52 @@ async def update_user(
     )
 
 
-# Fin del archivo
+@router.delete("/{user_id}", response_model=DeleteUserResponse)
+async def delete_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    """
+    Soft delete a user (sets deleted_at timestamp).
+    Cannot delete your own account.
+    """
+    resolved_id, id_type = resolve_user_id(user_id)
+    logger.debug(f"DELETE user_id={user_id} -> {resolved_id} (type={id_type})")
+
+    # Prevent self-deletion
+    if hasattr(current_user, 'user_id') and current_user.user_id == resolved_id:
+        raise HTTPException(
+            status_code=409, 
+            detail="No puedes eliminar tu propia cuenta"
+        )
+
+    # Verify user exists and not already deleted
+    check_q = text("""
+        SELECT user_id, user_email FROM public.app_users 
+        WHERE user_id = :uid AND deleted_at IS NULL
+    """)
+    check_res = await db.execute(check_q, {"uid": resolved_id})
+    user_row = check_res.first()
+    
+    if not user_row:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Soft delete
+    delete_q = text("""
+        UPDATE public.app_users 
+        SET deleted_at = NOW()
+        WHERE user_id = :uid
+    """)
+    await db.execute(delete_q, {"uid": resolved_id})
+    await db.commit()
+    
+    logger.info(f"admin_user_deleted user_id={resolved_id} email={user_row.user_email}")
+
+    return DeleteUserResponse(
+        success=True,
+        message=f"Usuario {user_row.user_email} eliminado"
+    )
 
 
 # Fin del archivo

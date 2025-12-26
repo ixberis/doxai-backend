@@ -76,30 +76,48 @@ class PasswordResetService:
         - Envía correo de instrucciones (si el usuario existe).
 
         Siempre devuelve un mensaje genérico para no revelar existencia de cuentas.
+        NUNCA lanza excepciones por fallos de email - siempre responde 200.
         """
+        masked_email = _mask_email(user_email)
+        
         user = await self.user_service.get_by_email(user_email)
         if not user:
             # Seguridad: respondemos igual aunque el usuario no exista.
+            logger.info(
+                "password_reset_started email=%s user_exists=false",
+                masked_email,
+            )
             return {
                 "code": "RESET_STARTED",
                 "message": "Si el correo está registrado, se enviaron instrucciones.",
             }
 
-        # Generamos token
-        token = await self._generate_token(str(user.user_id))
+        user_id = user.user_id
+        logger.info(
+            "password_reset_started email=%s user_id=%s",
+            masked_email,
+            user_id,
+        )
 
-        # Persistimos token
+        # Generamos token
+        token = await self._generate_token(str(user_id))
+
+        # Persistimos token (siempre, incluso si el email falla después)
         ttl_minutes = getattr(self.settings, "AUTH_PASSWORD_RESET_TTL_MINUTES", 60)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
-        await self.reset_repo.create_reset(
-            user_id=user.user_id,
+        reset_record = await self.reset_repo.create_reset(
+            user_id=user_id,
             token=token,
             expires_at=expires_at,
         )
 
-        # Enviamos correo usando el método específico de EmailSender,
-        # compatible con StubEmailSender (to_email, full_name, reset_token)
-        await self._send_reset_email(user.user_email, token)
+        # Enviamos correo - capturamos cualquier excepción para no romper el endpoint
+        await self._send_reset_email_safely(
+            email=user.user_email,
+            token=token,
+            reset_record=reset_record,
+            user_id=user_id,
+        )
 
         return {
             "code": "RESET_STARTED",
@@ -194,20 +212,58 @@ class PasswordResetService:
 
         return secrets.token_urlsafe(32)
 
-    async def _send_reset_email(self, email: str, token: str) -> None:
+    async def _send_reset_email_safely(
+        self,
+        *,
+        email: str,
+        token: str,
+        reset_record: Any,
+        user_id: int,
+    ) -> None:
         """
-        Envía el correo de restablecimiento usando EmailSender.
-
-        En modo stub, esto se imprime en consola como:
-        [CONSOLE EMAIL] Password reset → email | token=...
+        Envía el correo de restablecimiento de forma segura.
+        Captura cualquier excepción y actualiza el tracking en DB.
+        NUNCA lanza excepciones - el endpoint siempre responde 200.
         """
-        # Algunos adaptadores reales podrían necesitar también la URL,
-        # pero el StubEmailSender solo acepta (to_email, full_name, reset_token).
-        await self.email_sender.send_password_reset_email(
-            to_email=email,
-            full_name="",
-            reset_token=token,
-        )
+        masked_email = _mask_email(email)
+        
+        try:
+            await self.email_sender.send_password_reset_email(
+                to_email=email,
+                full_name="",
+                reset_token=token,
+            )
+            
+            # Éxito: actualizar tracking
+            reset_record.reset_email_status = "sent"
+            reset_record.reset_email_sent_at = datetime.now(timezone.utc)
+            await self.db.commit()
+            
+            logger.info(
+                "password_reset_email_sent email=%s user_id=%s",
+                masked_email,
+                user_id,
+            )
+            
+        except Exception as e:
+            # Fallo: actualizar tracking pero NO propagar excepción
+            error_msg = str(e)[:500]
+            
+            try:
+                reset_record.reset_email_status = "failed"
+                reset_record.reset_email_attempts = (reset_record.reset_email_attempts or 0) + 1
+                reset_record.reset_email_last_error = error_msg
+                await self.db.commit()
+            except Exception:
+                # Si falla el commit, rollback para dejar sesión limpia
+                await self.db.rollback()
+            
+            logger.error(
+                "password_reset_email_failed email=%s user_id=%s error=%s",
+                masked_email,
+                user_id,
+                error_msg,
+            )
 
     async def _send_reset_success_email_safely(
         self,
