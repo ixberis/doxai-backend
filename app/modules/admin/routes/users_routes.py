@@ -51,6 +51,7 @@ class EmailStatusDetail(BaseModel):
     sent_at: Optional[str] = None
     attempts: int = 0
     last_error: Optional[str] = None
+    is_historical: bool = Field(default=False, description="True if this is historical data (user already completed this step)")
 
 
 class EmailHealth(BaseModel):
@@ -325,20 +326,44 @@ async def list_users(
         """Build email health object based on user's activation status."""
         is_activated = row.is_activated
         
-        # Activation email status - if user is activated, activation email is no longer relevant
-        if is_activated:
-            # User already activated - activation email status is 'n/a' (not applicable)
-            activation_detail = EmailStatusDetail(status="n/a", attempts=0)
-        elif row.activation_status_email:
-            # User not activated - show latest activation email status
-            activation_detail = EmailStatusDetail(
-                status=row.activation_status_email,
-                sent_at=row.activation_sent_at,
-                attempts=row.activation_attempts or 0,
-                last_error=row.activation_last_error,
-            )
+        # Activation email status - show historical data for activated users
+        if row.activation_status_email:
+            # Has activation email data
+            if is_activated:
+                # User already activated - normalize status to 'sent' ONLY if there's real evidence
+                # Evidence: sent_at exists OR status is explicitly 'sent'
+                # NOTE: 'pending' is NOT evidence - it just means token was created, not that email was sent
+                has_evidence = (row.activation_sent_at is not None) or (row.activation_status_email == "sent")
+                if has_evidence:
+                    activation_detail = EmailStatusDetail(
+                        status="sent",
+                        sent_at=row.activation_sent_at,
+                        attempts=row.activation_attempts or 0,
+                        last_error=row.activation_last_error,
+                        is_historical=True,
+                    )
+                else:
+                    # Activated but no evidence of email sent - mark as n/a (historical)
+                    activation_detail = EmailStatusDetail(
+                        status="n/a",
+                        attempts=row.activation_attempts or 0,
+                        is_historical=True,
+                    )
+            else:
+                # User not activated - show latest activation email status
+                activation_detail = EmailStatusDetail(
+                    status=row.activation_status_email,
+                    sent_at=row.activation_sent_at,
+                    attempts=row.activation_attempts or 0,
+                    last_error=row.activation_last_error,
+                    is_historical=False,
+                )
+        elif is_activated:
+            # User is activated but no activation email data - use n/a
+            activation_detail = EmailStatusDetail(status="n/a", attempts=0, is_historical=True)
         else:
-            activation_detail = EmailStatusDetail(status="n/a", attempts=0)
+            # User not activated and no activation email data
+            activation_detail = EmailStatusDetail(status="n/a", attempts=0, is_historical=False)
         
         # Welcome email status - only relevant for activated users
         if is_activated:
@@ -347,9 +372,10 @@ async def list_users(
                 sent_at=row.welcome_sent_at,
                 attempts=row.welcome_attempts or 0,
                 last_error=row.welcome_last_error,
+                is_historical=False,  # Welcome is current concern for activated users
             )
         else:
-            welcome_detail = EmailStatusDetail(status="n/a", attempts=0)
+            welcome_detail = EmailStatusDetail(status="n/a", attempts=0, is_historical=False)
         
         # Calculate overall status based on the relevant email for this user
         if not is_activated:
