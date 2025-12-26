@@ -283,6 +283,9 @@ class RegistrationFlowService:
         No propaga excepciones. Loguea resultado.
         Actualiza activation_email_status/attempts/sent_at/last_error en account_activations.
         
+        IMPORTANTE: Usa commit() explícito porque create_activation ya hizo commit previo.
+        El flush() solo sincroniza sin persistir, causando pérdida de datos.
+        
         Usa WHERE user_id + token para máxima seguridad (aunque token es UNIQUE).
         Usa func.coalesce para el incremento de attempts (robusto ante NULL).
         
@@ -290,6 +293,7 @@ class RegistrationFlowService:
             True si se envió correctamente, False si falló.
         """
         email_masked = email[:3] + "***" if email else "unknown"
+        token_preview = token[:12] + "..." if token else "none"
         now_utc = datetime.now(timezone.utc)
         
         try:
@@ -300,19 +304,49 @@ class RegistrationFlowService:
             )
             
             # Persistir éxito: status='sent', sent_at=now, last_error=null
-            await self.db.execute(
+            # WHERE solo por token (es UNIQUE, suficiente para identificar)
+            result = await self.db.execute(
                 update(AccountActivation)
-                .where(
-                    AccountActivation.user_id == user_id,
-                    AccountActivation.token == token,
-                )
+                .where(AccountActivation.token == token)
                 .values(
                     activation_email_status='sent',
                     activation_email_sent_at=now_utc,
                     activation_email_last_error=None,
                 )
             )
-            await self.db.flush()
+            
+            try:
+                await self.db.commit()
+            except Exception as commit_error:
+                await self.db.rollback()
+                logger.error(
+                    "activation_email_tracking_commit_failed user_id=%s token_preview=%s error=%s",
+                    user_id,
+                    token_preview,
+                    str(commit_error)[:100],
+                )
+                # Email se envió OK, pero tracking falló - aún retornamos True
+                logger.info(
+                    "activation_email_sent to=%s user_id=%s ip=%s (tracking_failed)",
+                    email_masked,
+                    user_id,
+                    ip_address,
+                )
+                return True
+            
+            # Verificar rowcount
+            if result.rowcount != 1:
+                logger.warning(
+                    "activation_email_tracking_update_missed user_id=%s token_preview=%s rowcount=%s expected=1",
+                    user_id,
+                    token_preview,
+                    result.rowcount,
+                )
+            else:
+                logger.info(
+                    "activation_email_tracking_persisted user_id=%s status=sent",
+                    user_id,
+                )
             
             logger.info(
                 "activation_email_sent to=%s user_id=%s ip=%s",
@@ -328,22 +362,36 @@ class RegistrationFlowService:
             error_msg = f"{error_code}: {str(e)[:180]}"
             
             # Persistir fallo: status='failed', attempts++, last_error
-            # Usa coalesce para robusto ante NULL en activation_email_attempts
-            await self.db.execute(
-                update(AccountActivation)
-                .where(
-                    AccountActivation.user_id == user_id,
-                    AccountActivation.token == token,
+            # WHERE solo por token (es UNIQUE, suficiente para identificar)
+            try:
+                result = await self.db.execute(
+                    update(AccountActivation)
+                    .where(AccountActivation.token == token)
+                    .values(
+                        activation_email_status='failed',
+                        activation_email_attempts=func.coalesce(
+                            AccountActivation.activation_email_attempts, 0
+                        ) + 1,
+                        activation_email_last_error=error_msg,
+                    )
                 )
-                .values(
-                    activation_email_status='failed',
-                    activation_email_attempts=func.coalesce(
-                        AccountActivation.activation_email_attempts, 0
-                    ) + 1,
-                    activation_email_last_error=error_msg,
+                await self.db.commit()
+                
+                if result.rowcount != 1:
+                    logger.warning(
+                        "activation_email_tracking_update_missed user_id=%s token_preview=%s rowcount=%s expected=1",
+                        user_id,
+                        token_preview,
+                        result.rowcount,
+                    )
+            except Exception as commit_error:
+                await self.db.rollback()
+                logger.error(
+                    "activation_email_tracking_commit_failed user_id=%s token_preview=%s error=%s",
+                    user_id,
+                    token_preview,
+                    str(commit_error)[:100],
                 )
-            )
-            await self.db.flush()
             
             logger.warning(
                 "activation_email_failed to=%s user_id=%s ip=%s error_code=%s error=%s",
