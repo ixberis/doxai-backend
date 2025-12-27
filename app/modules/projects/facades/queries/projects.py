@@ -10,6 +10,7 @@ Fecha: 2025-10-26 (async 2025-12-27)
 """
 
 from typing import Optional, List, Tuple
+from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,13 +23,13 @@ from app.modules.projects.enums.project_status_enum import ProjectStatus
 MAX_LIMIT = 200
 
 
-async def get_by_id(db: AsyncSession, project_id: int) -> Optional[Project]:
+async def get_by_id(db: AsyncSession, project_id: UUID) -> Optional[Project]:
     """
     Obtiene un proyecto por ID.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        project_id: ID del proyecto (int)
+        project_id: ID del proyecto (UUID)
         
     Returns:
         Proyecto o None si no existe
@@ -57,7 +58,7 @@ async def get_by_slug(db: AsyncSession, slug: str) -> Optional[Project]:
 
 async def list_by_user(
     db: AsyncSession,
-    user_id: int,
+    user_email: str,
     state: Optional[ProjectState] = None,
     status: Optional[ProjectStatus] = None,
     limit: int = 50,
@@ -69,7 +70,7 @@ async def list_by_user(
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_id: ID del usuario propietario (int)
+        user_email: Email del usuario propietario (filtro CITEXT)
         state: Filtro opcional por estado técnico
         status: Filtro opcional por status administrativo
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -82,7 +83,8 @@ async def list_by_user(
     # Imponer límite máximo
     effective_limit = min(limit, MAX_LIMIT)
     
-    query = select(Project).where(Project.user_id == user_id)
+    # HOTFIX: filtrar por user_email (str) para evitar uuid = integer error
+    query = select(Project).where(Project.user_email == user_email)
     
     if state is not None:
         query = query.where(Project.state == state)
@@ -93,7 +95,7 @@ async def list_by_user(
     # Si se requiere total, calcularlo antes del limit/offset
     total = None
     if include_total:
-        count_query = select(func.count(Project.id)).where(Project.user_id == user_id)
+        count_query = select(func.count(Project.id)).where(Project.user_email == user_email)
         if state is not None:
             count_query = count_query.where(Project.state == state)
         if status is not None:
@@ -111,7 +113,7 @@ async def list_by_user(
 
 async def list_ready_projects(
     db: AsyncSession,
-    user_id: Optional[int] = None,
+    user_email: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     include_total: bool = False
@@ -121,7 +123,7 @@ async def list_ready_projects(
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_id: Filtro opcional por usuario (int)
+        user_email: Filtro opcional por email de usuario
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
         offset: Desplazamiento para paginación (default: 0)
         include_total: Si True, devuelve (items, total_count)
@@ -134,15 +136,15 @@ async def list_ready_projects(
     
     query = select(Project).where(Project.state == ProjectState.ready)
     
-    if user_id is not None:
-        query = query.where(Project.user_id == user_id)
+    if user_email is not None:
+        query = query.where(Project.user_email == user_email)
     
     # Si se requiere total, calcularlo antes del limit/offset
     total = None
     if include_total:
         count_query = select(func.count(Project.id)).where(Project.state == ProjectState.ready)
-        if user_id is not None:
-            count_query = count_query.where(Project.user_id == user_id)
+        if user_email is not None:
+            count_query = count_query.where(Project.user_email == user_email)
         total = await db.scalar(count_query) or 0
     
     query = query.order_by(Project.ready_at.desc())
@@ -156,7 +158,7 @@ async def list_ready_projects(
 
 async def list_active_projects(
     db: AsyncSession,
-    user_id: int,
+    user_email: str,
     order_by: str = "updated_at",
     asc: bool = False,
     limit: int = 50,
@@ -168,7 +170,7 @@ async def list_active_projects(
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_id: ID del usuario propietario (int)
+        user_email: Email del usuario propietario
         order_by: Columna para ordenar (updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -180,8 +182,8 @@ async def list_active_projects(
     """
     effective_limit = min(limit, MAX_LIMIT)
     
-    # Base query: state != ARCHIVED
-    base_filter = (Project.user_id == user_id) & (Project.state != ProjectState.ARCHIVED)
+    # HOTFIX: filtrar por user_email (str) para evitar uuid = integer error
+    base_filter = (Project.user_email == user_email) & (Project.state != ProjectState.ARCHIVED)
     
     # Query con ordenamiento
     query = select(Project).where(base_filter)
@@ -206,7 +208,7 @@ async def list_active_projects(
 
 async def list_closed_projects(
     db: AsyncSession,
-    user_id: int,
+    user_email: str,
     order_by: str = "updated_at",
     asc: bool = False,
     limit: int = 50,
@@ -218,7 +220,7 @@ async def list_closed_projects(
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_id: ID del usuario propietario (int)
+        user_email: Email del usuario propietario
         order_by: Columna para ordenar (updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -230,8 +232,8 @@ async def list_closed_projects(
     """
     effective_limit = min(limit, MAX_LIMIT)
     
-    # Base query: state == ARCHIVED
-    base_filter = (Project.user_id == user_id) & (Project.state == ProjectState.ARCHIVED)
+    # HOTFIX: filtrar por user_email (str) para evitar uuid = integer error
+    base_filter = (Project.user_email == user_email) & (Project.state == ProjectState.ARCHIVED)
     
     # Query con ordenamiento
     query = select(Project).where(base_filter)
@@ -256,7 +258,7 @@ async def list_closed_projects(
 
 async def count_projects_by_user(
     db: AsyncSession,
-    user_id: int,
+    user_email: str,
     state: Optional[ProjectState] = None,
     status: Optional[ProjectStatus] = None
 ) -> int:
@@ -265,14 +267,14 @@ async def count_projects_by_user(
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_id: ID del usuario (int)
+        user_email: Email del usuario
         state: Filtro opcional por estado
         status: Filtro opcional por status
         
     Returns:
         Número de proyectos que cumplen los criterios
     """
-    query = select(func.count(Project.id)).where(Project.user_id == user_id)
+    query = select(func.count(Project.id)).where(Project.user_email == user_email)
     
     if state is not None:
         query = query.where(Project.state == state)

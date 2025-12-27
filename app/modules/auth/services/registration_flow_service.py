@@ -120,8 +120,24 @@ class RegistrationFlowService:
         email = (payload.get("email") or "").strip().lower()
         password = payload.get("password") or ""
         full_name = (payload.get("full_name") or "").strip() or None
+        # Soportar aliases: phone, user_phone, phone_number
+        phone = (
+            payload.get("phone") 
+            or payload.get("user_phone") 
+            or payload.get("phone_number") 
+            or ""
+        ).strip() or None
         ip_address = payload.get("ip_address", "unknown")
         user_agent = payload.get("user_agent")
+
+        # DEBUG: Log payload keys y presencia de phone (sin PII)
+        logger.info(
+            "REGISTRATION_PAYLOAD: payload_keys=%s has_phone=%s phone_len=%d email_prefix=%s",
+            list(payload.keys()),
+            bool(phone),
+            len(phone) if phone else 0,
+            email[:3] + "***" if email else "empty",
+        )
 
         if not email or not password:
             self.audit_service.log_register_failed(
@@ -200,9 +216,16 @@ class RegistrationFlowService:
             user_email=email,
             user_full_name=full_name or "",
             user_password_hash=password_hash,
+            user_phone=phone,  # Persistir teléfono del registro
         )
 
-        logger.info("REGISTRATION: crear usuario nuevo %s", email[:3] + "***")
+        # DEBUG logging (no PII) - confirma que teléfono se recibe
+        logger.info(
+            "REGISTRATION: crear usuario nuevo email=%s has_phone=%s phone_len=%d",
+            email[:3] + "***",
+            bool(phone),
+            len(phone) if phone else 0,
+        )
         try:
             created = await self.user_service.add(user)
         except IntegrityError as e:

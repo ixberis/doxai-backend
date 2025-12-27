@@ -250,6 +250,35 @@ async def update_user_profile_alias(
         raise HTTPException(status_code=500, detail="Error interno al actualizar perfil")
 
 
+# ===== Credits Routes =====
+
+@router.get(
+    "/credits",
+    summary="Obtener balance de créditos",
+    description="Obtiene el balance actual de créditos del usuario"
+)
+async def get_credits_balance(
+    user=Depends(get_current_user),
+    service: ProfileService = Depends(get_profile_service),
+):
+    """
+    Obtiene el balance de créditos del usuario autenticado.
+    """
+    uid = extract_user_id(user)
+    
+    try:
+        balance = await service.get_credits_balance(user_id=uid)
+        return {
+            "credits_balance": balance,
+        }
+    except Exception:
+        logger.exception("Error al obtener créditos para user_id=%s", uid)
+        # Retornar 0 en caso de error para no romper la UI
+        return {
+            "credits_balance": 0,
+        }
+
+
 # ===== Subscription Routes =====
 
 @router.get(

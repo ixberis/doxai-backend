@@ -231,7 +231,7 @@ class ProfileService:
 
         Prioridad:
           1) credits_gateway (si está inyectado)
-          2) fallback SQL simple sobre 'credit_balances' (si existe)
+          2) Ledger de credit_transactions (suma de credits_delta)
           3) 0 (sin romper la pantalla)
         """
         # 1) Gateway inyectado
@@ -241,19 +241,22 @@ class ProfileService:
             except Exception as e:
                 logger.warning(f"[credits_gateway] get_balance falló: {e}")
 
-        # 2) Fallback SQL (tabla opcional)
+        # 2) Ledger SQL: suma de credit_transactions.credits_delta
         try:
             stmt = text(
-                "SELECT balance FROM credit_balances WHERE user_id = :uid LIMIT 1"
+                "SELECT COALESCE(SUM(credits_delta), 0) FROM credit_transactions WHERE user_id = :uid"
             )
             res = await self.db.execute(stmt, {"uid": user_id})
             row = res.first()
             if row and row[0] is not None:
-                return int(row[0])
+                balance = int(row[0])
+                logger.debug(f"[credits] user_id={user_id} balance={balance} source=credit_transactions")
+                return balance
         except Exception as e:
-            logger.info(f"[fallback] No se pudo leer credit_balances: {e}")
+            logger.info(f"[credits] No se pudo leer credit_transactions: {e}")
 
-        # 3) Default
+        # 3) Default (sin datos)
+        logger.debug(f"[credits] user_id={user_id} balance=0 source=fallback_zero")
         return 0
 
     async def get_credits_overview(self, user_id: int) -> CreditsOverviewDTO:

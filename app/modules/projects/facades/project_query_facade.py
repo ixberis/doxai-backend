@@ -61,17 +61,17 @@ class ProjectQueryFacade:
     
     async def list_by_user(
         self,
-        user_id: int,
+        user_email: str,
         state: Optional[ProjectState] = None,
         status: Optional[ProjectStatus] = None,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> List[Project] | Tuple[List[Project], int]:
-        """Lista proyectos de un usuario con filtros opcionales."""
+        """Lista proyectos de un usuario con filtros opcionales (por email)."""
         return await queries.list_projects_by_user(
             db=self.db,
-            user_id=user_id,
+            user_email=user_email,
             state=state,
             status=status,
             limit=limit,
@@ -81,7 +81,7 @@ class ProjectQueryFacade:
     
     async def list_ready_projects(
         self,
-        user_id: Optional[int] = None,
+        user_email: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
@@ -89,7 +89,7 @@ class ProjectQueryFacade:
         """Lista proyectos en estado 'ready'."""
         return await queries.list_ready_projects(
             db=self.db,
-            user_id=user_id,
+            user_email=user_email,
             limit=limit,
             offset=offset,
             include_total=include_total,
@@ -97,17 +97,17 @@ class ProjectQueryFacade:
     
     async def list_active_projects(
         self,
-        user_id: int,
+        user_email: str,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> Tuple[List[Project], int]:
-        """Lista proyectos activos (state != ARCHIVED) con ordenamiento."""
+        """Lista proyectos activos (state != ARCHIVED) con ordenamiento (por email)."""
         return await queries.list_active_projects(
             db=self.db,
-            user_id=user_id,
+            user_email=user_email,
             order_by=order_by,
             asc=asc,
             limit=limit,
@@ -117,17 +117,17 @@ class ProjectQueryFacade:
     
     async def list_closed_projects(
         self,
-        user_id: int,
+        user_email: str,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> Tuple[List[Project], int]:
-        """Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento."""
+        """Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento (por email)."""
         return await queries.list_closed_projects(
             db=self.db,
-            user_id=user_id,
+            user_email=user_email,
             order_by=order_by,
             asc=asc,
             limit=limit,
@@ -137,14 +137,14 @@ class ProjectQueryFacade:
     
     async def count_projects_by_user(
         self,
-        user_id: int,
+        user_email: str,
         state: Optional[ProjectState] = None,
         status: Optional[ProjectStatus] = None,
     ) -> int:
-        """Cuenta proyectos de un usuario con filtros opcionales."""
+        """Cuenta proyectos de un usuario con filtros opcionales (por email)."""
         return await queries.count_projects_by_user(
             db=self.db,
-            user_id=user_id,
+            user_email=user_email,
             state=state,
             status=status,
         )

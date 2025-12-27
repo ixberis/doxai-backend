@@ -67,10 +67,22 @@ async def register(
       - Email existente: payload solo incluye message genérico
     """
     from app.shared.utils.json_response import UTF8JSONResponse
+    import logging
+    logger = logging.getLogger(__name__)
     
     # Inyectar metadatos de request para auditoría
     meta = get_request_meta(request)
     data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    
+    # DEBUG: Log phone field at route level (no PII)
+    phone_value = data.get("phone")
+    logger.info(
+        "REGISTER_ROUTE: has_phone=%s phone_len=%d data_keys=%s",
+        phone_value is not None and phone_value != "",
+        len(phone_value) if phone_value else 0,
+        list(data.keys()),
+    )
+    
     data.update(meta)
     
     result = await facade.register_user(data)

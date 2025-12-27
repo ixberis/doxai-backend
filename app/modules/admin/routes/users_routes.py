@@ -104,6 +104,8 @@ class UpdateUserRequest(BaseModel):
     status: Optional[str] = Field(None, pattern="^(active|cancelled|no_payment|not_active|suspended)$")
     # Optional: update full_name
     full_name: Optional[str] = Field(None, max_length=255)
+    # Optional: update phone number
+    phone: Optional[str] = Field(None, max_length=50)
 
 
 class DeleteUserResponse(BaseModel):
@@ -544,18 +546,30 @@ async def update_user(
         await db.execute(update_name_q, {"name": payload.full_name, "uid": resolved_id})
         logger.info(f"admin_user_name_updated user_id={resolved_id}")
 
+    # Update phone if provided
+    if payload.phone is not None:
+        update_phone_q = text("""
+            UPDATE public.app_users 
+            SET user_phone = :phone
+            WHERE user_id = :uid
+        """)
+        await db.execute(update_phone_q, {"phone": payload.phone.strip() if payload.phone else None, "uid": resolved_id})
+        logger.info(f"admin_user_phone_updated user_id={resolved_id}")
+
     await db.commit()
 
-    # Fetch updated user
+    # Fetch updated user with phone and last_login
     fetch_q = text("""
         SELECT 
             u.user_id::text AS user_id,
             u.user_email AS email,
             u.user_full_name AS full_name,
+            u.user_phone AS phone,
             u.user_role::text AS role,
             u.user_status::text AS account_status,
             u.user_is_activated AS is_activated,
-            u.user_created_at::text AS created_at
+            u.user_created_at::text AS created_at,
+            u.user_last_login::text AS last_login
         FROM public.app_users u
         WHERE u.user_id = :uid
     """)
@@ -570,10 +584,12 @@ async def update_user(
         user_id_type=id_type,
         email=row.email,
         full_name=row.full_name,
+        phone=row.phone if row.phone else None,
         role=row.role,
         account_status=row.account_status,
         activation_status="activated" if row.is_activated else "pending",
         created_at=row.created_at,
+        last_login=row.last_login,
     )
 
 

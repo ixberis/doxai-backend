@@ -37,7 +37,7 @@ class ProjectsQueryService:
 
     async def list_projects_by_user(
         self,
-        user_id: int,
+        user_email: str,
         *,
         state: Optional[ProjectState] = None,
         status: Optional[ProjectStatus] = None,
@@ -46,7 +46,7 @@ class ProjectsQueryService:
         include_total: bool = False,
     ):
         return await self.facade.list_by_user(
-            user_id=user_id,
+            user_email=user_email,
             state=state,
             status=status,
             limit=limit,
@@ -57,13 +57,13 @@ class ProjectsQueryService:
     async def list_ready_projects(
         self,
         *,
-        user_id: Optional[int] = None,
+        user_email: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ):
         return await self.facade.list_ready_projects(
-            user_id=user_id,
+            user_email=user_email,
             limit=limit,
             offset=offset,
             include_total=include_total,
@@ -71,7 +71,7 @@ class ProjectsQueryService:
 
     async def list_active_projects(
         self,
-        user_id: int,
+        user_email: str,
         *,
         order_by: str = "updated_at",
         asc: bool = False,
@@ -81,7 +81,7 @@ class ProjectsQueryService:
     ):
         """Lista proyectos activos (state != ARCHIVED) con ordenamiento."""
         return await self.facade.list_active_projects(
-            user_id=user_id,
+            user_email=user_email,
             order_by=order_by,
             asc=asc,
             limit=limit,
@@ -91,7 +91,7 @@ class ProjectsQueryService:
 
     async def list_closed_projects(
         self,
-        user_id: int,
+        user_email: str,
         *,
         order_by: str = "updated_at",
         asc: bool = False,
@@ -101,7 +101,7 @@ class ProjectsQueryService:
     ):
         """Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento."""
         return await self.facade.list_closed_projects(
-            user_id=user_id,
+            user_email=user_email,
             order_by=order_by,
             asc=asc,
             limit=limit,

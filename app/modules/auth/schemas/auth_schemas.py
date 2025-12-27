@@ -30,10 +30,11 @@ class RegisterRequest(UTF8SafeModel):
     full_name: str = Field(..., min_length=3, max_length=100)
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
+    # Teléfono: acepta 10 dígitos (MX) o formato internacional E.164 laxo
     phone: Optional[str] = Field(
         None,
-        pattern=r'^\+?[0-9\s\-()]{7,20}$',
-        description="E.164 laxo: admite +, espacios, guiones y paréntesis (7–20 dígitos)"
+        pattern=r'^(\+?[0-9]{1,4})?[0-9]{7,15}$',
+        description="Acepta: 10 dígitos locales o formato internacional (+52 55 1234 5678). Sin espacios ni guiones."
     )
     # Opcional para CLI/tests; se valida en verify_recaptcha_or_raise si RECAPTCHA_ENABLED=true
     recaptcha_token: Optional[str] = Field(None, min_length=1)
@@ -43,6 +44,16 @@ class RegisterRequest(UTF8SafeModel):
     def normalize_email(cls, v):
         """Normaliza email a minúsculas"""
         return v.lower().strip() if v else v
+    
+    @field_validator('phone', mode='before')
+    @classmethod
+    def normalize_phone(cls, v):
+        """Normaliza teléfono: elimina espacios, guiones, paréntesis"""
+        if v is None or v == "":
+            return None
+        # Remover caracteres de formato comunes
+        cleaned = ''.join(c for c in str(v) if c.isdigit() or c == '+')
+        return cleaned if cleaned else None
 
 
 class LoginRequest(UTF8SafeModel):

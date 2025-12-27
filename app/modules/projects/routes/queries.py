@@ -31,7 +31,7 @@ from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
 
 # Dependencias
 from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_user_id
+from app.shared.auth_context import extract_user_id, extract_user_email
 
 router = APIRouter(tags=["projects:queries"])
 
@@ -55,7 +55,6 @@ SORT_COLUMN_WHITELIST = {
     summary="Listar proyectos del usuario (filtros opcionales)",
 )
 async def list_projects_for_user(
-    user_id: Optional[int] = None,
     state: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
@@ -66,13 +65,18 @@ async def list_projects_for_user(
 ):
     """
     Devuelve la lista de proyectos de un usuario autenticado.
-    Si `user_id` no se provee, usa el ID del usuario actual.
+    Usa user_email para filtrar (evita mismatch uuid vs int).
     """
-    uid = extract_user_id(user)
-    target_user = user_id or uid
+    email = extract_user_email(user)
+    if not email:
+        from fastapi import HTTPException, status as http_status
+        raise HTTPException(
+            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            detail="Missing email in auth context"
+        )
 
     items_or_tuple = await q.list_projects_by_user(
-        user_id=target_user,
+        user_email=email,
         state=state,
         status=status,
         limit=limit,
@@ -116,9 +120,15 @@ async def list_active_projects(
 ):
     """
     Devuelve los proyectos activos (state != ARCHIVED) del usuario autenticado.
-    Soporta ordenamiento por project_updated_at, project_created_at, project_ready_at.
+    Usa user_email para filtrar (evita mismatch uuid vs int).
     """
-    uid = extract_user_id(user)
+    email = extract_user_email(user)
+    if not email:
+        from fastapi import HTTPException, status as http_status
+        raise HTTPException(
+            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            detail="Missing email in auth context"
+        )
     
     # Validar columna de ordenamiento
     if ordenar_por not in SORT_COLUMN_WHITELIST:
@@ -128,7 +138,7 @@ async def list_active_projects(
         )
     
     items, total = await q.list_active_projects(
-        user_id=uid,
+        user_email=email,
         order_by=SORT_COLUMN_WHITELIST[ordenar_por],
         asc=asc,
         limit=limit,
@@ -163,9 +173,15 @@ async def list_closed_projects(
 ):
     """
     Devuelve los proyectos cerrados/archivados (state == ARCHIVED) del usuario autenticado.
-    Soporta ordenamiento por project_updated_at, project_created_at, project_ready_at.
+    Usa user_email para filtrar (evita mismatch uuid vs int).
     """
-    uid = extract_user_id(user)
+    email = extract_user_email(user)
+    if not email:
+        from fastapi import HTTPException, status as http_status
+        raise HTTPException(
+            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            detail="Missing email in auth context"
+        )
     
     # Validar columna de ordenamiento
     if ordenar_por not in SORT_COLUMN_WHITELIST:
@@ -175,7 +191,7 @@ async def list_closed_projects(
         )
     
     items, total = await q.list_closed_projects(
-        user_id=uid,
+        user_email=email,
         order_by=SORT_COLUMN_WHITELIST[ordenar_por],
         asc=asc,
         limit=limit,
@@ -208,12 +224,13 @@ async def list_ready_projects(
 ):
     """
     Devuelve los proyectos del usuario en estado READY.
+    Usa user_email para filtrar.
     """
-    uid = extract_user_id(user)
+    email = extract_user_email(user)
 
     # Pedir include_total solo si se requiere
     result = await q.list_ready_projects(
-        user_id=uid,
+        user_email=email,
         limit=limit,
         offset=offset,
         include_total=include_total,
