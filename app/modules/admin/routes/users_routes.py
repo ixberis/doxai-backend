@@ -73,15 +73,19 @@ class AdminUserResponse(BaseModel):
     - activation_status: separate from account status (activated/pending)
     - deleted_at: soft-delete timestamp (null if active)
     - email_health: estado de correos de activación y bienvenida
+    - phone: user phone number
+    - last_login: last login timestamp
     """
     user_id: str                        # Canonical ID (string always)
     user_id_type: UserIdType = "int"    # Current backend uses int
     email: str
     full_name: Optional[str] = None
+    phone: Optional[str] = None         # User phone number
     role: str = "customer"
     account_status: str = "active"      # Single source for Estado column
     activation_status: str = "pending"  # activated | pending
     created_at: str
+    last_login: Optional[str] = None    # Last login timestamp
     deleted_at: Optional[str] = None    # Soft-delete timestamp
     email_health: Optional[EmailHealth] = None  # Estado de correos
 
@@ -275,10 +279,12 @@ async def list_users(
             u.user_id::text AS user_id,
             u.user_email AS email,
             u.user_full_name AS full_name,
+            u.user_phone AS phone,
             u.user_role::text AS role,
             u.user_status::text AS account_status,
             u.user_is_activated AS is_activated,
             u.user_created_at::text AS created_at,
+            u.user_last_login::text AS last_login,
             u.deleted_at::text AS deleted_at,
             -- Welcome email fields
             u.welcome_email_status::text AS welcome_status,
@@ -444,21 +450,35 @@ async def list_users(
             overall=overall,
         )
 
-    users = [
-        AdminUserResponse(
+    import os
+    log_admin_debug = os.getenv("LOG_ADMIN_USERS_DEBUG", "0") == "1"
+    is_non_prod = os.getenv("ENVIRONMENT", "development") != "production"
+    
+    users = []
+    for row in rows:
+        # DEBUG: Log phone/last_login for first 3 users (only in non-prod or with explicit flag)
+        # Phone is redacted to last 2 digits for privacy
+        if len(users) < 3 and (log_admin_debug or is_non_prod):
+            phone_redacted = f"***{row.phone[-2:]}" if row.phone and len(row.phone) >= 2 else "(empty)"
+            logger.debug(
+                "admin_user_sample user_id=%s phone=%s last_login=%r",
+                row.user_id, phone_redacted, row.last_login
+            )
+        
+        users.append(AdminUserResponse(
             user_id=row.user_id,
             user_id_type="int",
             email=row.email,
             full_name=row.full_name,
+            phone=row.phone if row.phone else None,  # Normalize empty string to None
             role=row.role,
             account_status=row.account_status,
             activation_status="activated" if row.is_activated else "pending",
             created_at=row.created_at,
+            last_login=row.last_login,
             deleted_at=row.deleted_at,
             email_health=build_email_health(row),
-        )
-        for row in rows
-    ]
+        ))
 
     return AdminUsersListResponse(
         users=users,

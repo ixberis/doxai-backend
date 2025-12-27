@@ -3,15 +3,15 @@
 backend/app/modules/projects/facades/queries/projects.py
 
 Consultas de proyectos: get_by_id, get_by_slug, list_by_user, etc.
+Ahora async para compatibilidad con AsyncSession.
 
 Autor: Ixchel Beristain
-Fecha: 2025-10-26
+Fecha: 2025-10-26 (async 2025-12-27)
 """
 
-from uuid import UUID
 from typing import Optional, List, Tuple
-from sqlalchemy.orm import Session
 from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.projects.models.project_models import Project
 from app.modules.projects.enums.project_state_enum import ProjectState
@@ -22,41 +22,42 @@ from app.modules.projects.enums.project_status_enum import ProjectStatus
 MAX_LIMIT = 200
 
 
-def get_by_id(db: Session, project_id: UUID) -> Optional[Project]:
+async def get_by_id(db: AsyncSession, project_id: int) -> Optional[Project]:
     """
     Obtiene un proyecto por ID.
     
     Args:
-        db: Sesión SQLAlchemy
-        project_id: ID del proyecto
+        db: Sesión AsyncSession SQLAlchemy
+        project_id: ID del proyecto (int)
         
     Returns:
         Proyecto o None si no existe
     """
-    return db.get(Project, project_id)
+    result = await db.get(Project, project_id)
+    return result
 
 
-def get_by_slug(db: Session, slug: str) -> Optional[Project]:
+async def get_by_slug(db: AsyncSession, slug: str) -> Optional[Project]:
     """
     Obtiene un proyecto por slug.
     
     Usa índice único en project_slug para búsqueda rápida.
     
     Args:
-        db: Sesión SQLAlchemy
+        db: Sesión AsyncSession SQLAlchemy
         slug: Slug del proyecto (globalmente único)
         
     Returns:
         Proyecto o None si no existe
     """
-    return db.scalar(
-        select(Project).where(Project.project_slug == slug)
-    )
+    stmt = select(Project).where(Project.project_slug == slug)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def list_by_user(
-    db: Session,
-    user_id: UUID,
+async def list_by_user(
+    db: AsyncSession,
+    user_id: int,
     state: Optional[ProjectState] = None,
     status: Optional[ProjectStatus] = None,
     limit: int = 50,
@@ -66,11 +67,9 @@ def list_by_user(
     """
     Lista proyectos de un usuario con filtros opcionales.
     
-    Usa índice idx_projects_user_state para búsquedas eficientes.
-    
     Args:
-        db: Sesión SQLAlchemy
-        user_id: ID del usuario propietario
+        db: Sesión AsyncSession SQLAlchemy
+        user_id: ID del usuario propietario (int)
         state: Filtro opcional por estado técnico
         status: Filtro opcional por status administrativo
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -99,19 +98,20 @@ def list_by_user(
             count_query = count_query.where(Project.state == state)
         if status is not None:
             count_query = count_query.where(Project.status == status)
-        total = db.scalar(count_query) or 0
+        total = await db.scalar(count_query) or 0
     
     query = query.order_by(Project.created_at.desc())
     query = query.offset(offset).limit(effective_limit)
     
-    items = list(db.execute(query).scalars().all())
+    result = await db.execute(query)
+    items = list(result.scalars().all())
     
     return (items, total) if include_total else items
 
 
-def list_ready_projects(
-    db: Session,
-    user_id: Optional[UUID] = None,
+async def list_ready_projects(
+    db: AsyncSession,
+    user_id: Optional[int] = None,
     limit: int = 50,
     offset: int = 0,
     include_total: bool = False
@@ -119,11 +119,9 @@ def list_ready_projects(
     """
     Lista proyectos en estado 'ready'.
     
-    Usa índice parcial idx_projects_ready_at_ready para optimización.
-    
     Args:
-        db: Sesión SQLAlchemy
-        user_id: Filtro opcional por usuario
+        db: Sesión AsyncSession SQLAlchemy
+        user_id: Filtro opcional por usuario (int)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
         offset: Desplazamiento para paginación (default: 0)
         include_total: Si True, devuelve (items, total_count)
@@ -145,19 +143,20 @@ def list_ready_projects(
         count_query = select(func.count(Project.id)).where(Project.state == ProjectState.ready)
         if user_id is not None:
             count_query = count_query.where(Project.user_id == user_id)
-        total = db.scalar(count_query) or 0
+        total = await db.scalar(count_query) or 0
     
     query = query.order_by(Project.ready_at.desc())
     query = query.offset(offset).limit(effective_limit)
     
-    items = list(db.execute(query).scalars().all())
+    result = await db.execute(query)
+    items = list(result.scalars().all())
     
     return (items, total) if include_total else items
 
 
-def list_active_projects(
-    db: Session,
-    user_id: UUID,
+async def list_active_projects(
+    db: AsyncSession,
+    user_id: int,
     order_by: str = "updated_at",
     asc: bool = False,
     limit: int = 50,
@@ -168,8 +167,8 @@ def list_active_projects(
     Lista proyectos activos (state != ARCHIVED) de un usuario con ordenamiento.
     
     Args:
-        db: Sesión SQLAlchemy
-        user_id: ID del usuario propietario
+        db: Sesión AsyncSession SQLAlchemy
+        user_id: ID del usuario propietario (int)
         order_by: Columna para ordenar (updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -192,21 +191,22 @@ def list_active_projects(
     query = query.order_by(order_column.asc() if asc else order_column.desc())
     query = query.offset(offset).limit(effective_limit)
     
-    items = list(db.execute(query).scalars().all())
+    result = await db.execute(query)
+    items = list(result.scalars().all())
     
     # Solo ejecutar COUNT si se requiere
     if include_total:
         count_query = select(func.count(Project.id)).where(base_filter)
-        total = db.scalar(count_query) or 0
+        total = await db.scalar(count_query) or 0
     else:
         total = len(items)
     
     return items, total
 
 
-def list_closed_projects(
-    db: Session,
-    user_id: UUID,
+async def list_closed_projects(
+    db: AsyncSession,
+    user_id: int,
     order_by: str = "updated_at",
     asc: bool = False,
     limit: int = 50,
@@ -217,8 +217,8 @@ def list_closed_projects(
     Lista proyectos cerrados/archivados (state == ARCHIVED) de un usuario con ordenamiento.
     
     Args:
-        db: Sesión SQLAlchemy
-        user_id: ID del usuario propietario
+        db: Sesión AsyncSession SQLAlchemy
+        user_id: ID del usuario propietario (int)
         order_by: Columna para ordenar (updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -241,21 +241,22 @@ def list_closed_projects(
     query = query.order_by(order_column.asc() if asc else order_column.desc())
     query = query.offset(offset).limit(effective_limit)
     
-    items = list(db.execute(query).scalars().all())
+    result = await db.execute(query)
+    items = list(result.scalars().all())
     
     # Solo ejecutar COUNT si se requiere
     if include_total:
         count_query = select(func.count(Project.id)).where(base_filter)
-        total = db.scalar(count_query) or 0
+        total = await db.scalar(count_query) or 0
     else:
         total = len(items)
     
     return items, total
 
 
-def count_projects_by_user(
-    db: Session,
-    user_id: UUID,
+async def count_projects_by_user(
+    db: AsyncSession,
+    user_id: int,
     state: Optional[ProjectState] = None,
     status: Optional[ProjectStatus] = None
 ) -> int:
@@ -263,8 +264,8 @@ def count_projects_by_user(
     Cuenta proyectos de un usuario con filtros opcionales.
     
     Args:
-        db: Sesión SQLAlchemy
-        user_id: ID del usuario
+        db: Sesión AsyncSession SQLAlchemy
+        user_id: ID del usuario (int)
         state: Filtro opcional por estado
         status: Filtro opcional por status
         
@@ -279,7 +280,7 @@ def count_projects_by_user(
     if status is not None:
         query = query.where(Project.status == status)
     
-    return db.scalar(query) or 0
+    return await db.scalar(query) or 0
 
 
 __all__ = [

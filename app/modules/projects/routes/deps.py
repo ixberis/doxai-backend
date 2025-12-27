@@ -7,11 +7,11 @@ Dependencias inyectables para los servicios reales de Projects.
 Tests pueden overridear estas dependencias con stubs InMemory.
 
 Autor: Ixchel Beristain
-Ajustado: Projects v2 (2025-11-21)
+Ajustado: Projects v2 async (2025-12-27)
 """
 
 from fastapi import Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
 from app.modules.projects.services import (
@@ -20,8 +20,8 @@ from app.modules.projects.services import (
 )
 
 
-def get_projects_command_service(
-    db: Session = Depends(get_db),
+async def get_projects_command_service(
+    db: AsyncSession = Depends(get_db),
 ) -> ProjectsCommandService:
     """
     Devuelve el servicio real para comandos de Projects.
@@ -30,8 +30,8 @@ def get_projects_command_service(
     return ProjectsCommandService(db)
 
 
-def get_projects_query_service(
-    db: Session = Depends(get_db),
+async def get_projects_query_service(
+    db: AsyncSession = Depends(get_db),
 ) -> ProjectsQueryService:
     """
     Devuelve el servicio real para consultas de Projects.

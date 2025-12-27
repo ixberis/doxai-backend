@@ -121,9 +121,11 @@ class ProjectRead(UTF8SafeModel):
     
     Incluye todos los campos del modelo Project alineados con
     ProjectState/ProjectStatus.
+    
+    Nota: user_id es int (no UUID) según migración de Projects v2.
     """
     project_id: UUID = Field(..., alias="id", description="ID único del proyecto")
-    user_id: UUID = Field(..., description="ID del usuario propietario")
+    user_id: int = Field(..., description="ID del usuario propietario (int, no UUID)")
     user_email: EmailStr = Field(..., description="Email del propietario")
     project_name: str = Field(..., description="Nombre del proyecto")
     project_slug: str = Field(..., description="Slug único del proyecto")
@@ -141,7 +143,7 @@ class ProjectRead(UTF8SafeModel):
         json_schema_extra={
             "example": {
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
-                "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
+                "user_id": 1,
                 "user_email": "user@example.com",
                 "project_name": "Propuesta Técnica Q4",
                 "project_slug": "propuesta-tecnica-q4",
@@ -170,7 +172,7 @@ class ProjectResponse(UTF8SafeModel):
                 "message": "Proyecto creado exitosamente",
                 "project": {
                     "project_id": "123e4567-e89b-12d3-a456-426614174000",
-                    "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
+                    "user_id": 1,
                     "user_email": "user@example.com",
                     "project_name": "Mi Proyecto",
                     "project_slug": "mi-proyecto",
