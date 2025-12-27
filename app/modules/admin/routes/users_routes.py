@@ -50,6 +50,7 @@ class EmailStatusDetail(BaseModel):
     status: str = Field(..., description="sent|pending|failed|n/a")
     sent_at: Optional[str] = None
     attempts: int = 0
+    sent_count: int = Field(default=0, description="Total emails sent for this type")
     last_error: Optional[str] = None
     is_historical: bool = Field(default=False, description="True if this is historical data (user already completed this step)")
 
@@ -339,7 +340,16 @@ async def list_users(
                   )
                 ORDER BY a.created_at DESC
                 LIMIT 1
-            ) AS activation_last_error
+            ) AS activation_last_error,
+            -- Count of activation emails actually sent (for this user)
+            (
+                SELECT COUNT(*)
+                FROM public.account_activations a
+                WHERE a.user_id = u.user_id
+                  AND a.activation_email_sent_at IS NOT NULL
+            ) AS activation_emails_sent_count,
+            -- Welcome emails sent count (currently 0 or 1)
+            CASE WHEN u.welcome_email_sent_at IS NOT NULL THEN 1 ELSE 0 END AS welcome_emails_sent_count
         FROM public.app_users u
         {where_clause}
         ORDER BY {sort_column} {sort_direction}
@@ -366,6 +376,7 @@ async def list_users(
                         status="sent",
                         sent_at=row.activation_sent_at,
                         attempts=row.activation_attempts or 0,
+                        sent_count=row.activation_emails_sent_count or 0,
                         last_error=row.activation_last_error,
                         is_historical=True,
                     )
@@ -374,6 +385,7 @@ async def list_users(
                     activation_detail = EmailStatusDetail(
                         status="n/a",
                         attempts=row.activation_attempts or 0,
+                        sent_count=row.activation_emails_sent_count or 0,
                         is_historical=True,
                     )
             else:
@@ -382,15 +394,16 @@ async def list_users(
                     status=row.activation_status_email,
                     sent_at=row.activation_sent_at,
                     attempts=row.activation_attempts or 0,
+                    sent_count=row.activation_emails_sent_count or 0,
                     last_error=row.activation_last_error,
                     is_historical=False,
                 )
         elif is_activated:
             # User is activated but no activation email data - use n/a
-            activation_detail = EmailStatusDetail(status="n/a", attempts=0, is_historical=True)
+            activation_detail = EmailStatusDetail(status="n/a", attempts=0, sent_count=row.activation_emails_sent_count or 0, is_historical=True)
         else:
             # User not activated and no activation email data
-            activation_detail = EmailStatusDetail(status="n/a", attempts=0, is_historical=False)
+            activation_detail = EmailStatusDetail(status="n/a", attempts=0, sent_count=0, is_historical=False)
         
         # Welcome email status - only relevant for activated users
         if is_activated:
@@ -398,11 +411,12 @@ async def list_users(
                 status=row.welcome_status or "pending",
                 sent_at=row.welcome_sent_at,
                 attempts=row.welcome_attempts or 0,
+                sent_count=row.welcome_emails_sent_count or 0,
                 last_error=row.welcome_last_error,
                 is_historical=False,  # Welcome is current concern for activated users
             )
         else:
-            welcome_detail = EmailStatusDetail(status="n/a", attempts=0, is_historical=False)
+            welcome_detail = EmailStatusDetail(status="n/a", attempts=0, sent_count=0, is_historical=False)
         
         # Calculate overall status based on the relevant email for this user
         if not is_activated:
