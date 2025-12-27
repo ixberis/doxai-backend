@@ -122,25 +122,19 @@ async def get_auth_metrics_snapshot(db: AsyncSession = Depends(get_db)):
         # ─────────────────────────────────────────────────────────
         # Conversion metrics
         # ─────────────────────────────────────────────────────────
+        # IMPORTANT: Always calculate ratio from users_total and users_activated_total
+        # to ensure consistency with the values shown in the snapshot.
+        # Do NOT use get_latest_activation_conversion_ratio() which queries a
+        # different SQL function that may use a different time window.
         try:
-            # Try SQL function first
-            auth_activation_conversion_ratio = await agg.get_latest_activation_conversion_ratio()
-            
-            # Fallback to calculated ratio if SQL function fails/returns null
-            if auth_activation_conversion_ratio is None and users_total and users_total > 0:
-                if users_activated_total is not None:
-                    auth_activation_conversion_ratio = users_activated_total / users_total
-            
-            if auth_activation_conversion_ratio is not None:
-                logger.info(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio OK: {auth_activation_conversion_ratio}")
+            if users_total and users_total > 0 and users_activated_total is not None:
+                auth_activation_conversion_ratio = users_activated_total / users_total
+                logger.info(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio OK: {auth_activation_conversion_ratio} ({users_activated_total}/{users_total})")
             else:
-                logger.warning(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio: null value")
+                logger.warning(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio: null (users_total={users_total}, users_activated_total={users_activated_total})")
                 partial = True
         except Exception as e:
-            if _is_missing_view_error(e):
-                logger.warning(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio: view missing")
-            else:
-                logger.exception(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio failed")
+            logger.exception(f"[auth_metrics_snapshot:{request_id}] auth_activation_conversion_ratio calculation failed")
             partial = True
         
         # ─────────────────────────────────────────────────────────
