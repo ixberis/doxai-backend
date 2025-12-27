@@ -65,8 +65,9 @@ class ProjectFile(Base):
     )
 
     # User who uploaded the file (unified naming with event logs)
+    # user_id es int (FK a app_users.user_id que es INTEGER/BIGINT)
     user_id = Column(
-        UUID(as_uuid=True),
+        Integer,
         ForeignKey("app_users.user_id", ondelete="SET NULL"),
         nullable=True,
     )

@@ -59,12 +59,12 @@ class PasswordHasher(Protocol):
 
 
 class SessionManager(Protocol):
-    async def revoke_session(self, user_id: UUID, session_id: Optional[str]) -> None: ...
+    async def revoke_session(self, user_id: int, session_id: Optional[str]) -> None: ...
 
 
 class CreditsGateway(Protocol):
-    async def get_balance(self, user_id: UUID) -> int: ...
-    async def get_overview(self, user_id: UUID) -> "CreditsOverviewDTO": ...
+    async def get_balance(self, user_id: int) -> int: ...
+    async def get_overview(self, user_id: int) -> "CreditsOverviewDTO": ...
 
 
 # ============================
@@ -72,7 +72,7 @@ class CreditsGateway(Protocol):
 # ============================
 
 class ProfileDTO(BaseModel):
-    user_id: UUID
+    user_id: int  # AppUser.user_id is int, not UUID
     full_name: str
     email: EmailStr
     phone: Optional[str] = None
@@ -119,7 +119,19 @@ class ProfileService:
 
     # ---------- Perfil: lectura ----------
 
-    async def get_profile(self, user_id: UUID) -> ProfileDTO:
+    async def get_profile(self, user_id: int) -> ProfileDTO:
+        """
+        Obtiene el perfil de un usuario por su user_id (int).
+        
+        Args:
+            user_id: ID del usuario (int, columna user_id de app_users)
+            
+        Returns:
+            ProfileDTO con los datos del perfil
+            
+        Raises:
+            ValueError: Si el usuario no existe
+        """
         stmt = select(User).where(User.user_id == user_id)
         result = await self.db.execute(stmt)
         user: Optional[User] = result.scalar_one_or_none()
@@ -127,24 +139,35 @@ class ProfileService:
         if not user:
             raise ValueError("Usuario no encontrado")
 
+        # Mapear columnas reales de AppUser (user_full_name, user_email, etc)
         return ProfileDTO(
             user_id=user.user_id,
-            full_name=user.full_name,
-            email=user.email,
-            phone=getattr(user, "phone", None),
-            role=str(getattr(user, "role", "")),
-            status=str(getattr(user, "status", "")),
-            created_at=user.created_at,
-            updated_at=getattr(user, "updated_at", None),
-            last_login=getattr(user, "user_last_login", None),
+            full_name=user.user_full_name,
+            email=user.user_email,
+            phone=user.user_phone,
+            role=str(user.user_role.value) if hasattr(user.user_role, 'value') else str(user.user_role),
+            status=str(user.user_status.value) if hasattr(user.user_status, 'value') else str(user.user_status),
+            created_at=user.user_created_at,
+            updated_at=user.user_updated_at,
+            last_login=user.user_last_login,
         )
 
     # ---------- Perfil: edición ----------
 
-    async def update_profile(self, user_id: UUID, data: UpdateProfileDTO) -> ProfileDTO:
+    async def update_profile(self, user_id: int, data: UpdateProfileDTO) -> ProfileDTO:
+        """
+        Actualiza el perfil de un usuario.
+        
+        Args:
+            user_id: ID del usuario (int)
+            data: Datos a actualizar
+            
+        Returns:
+            ProfileDTO actualizado
+        """
         # Si cambia el email, validar unicidad (case-insensitive)
         if data.email is not None:
-            stmt_email = select(User).where(User.email.ilike(str(data.email)))
+            stmt_email = select(User).where(User.user_email.ilike(str(data.email)))
             result_email = await self.db.execute(stmt_email)
             existing = result_email.scalar_one_or_none()
             if existing and existing.user_id != user_id:
@@ -157,18 +180,15 @@ class ProfileService:
             raise ValueError("Usuario no encontrado")
 
         if data.full_name is not None:
-            user.full_name = data.full_name.strip()
+            user.user_full_name = data.full_name.strip()
 
         if data.phone is not None:
-            user.phone = data.phone.strip() if data.phone else None  # permite limpiar a None
+            user.user_phone = data.phone.strip() if data.phone else None
 
         if data.email is not None:
-            user.email = str(data.email).lower()
+            user.user_email = str(data.email).lower()
 
-        # Timestamps
-        if hasattr(user, "updated_at"):
-            user.updated_at = datetime.now(timezone.utc)
-
+        # Timestamps - user_updated_at se actualiza automáticamente por onupdate
         await self.db.flush()
         await self.db.commit()
 
@@ -176,14 +196,21 @@ class ProfileService:
 
     # ---------- Cambio de contraseña ----------
 
-    async def change_password(self, user_id: UUID, payload: ChangePasswordDTO) -> None:
+    async def change_password(self, user_id: int, payload: ChangePasswordDTO) -> None:
+        """
+        Cambia la contraseña del usuario.
+        
+        Args:
+            user_id: ID del usuario (int)
+            payload: Contraseña actual y nueva
+        """
         stmt = select(User).where(User.user_id == user_id)
         result = await self.db.execute(stmt)
         user: Optional[User] = result.scalar_one_or_none()
         if not user:
             raise ValueError("Usuario no encontrado")
 
-        password_hash: str = getattr(user, "password_hash", "")
+        password_hash: str = user.user_password_hash or ""
         if not password_hash:
             raise RuntimeError("El usuario no tiene password_hash definido")
 
@@ -191,17 +218,14 @@ class ProfileService:
             raise ValueError("La contraseña actual no es correcta")
 
         new_hash = self.password_hasher.hash(payload.new_password)
-        user.password_hash = new_hash
-
-        if hasattr(user, "updated_at"):
-            user.updated_at = datetime.now(timezone.utc)
+        user.user_password_hash = new_hash
 
         await self.db.flush()
         await self.db.commit()
 
     # ---------- Créditos: balance y overview ----------
 
-    async def get_credits_balance(self, user_id: UUID) -> int:
+    async def get_credits_balance(self, user_id: int) -> int:
         """
         Regresa el saldo actual de créditos.
 
@@ -222,7 +246,7 @@ class ProfileService:
             stmt = text(
                 "SELECT balance FROM credit_balances WHERE user_id = :uid LIMIT 1"
             )
-            res = await self.db.execute(stmt, {"uid": str(user_id)})
+            res = await self.db.execute(stmt, {"uid": user_id})
             row = res.first()
             if row and row[0] is not None:
                 return int(row[0])
@@ -232,7 +256,7 @@ class ProfileService:
         # 3) Default
         return 0
 
-    async def get_credits_overview(self, user_id: UUID) -> CreditsOverviewDTO:
+    async def get_credits_overview(self, user_id: int) -> CreditsOverviewDTO:
         """
         Devuelve un overview simple: balance y timestamps de última recarga/consumo.
 
@@ -261,7 +285,7 @@ class ProfileService:
                 LIMIT 1
                 """
             )
-            res_topup = await self.db.execute(stmt_last_topup, {"uid": str(user_id)})
+            res_topup = await self.db.execute(stmt_last_topup, {"uid": user_id})
             row_topup = res_topup.first()
             if row_topup:
                 overview.last_top_up_at = row_topup[0]
@@ -275,7 +299,7 @@ class ProfileService:
                 LIMIT 1
                 """
             )
-            res_consume = await self.db.execute(stmt_last_consume, {"uid": str(user_id)})
+            res_consume = await self.db.execute(stmt_last_consume, {"uid": user_id})
             row_consume = res_consume.first()
             if row_consume:
                 overview.last_consume_at = row_consume[0]
@@ -288,7 +312,7 @@ class ProfileService:
     # ---------- Créditos: link de compra ----------
 
     async def get_purchase_credits_link(
-        self, user_id: UUID, redirect_path: str = "/dashboard/credits"
+        self, user_id: int, redirect_path: str = "/dashboard/credits"
     ) -> PurchaseCreditsLinkDTO:
         """
         Devuelve el deep link del frontend para comprar créditos.
@@ -302,7 +326,7 @@ class ProfileService:
 
     # ---------- Cerrar sesión ----------
 
-    async def logout(self, user_id: UUID, session_id: Optional[str]) -> None:
+    async def logout(self, user_id: int, session_id: Optional[str]) -> None:
         """
         Revoca la sesión actual del usuario. La implementación real depende
         del SessionManager inyectado (Redis, tabla refresh_tokens, etc.).

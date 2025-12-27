@@ -17,7 +17,7 @@ Actualizado: 2025-12-27 - Fix DI con PasswordHasher y SessionManager
 """
 
 from typing import Optional
-from uuid import UUID
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,7 @@ from app.modules.user_profile.schemas import (
 )
 from app.modules.user_profile.services import ProfileService
 from app.modules.auth.services import get_current_user
+from app.shared.auth_context import extract_user_id
 
 router = APIRouter(prefix="/profile", tags=["User Profile"])
 
@@ -60,7 +61,7 @@ class NoOpSessionManager:
     La revocación real de sesión se maneja en el módulo auth.
     """
     
-    async def revoke_session(self, user_id: UUID, session_id: Optional[str]) -> None:
+    async def revoke_session(self, user_id: int, session_id: Optional[str]) -> None:
         # No-op: la revocación real ocurre en auth/logout
         pass
 
@@ -84,19 +85,7 @@ async def get_profile_service(
     )
 
 
-# ---------------------------------------------------------------------------
-# Helper universal para user_id/email (copiado del patrón de projects)
-# ---------------------------------------------------------------------------
-def _uid_email(u):
-    """Extrae user_id y email del objeto usuario (acepta objeto o dict)."""
-    user_id = getattr(u, "user_id", None) or getattr(u, "id", None)
-    email = getattr(u, "email", None)
-    if user_id is None and isinstance(u, dict):
-        user_id = u.get("user_id") or u.get("id")
-        email = email or u.get("email")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth context")
-    return user_id, email
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +111,7 @@ def _profile_dto_to_response(dto) -> dict:
         user_status = UserStatus.active
     
     return {
-        "user_id": dto.user_id,
+        "user_id": dto.user_id,  # int - schema actualizado para aceptar int
         "user_email": dto.email,
         "user_full_name": dto.full_name,
         "user_phone": dto.phone,
@@ -151,14 +140,15 @@ async def get_user_profile(
     """
     Obtiene el perfil completo del usuario autenticado.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     try:
         dto = await service.get_profile(user_id=uid)
         return _profile_dto_to_response(dto)
     except ValueError as e:
         raise NotFoundException(detail=str(e))
-    except Exception as e:
-        raise BadRequestException(detail=f"Error al obtener perfil: {str(e)}")
+    except Exception:
+        logger.exception("Error al obtener perfil para user_id=%s", uid)
+        raise HTTPException(status_code=500, detail="Error interno al obtener perfil")
 
 
 # Alias para compatibilidad con UI que llama GET /api/profile/profile
@@ -173,14 +163,15 @@ async def get_user_profile_alias(
     service: ProfileService = Depends(get_profile_service),
 ):
     """Alias de get_user_profile para compatibilidad con UI."""
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     try:
         dto = await service.get_profile(user_id=uid)
         return _profile_dto_to_response(dto)
     except ValueError as e:
         raise NotFoundException(detail=str(e))
-    except Exception as e:
-        raise BadRequestException(detail=f"Error al obtener perfil: {str(e)}")
+    except Exception:
+        logger.exception("Error al obtener perfil para user_id=%s", uid)
+        raise HTTPException(status_code=500, detail="Error interno al obtener perfil")
 
 
 @router.put(
@@ -197,7 +188,7 @@ async def update_user_profile(
     """
     Actualiza el perfil del usuario autenticado.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     try:
         from datetime import datetime, timezone
         from app.modules.user_profile.services.profile_service import UpdateProfileDTO
@@ -217,8 +208,9 @@ async def update_user_profile(
         }
     except ValueError as e:
         raise BadRequestException(detail=str(e))
-    except Exception as e:
-        raise BadRequestException(detail=f"Error al actualizar perfil: {str(e)}")
+    except Exception:
+        logger.exception("Error al actualizar perfil para user_id=%s", uid)
+        raise HTTPException(status_code=500, detail="Error interno al actualizar perfil")
 
 
 # Alias para compatibilidad con UI que llama PUT /api/profile/profile
@@ -234,7 +226,7 @@ async def update_user_profile_alias(
     service: ProfileService = Depends(get_profile_service),
 ):
     """Alias de update_user_profile para compatibilidad con UI."""
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     try:
         from datetime import datetime, timezone
         from app.modules.user_profile.services.profile_service import UpdateProfileDTO
@@ -253,8 +245,9 @@ async def update_user_profile_alias(
         }
     except ValueError as e:
         raise BadRequestException(detail=str(e))
-    except Exception as e:
-        raise BadRequestException(detail=f"Error al actualizar perfil: {str(e)}")
+    except Exception:
+        logger.exception("Error al actualizar perfil para user_id=%s", uid)
+        raise HTTPException(status_code=500, detail="Error interno al actualizar perfil")
 
 
 # ===== Subscription Routes =====
@@ -275,23 +268,24 @@ async def get_subscription_status(
     """
     from app.modules.auth.enums import UserStatus
     
-    uid, _ = _uid_email(user)
-    email = getattr(user, "email", None) or "unknown@example.com"
+    uid = extract_user_id(user)
+    email = getattr(user, "user_email", None) or getattr(user, "email", None) or "unknown@example.com"
     
     try:
         balance = await service.get_credits_balance(user_id=uid)
         sub_status = UserStatus.active if balance > 0 else UserStatus.not_active
         
         return {
-            "user_id": uid,
+            "user_id": uid,  # int - schema espera int
             "user_email": email,
             "subscription_status": sub_status,
             "subscription_period_start": None,
             "subscription_period_end": None,
             "last_payment_date": None,
         }
-    except Exception as e:
-        raise BadRequestException(detail=f"Error al obtener estado de suscripción: {str(e)}")
+    except Exception:
+        logger.exception("Error al obtener suscripción para user_id=%s", uid)
+        raise HTTPException(status_code=500, detail="Error interno al obtener estado de suscripción")
 
 
 # ===== Utility Routes =====
@@ -310,15 +304,16 @@ async def update_last_login(
     Actualiza el timestamp de último login.
     Este endpoint usa SQL directo para evitar dependencias circulares.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     try:
         from sqlalchemy import text
         from datetime import datetime, timezone
         
         await db.execute(
             text("UPDATE app_users SET user_last_login = :now WHERE user_id = :uid"),
-            {"now": datetime.now(timezone.utc), "uid": str(uid)}
+            {"now": datetime.now(timezone.utc), "uid": uid}  # uid is int, not str
         )
         await db.commit()
-    except Exception as e:
-        raise BadRequestException(detail=f"Error al actualizar último login: {str(e)}")
+    except Exception:
+        logger.exception("Error al actualizar último login para user_id=%s", uid)
+        raise HTTPException(status_code=500, detail="Error interno al actualizar último login")

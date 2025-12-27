@@ -29,6 +29,7 @@ from app.modules.projects.schemas import (
     ProjectResponse,
 )
 from app.modules.auth.services import get_current_user
+from app.shared.auth_context import extract_user_id_and_email
 
 router = APIRouter(tags=["projects:crud"])
 
@@ -49,19 +50,11 @@ def _coerce_to_project_read(p):
     return ProjectRead.model_validate(d)
 
 
-def _uid_email(u):
-    """
-    Extrae user_id y email desde el objeto/dict del usuario autenticado.
-    Lanza 401 si la sesión no contiene los datos mínimos.
-    """
-    user_id = getattr(u, "user_id", None) or getattr(u, "id", None)
-    email = getattr(u, "email", None)
-    if user_id is None and isinstance(u, dict):
-        user_id = u.get("user_id") or u.get("id")
-        email = email or u.get("email")
-    if not user_id or not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth context")
-    return user_id, email
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Helper local eliminado - usar extract_user_id_and_email de app.shared.auth_context
 
 
 @router.post(
@@ -78,7 +71,7 @@ def create_project(
     """
     Crea un proyecto nuevo para el usuario autenticado.
     """
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     project = svc.create_project(
         user_id=uid,
         user_email=uemail,
@@ -102,7 +95,7 @@ def get_project_by_id(
     """
     Devuelve un proyecto por su ID, validando pertenencia del usuario.
     """
-    uid, _ = _uid_email(user)
+    uid, _ = extract_user_id_and_email(user)
     project = q.get_project_by_id(project_id)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
@@ -129,7 +122,7 @@ def get_project_by_slug(
     """
     Devuelve un proyecto por su slug, validando pertenencia del usuario.
     """
-    uid, _ = _uid_email(user)
+    uid, _ = extract_user_id_and_email(user)
     project = q.get_project_by_slug(slug)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
@@ -156,7 +149,7 @@ def update_project(
     """
     Actualiza metadatos del proyecto (nombre/ descripción). Requiere propiedad.
     """
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     project = svc.update_project(
         project_id,
         user_id=uid,
@@ -179,7 +172,7 @@ def delete_project(
     """
     Elimina físicamente un proyecto. Normalmente reservado a tareas administrativas.
     """
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     ok = svc.delete(
         project_id,
         user_id=uid,

@@ -21,6 +21,7 @@ from app.modules.projects.routes.deps import get_projects_command_service
 from app.modules.projects.enums import ProjectStatus, ProjectState
 from app.modules.projects.schemas import ProjectRead, ProjectResponse
 from app.modules.auth.services import get_current_user
+from app.shared.auth_context import extract_user_id_and_email
 
 router = APIRouter(tags=["projects:lifecycle"])
 
@@ -46,19 +47,11 @@ def _coerce_to_project_read(p):
     return ProjectRead.model_validate(d)
 
 
-def _uid_email(u):
-    """
-    Extrae user_id y email desde el objeto/dict del usuario autenticado.
-    Lanza 401 si la sesión no contiene los datos mínimos.
-    """
-    user_id = getattr(u, "user_id", None) or getattr(u, "id", None)
-    email = getattr(u, "email", None)
-    if user_id is None and isinstance(u, dict):
-        user_id = u.get("user_id") or u.get("id")
-        email = email or u.get("email")
-    if not user_id or not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth context")
-    return user_id, email
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Helper local eliminado - usar extract_user_id_and_email de app.shared.auth_context
 
 
 @router.post(
@@ -75,7 +68,7 @@ def change_status(
     """
     Cambia el status administrativo del proyecto. Requiere propiedad.
     """
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     
     # Normalizar y mapear slug a enum
     slug = _norm_slug(status_slug)
@@ -110,7 +103,7 @@ def transition_state(
     """
     Transiciona el estado técnico del proyecto. Requiere propiedad.
     """
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     
     # Normalizar y mapear slug a enum
     slug = _norm_slug(state_slug)
@@ -141,7 +134,7 @@ def archive_project(
     """
     Archiva (soft delete) un proyecto. Requiere propiedad.
     """
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     project = svc.archive(
         project_id,
         user_id=uid,

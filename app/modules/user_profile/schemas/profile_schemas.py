@@ -65,7 +65,7 @@ class UserProfileResponse(UTF8SafeModel):
     
     Incluye datos personales y estado de cuenta/suscripción.
     """
-    user_id: UUID = Field(..., description="ID único del usuario")
+    user_id: int = Field(..., description="ID único del usuario")
     user_email: EmailStr = Field(..., description="Email del usuario")
     user_full_name: str = Field(..., description="Nombre completo")
     user_phone: Optional[str] = Field(None, description="Teléfono")
@@ -87,7 +87,7 @@ class UserProfileResponse(UTF8SafeModel):
         from_attributes=True,
         json_schema_extra={
             "example": {
-                "user_id": "123e4567-e89b-12d3-a456-426614174000",
+                "user_id": 123,
                 "user_email": "user@example.com",
                 "user_full_name": "Juan Pérez",
                 "user_phone": "+52 55 1234 5678",
@@ -112,7 +112,7 @@ class UserProfileUpdateResponse(UTF8SafeModel):
                 "message": "Perfil actualizado correctamente",
                 "updated_at": "2025-10-18T15:30:00Z",
                 "user": {
-                    "user_id": "123e4567-e89b-12d3-a456-426614174000",
+                    "user_id": 123,
                     "user_email": "user@example.com",
                     "user_full_name": "Juan Pérez",
                     "user_phone": "+52 55 1234 5678"
@@ -124,7 +124,7 @@ class UserProfileUpdateResponse(UTF8SafeModel):
 
 class SubscriptionStatusResponse(UTF8SafeModel):
     """Response con el estado de suscripción del usuario"""
-    user_id: UUID = Field(..., description="ID del usuario")
+    user_id: int = Field(..., description="ID del usuario")
     user_email: EmailStr = Field(..., description="Email del usuario")
     subscription_status: SubscriptionStatus = Field(
         ...,
@@ -147,7 +147,7 @@ class SubscriptionStatusResponse(UTF8SafeModel):
         from_attributes=True,
         json_schema_extra={
             "example": {
-                "user_id": "123e4567-e89b-12d3-a456-426614174000",
+                "user_id": 123,
                 "user_email": "user@example.com",
                 "subscription_status": "active",
                 "subscription_period_start": "2025-10-01T00:00:00Z",

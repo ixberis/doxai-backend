@@ -10,7 +10,7 @@ Fecha: 28/10/2025
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, DateTime, ForeignKey, Index
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB, CITEXT
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -35,8 +35,9 @@ class ProjectActionLog(Base):
     )
 
     # Actor (puede ser None si es acción del sistema)
+    # user_id es int (FK a app_users.user_id que es INTEGER/BIGINT)
     user_id = Column(
-        UUID(as_uuid=True),
+        Integer,
         ForeignKey("app_users.user_id", ondelete="SET NULL"),
         nullable=True,
     )

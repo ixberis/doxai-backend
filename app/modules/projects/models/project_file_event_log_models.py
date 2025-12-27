@@ -12,7 +12,7 @@ Fecha: 2025-10-24
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, String, Text, Numeric, DateTime, ForeignKey, Index
+from sqlalchemy import Column, String, Text, Numeric, DateTime, ForeignKey, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID, CITEXT
 from sqlalchemy.sql import func
 
@@ -53,8 +53,9 @@ class ProjectFileEventLog(Base):
     project_file_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
 
     # User who performed the action (nullable to support system-triggered events)
+    # user_id es int (FK a app_users.user_id que es INTEGER/BIGINT)
     user_id = Column(
-        UUID(as_uuid=True),
+        Integer,
         ForeignKey("app_users.user_id", ondelete="SET NULL"),
         nullable=True,
     )

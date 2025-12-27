@@ -11,7 +11,7 @@ Fecha: 2025-10-24
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Index, Integer
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -47,9 +47,9 @@ class Project(Base):
     # Primary Key
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
 
-    # User Relationship
+    # User Relationship - user_id es int (FK a app_users.user_id que es BIGINT/INTEGER)
     user_id = Column(
-        UUID(as_uuid=True),
+        Integer,
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
         nullable=False,
         index=True,

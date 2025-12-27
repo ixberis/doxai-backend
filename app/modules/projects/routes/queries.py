@@ -37,6 +37,7 @@ from app.modules.projects.enums.project_state_enum import ProjectState
 
 # Dependencias
 from app.modules.auth.services import get_current_user
+from app.shared.auth_context import extract_user_id
 
 router = APIRouter(tags=["projects:queries"])
 
@@ -50,19 +51,7 @@ SORT_COLUMN_WHITELIST = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Helper universal para user_id/email
-# ---------------------------------------------------------------------------
-def _uid_email(u):
-    # acepta objeto o dict
-    user_id = getattr(u, "user_id", None) or getattr(u, "id", None)
-    email = getattr(u, "email", None)
-    if user_id is None and isinstance(u, dict):
-        user_id = u.get("user_id") or u.get("id")
-        email = email or u.get("email")
-    if not user_id or not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth context")
-    return user_id, email
+# Helper local eliminado - usar extract_user_id de app.shared.auth_context
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +77,7 @@ def list_projects_for_user(
     Devuelve la lista de proyectos de un usuario autenticado.
     Si `user_id` no se provee, usa el ID del usuario actual.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     target_user = user_id or uid
 
     items_or_tuple = q.list_projects_by_user(
@@ -138,7 +127,7 @@ def list_active_projects(
     Devuelve los proyectos activos (state != ARCHIVED) del usuario autenticado.
     Soporta ordenamiento por project_updated_at, project_created_at, project_ready_at.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     
     # Validar columna de ordenamiento
     if ordenar_por not in SORT_COLUMN_WHITELIST:
@@ -185,7 +174,7 @@ def list_closed_projects(
     Devuelve los proyectos cerrados/archivados (state == ARCHIVED) del usuario autenticado.
     Soporta ordenamiento por project_updated_at, project_created_at, project_ready_at.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     
     # Validar columna de ordenamiento
     if ordenar_por not in SORT_COLUMN_WHITELIST:
@@ -229,7 +218,7 @@ def list_ready_projects(
     """
     Devuelve los proyectos del usuario en estado READY.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
 
     # Pedir include_total solo si se requiere
     result = q.list_ready_projects(
@@ -270,7 +259,7 @@ def list_project_actions(
     """
     Devuelve la bitácora de acciones ejecutadas sobre un proyecto.
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     items_total = q.list_actions(project_id=project_id, limit=limit, offset=offset)
     # Manejar retorno flexible: puede ser tupla (items, total) o solo items
     if isinstance(items_total, tuple):
@@ -314,7 +303,7 @@ def list_project_file_events(
       - Con `after_created_at` y `after_id`: usa paginación por cursor (seek-based)
         para listas largas, con orden (created_at DESC, id DESC).
     """
-    uid, _ = _uid_email(user)
+    uid = extract_user_id(user)
     
     # Cursor pagination: si ambos after_created_at y after_id vienen, usar seek
     if after_created_at is not None and after_id is not None:

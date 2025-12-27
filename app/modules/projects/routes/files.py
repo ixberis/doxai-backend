@@ -22,21 +22,12 @@ from app.modules.projects.routes.deps import (
 
 # Dependencias
 from app.modules.auth.services import get_current_user
+from app.shared.auth_context import extract_user_id_and_email
 
 router = APIRouter()
 
-# --- Helper universal para user_id/email ---
-from fastapi import HTTPException, status
-def _uid_email(u):
-    # acepta objeto o dict
-    user_id = getattr(u, "user_id", None) or getattr(u, "id", None)
-    email = getattr(u, "email", None)
-    if user_id is None and isinstance(u, dict):
-        user_id = u.get("user_id") or u.get("id")
-        email = email or u.get("email")
-    if not user_id or not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth context")
-    return user_id, email
+
+# Helper local eliminado - usar extract_user_id_and_email de app.shared.auth_context
 
 # ====== Schemas locales mínimos para inputs de archivo ======
 
@@ -64,7 +55,7 @@ def list_project_files(
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
     """Lista archivos del proyecto. Siempre devuelve total."""
-    uid, _ = _uid_email(user)
+    uid, _ = extract_user_id_and_email(user)
     items, total = q.list_files(project_id=project_id, user_id=uid, limit=limit, offset=offset, include_total=True)
     # items son dicts, no necesitan conversión
     return {
@@ -85,7 +76,7 @@ def add_project_file(
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """Agrega archivo al proyecto. Delega validación a service."""
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     file = svc.add_file(
         project_id=project_id,
         user_id=uid,
@@ -108,7 +99,7 @@ def validate_project_file(
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """Valida archivo. Delega lógica a service."""
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     file = svc.validate_file(
         file_id=file_id,
         user_id=uid,
@@ -127,7 +118,7 @@ def move_project_file(
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """Mueve archivo. Delega lógica a service."""
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     file = svc.move_file(
         file_id=file_id,
         user_id=uid,
@@ -146,7 +137,7 @@ def delete_project_file(
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """Elimina archivo. Delega lógica a service."""
-    uid, uemail = _uid_email(user)
+    uid, uemail = extract_user_id_and_email(user)
     ok = svc.delete_file(
         file_id=file_id,
         user_id=uid,
