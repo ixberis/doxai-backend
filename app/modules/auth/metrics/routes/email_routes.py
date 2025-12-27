@@ -35,6 +35,12 @@ class EmailMetricsResponse(BaseModel):
     welcome_sent: int = Field(..., description="Correos de bienvenida enviados")
     failed: int = Field(..., description="Correos fallidos (activación + bienvenida)")
     pending: int = Field(..., description="Correos pendientes (activación + bienvenida)")
+    # Welcome latency (top-level, sin SLA/ventana)
+    welcome_latency_count: int = Field(0, description="Usuarios con welcome email enviado")
+    welcome_latency_avg_ms: Optional[float] = Field(None, description="Latencia promedio en ms")
+    welcome_latency_p50_ms: Optional[float] = Field(None, description="Latencia p50 en ms")
+    welcome_latency_p90_ms: Optional[float] = Field(None, description="Latencia p90 en ms")
+    welcome_latency_p95_ms: Optional[float] = Field(None, description="Latencia p95 en ms")
 
 
 class BacklogItem(BaseModel):
@@ -79,7 +85,8 @@ async def get_email_metrics(db: AsyncSession = Depends(get_db)):
     Obtiene métricas agregadas de correos electrónicos.
     
     Returns:
-        EmailMetricsResponse con counts de correos enviados, fallidos y pendientes.
+        EmailMetricsResponse con counts de correos enviados, fallidos, pendientes
+        y latencia de welcome emails.
     """
     logger.info("email_metrics_request started")
     
@@ -87,13 +94,25 @@ async def get_email_metrics(db: AsyncSession = Depends(get_db)):
     metrics = await agg.get_email_metrics()
     
     logger.info(
-        "email_metrics_request completed: sent=%d failed=%d pending=%d",
+        "email_metrics_request completed: sent=%d failed=%d pending=%d latency_count=%d",
         metrics["total_sent"],
         metrics["failed"],
         metrics["pending"],
+        metrics.get("welcome_latency_count", 0),
     )
     
-    return EmailMetricsResponse(**metrics)
+    return EmailMetricsResponse(
+        total_sent=metrics["total_sent"],
+        activation_sent=metrics["activation_sent"],
+        welcome_sent=metrics["welcome_sent"],
+        failed=metrics["failed"],
+        pending=metrics["pending"],
+        welcome_latency_count=metrics.get("welcome_latency_count", 0),
+        welcome_latency_avg_ms=metrics.get("welcome_latency_avg_ms"),
+        welcome_latency_p50_ms=metrics.get("welcome_latency_p50_ms"),
+        welcome_latency_p90_ms=metrics.get("welcome_latency_p90_ms"),
+        welcome_latency_p95_ms=metrics.get("welcome_latency_p95_ms"),
+    )
 
 
 @router.get("/_internal/auth/emails/backlog", response_model=BacklogResponse)

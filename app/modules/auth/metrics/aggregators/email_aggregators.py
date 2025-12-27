@@ -10,6 +10,7 @@ Consulta tablas reales:
 
 Autor: Sistema
 Fecha: 2025-12-26
+Actualizado: 2025-12-27 - Welcome latency (avg/p50/p90/p95 en ms, sin ventana temporal)
 """
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
@@ -25,7 +26,7 @@ class EmailAggregators:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_email_metrics(self) -> Dict[str, int]:
+    async def get_email_metrics(self) -> Dict[str, Any]:
         """
         Obtiene métricas agregadas de correos.
         
@@ -42,10 +43,12 @@ class EmailAggregators:
                 "welcome_sent": int,
                 "failed": int,
                 "pending": int,
-                "pending_activation": int,
-                "pending_welcome": int,
-                "failed_activation": int,
-                "failed_welcome": int
+                ...
+                "welcome_latency_count": int,
+                "welcome_latency_avg_ms": float|null,
+                "welcome_latency_p50_ms": float|null,
+                "welcome_latency_p90_ms": float|null,
+                "welcome_latency_p95_ms": float|null,
             }
         """
         q = text("""
@@ -96,6 +99,9 @@ class EmailAggregators:
         res = await self.db.execute(q)
         row = res.first()
         
+        # Get welcome latency metrics (sin ventana temporal)
+        latency = await self._get_welcome_latency()
+        
         if row:
             activation_sent = int(row.activation_sent or 0)
             welcome_sent = int(row.welcome_sent or 0)
@@ -115,6 +121,8 @@ class EmailAggregators:
                 "pending_welcome": pending_welcome,
                 "failed_activation": failed_activation,
                 "failed_welcome": failed_welcome,
+                # Welcome latency (top-level, sin SLA/ventana)
+                **latency,
             }
         
         return {
@@ -127,6 +135,67 @@ class EmailAggregators:
             "pending_welcome": 0,
             "failed_activation": 0,
             "failed_welcome": 0,
+            **latency,
+        }
+
+    async def _get_welcome_latency(self) -> Dict[str, Any]:
+        """
+        Calcula latencia de welcome emails usando timestamps internos.
+        
+        latency = welcome_email_sent_at - user_activated_at (en ms)
+        
+        Filtro estricto (sin ventana temporal):
+        - user_is_activated = true
+        - user_activated_at IS NOT NULL
+        - welcome_email_sent_at IS NOT NULL
+        
+        Returns:
+            {
+                "welcome_latency_count": int,
+                "welcome_latency_avg_ms": float | None,
+                "welcome_latency_p50_ms": float | None,
+                "welcome_latency_p90_ms": float | None,
+                "welcome_latency_p95_ms": float | None,
+            }
+        """
+        q = text("""
+            SELECT
+                COUNT(*) AS latency_count,
+                AVG(EXTRACT(EPOCH FROM (welcome_email_sent_at - user_activated_at)) * 1000.0) AS avg_ms,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (welcome_email_sent_at - user_activated_at)) * 1000.0
+                ) AS p50_ms,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (welcome_email_sent_at - user_activated_at)) * 1000.0
+                ) AS p90_ms,
+                PERCENTILE_CONT(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (welcome_email_sent_at - user_activated_at)) * 1000.0
+                ) AS p95_ms
+            FROM public.app_users
+            WHERE user_is_activated = true
+              AND user_activated_at IS NOT NULL
+              AND welcome_email_sent_at IS NOT NULL
+              AND welcome_email_sent_at >= user_activated_at
+        """)
+        
+        res = await self.db.execute(q)
+        row = res.first()
+        
+        if row and row.latency_count > 0:
+            return {
+                "welcome_latency_count": int(row.latency_count),
+                "welcome_latency_avg_ms": float(row.avg_ms) if row.avg_ms is not None else None,
+                "welcome_latency_p50_ms": float(row.p50_ms) if row.p50_ms is not None else None,
+                "welcome_latency_p90_ms": float(row.p90_ms) if row.p90_ms is not None else None,
+                "welcome_latency_p95_ms": float(row.p95_ms) if row.p95_ms is not None else None,
+            }
+        
+        return {
+            "welcome_latency_count": 0,
+            "welcome_latency_avg_ms": None,
+            "welcome_latency_p50_ms": None,
+            "welcome_latency_p90_ms": None,
+            "welcome_latency_p95_ms": None,
         }
 
     async def get_backlog(
