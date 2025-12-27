@@ -2,123 +2,199 @@
 """
 backend/app/shared/scheduler/jobs/cache_cleanup_job.py
 
-Job programado para limpieza automática del caché de metadatos.
+Job programado para limpieza automática de cachés.
 
-Ejecuta limpieza cada hora, eliminando entradas expiradas y registrando estadísticas.
+Ejecuta limpieza periódica, eliminando entradas expiradas y registrando estadísticas.
+Diseñado para ser genérico y reutilizable con cualquier implementación de CacheBackend.
 
 Autor: DoxAI
 Fecha: 2025-11-05
+Actualizado: 2025-12-27 - Refactor para soportar múltiples cachés (Files, RAG, etc.)
 """
 
 import logging
 from datetime import datetime
-from typing import Dict, Any
+from typing import Any, Callable, Dict, List
 
-from app.modules.files.services.cache import get_metadata_cache
+from app.shared.cache import CacheBackend
 
 logger = logging.getLogger(__name__)
 
 
-async def cleanup_expired_cache() -> Dict[str, Any]:
+async def cleanup_cache(
+    cache: CacheBackend,
+    cache_name: str,
+) -> Dict[str, Any]:
     """
-    Limpia entradas expiradas del caché de metadatos.
+    Limpia entradas expiradas de un caché específico.
     
-    Este job se ejecuta periódicamente para:
-    - Eliminar entradas cuyo TTL ha expirado
-    - Liberar memoria ocupada por datos obsoletos
-    - Registrar estadísticas de limpieza
-    
+    Args:
+        cache: Instancia del caché (debe implementar CacheBackend)
+        cache_name: Nombre identificador para logs
+        
     Returns:
-        Dict con estadísticas de la limpieza:
-        - timestamp: Momento de ejecución
-        - entries_before: Entradas antes de limpieza
-        - entries_after: Entradas después de limpieza
-        - entries_removed: Cantidad eliminada
-        - memory_freed_kb: Memoria aproximada liberada
-        - duration_ms: Duración de la limpieza
+        Dict con estadísticas de la limpieza
     """
     start_time = datetime.utcnow()
-    logger.info("Iniciando limpieza programada de caché de metadatos")
     
     try:
-        cache = get_metadata_cache()
-        
         # Estadísticas previas
         stats_before = cache.get_stats()
-        entries_before = stats_before['size']
+        entries_before = stats_before.get("size", 0)
         
         # Ejecutar limpieza
         removed_count = cache.cleanup()
         
         # Estadísticas posteriores
         stats_after = cache.get_stats()
-        entries_after = stats_after['size']
+        entries_after = stats_after.get("size", 0)
         
         # Calcular duración
         end_time = datetime.utcnow()
         duration_ms = (end_time - start_time).total_seconds() * 1000
         
-        # Estimar memoria liberada (aproximación: 2KB por entrada)
-        memory_freed_kb = removed_count * 2
-        
-        stats = {
-            'timestamp': start_time.isoformat(),
-            'entries_before': entries_before,
-            'entries_after': entries_after,
-            'entries_removed': removed_count,
-            'memory_freed_kb': memory_freed_kb,
-            'duration_ms': round(duration_ms, 2),
-            'hit_rate': stats_after['hit_rate_percent'],
-            'evictions': stats_after['evictions']
+        result = {
+            "cache_name": cache_name,
+            "timestamp": start_time.isoformat(),
+            "entries_before": entries_before,
+            "entries_after": entries_after,
+            "removed_expired": removed_count,
+            "duration_ms": round(duration_ms, 2),
+            "hit_rate_percent": stats_after.get("hit_rate_percent", 0.0),
+            "evictions": stats_after.get("evictions", 0),
+            "expired_removals": stats_after.get("expired_removals", 0),
+            "invalidations": stats_after.get("invalidations", 0),
         }
         
-        # Log según cantidad eliminada
-        if removed_count > 0:
-            logger.info(
-                f"Limpieza completada: {removed_count} entradas eliminadas, "
-                f"~{memory_freed_kb}KB liberados, "
-                f"duración: {stats['duration_ms']}ms, "
-                f"hit rate: {stats['hit_rate']:.1f}%"
-            )
-        else:
-            logger.debug(
-                f"Limpieza completada: sin entradas expiradas, "
-                f"duración: {stats['duration_ms']}ms"
-            )
+        # Log INFO siempre con métricas clave
+        logger.info(
+            "[cache_cleanup] cache=%s entries_before=%d entries_after=%d "
+            "removed_expired=%d duration_ms=%.2f hit_rate=%.1f%% "
+            "evictions=%d expired_removals=%d",
+            cache_name,
+            entries_before,
+            entries_after,
+            removed_count,
+            result["duration_ms"],
+            result["hit_rate_percent"],
+            result["evictions"],
+            result["expired_removals"],
+        )
         
         # Advertencia si el caché está muy lleno
-        if entries_after > cache.max_size * 0.9:
+        max_size = cache.max_size
+        if max_size and entries_after > max_size * 0.9:
             logger.warning(
-                f"Caché al {(entries_after/cache.max_size)*100:.1f}% de capacidad "
-                f"({entries_after}/{cache.max_size}). "
-                f"Considere aumentar max_size o reducir TTL."
+                "[cache_cleanup] cache=%s at %.1f%% capacity (%d/%d). "
+                "Consider increasing max_size or reducing TTL.",
+                cache_name,
+                (entries_after / max_size) * 100,
+                entries_after,
+                max_size,
             )
         
         # Advertencia si el hit rate es bajo
-        if stats_after['total_requests'] > 100 and stats['hit_rate'] < 60:
+        total_requests = stats_after.get("total_requests", 0)
+        if total_requests > 100 and result["hit_rate_percent"] < 60:
             logger.warning(
-                f"Hit rate bajo ({stats['hit_rate']:.1f}%). "
-                f"El caché podría no estar siendo efectivo. "
-                f"Hits: {stats_after['hits']}, Misses: {stats_after['misses']}"
+                "[cache_cleanup] cache=%s low hit rate (%.1f%%). "
+                "Cache may not be effective. hits=%d misses=%d",
+                cache_name,
+                result["hit_rate_percent"],
+                stats_after.get("hits", 0),
+                stats_after.get("misses", 0),
             )
         
-        return stats
+        return result
         
     except Exception as e:
-        logger.error(f"Error durante limpieza de caché: {e}", exc_info=True)
+        logger.error(
+            "[cache_cleanup] cache=%s error: %s",
+            cache_name,
+            str(e),
+            exc_info=True,
+        )
         return {
-            'timestamp': start_time.isoformat(),
-            'error': str(e),
-            'entries_removed': 0
+            "cache_name": cache_name,
+            "timestamp": start_time.isoformat(),
+            "error": str(e),
+            "removed_expired": 0,
         }
+
+
+async def cleanup_all_caches(
+    cache_providers: List[Callable[[], CacheBackend]],
+) -> Dict[str, Any]:
+    """
+    Limpia todos los cachés registrados.
+    
+    Args:
+        cache_providers: Lista de funciones que retornan instancias de caché
+        
+    Returns:
+        Dict con estadísticas agregadas de todas las limpiezas
+    """
+    start_time = datetime.utcnow()
+    results: List[Dict[str, Any]] = []
+    total_removed = 0
+    
+    for provider in cache_providers:
+        try:
+            cache = provider()
+            # Obtener nombre del caché de sus stats o usar fallback
+            stats = cache.get_stats()
+            cache_name = stats.get("name", "unknown")
+            
+            result = await cleanup_cache(cache, cache_name)
+            results.append(result)
+            total_removed += result.get("removed_expired", 0)
+        except Exception as e:
+            logger.error(
+                "[cache_cleanup] Failed to get cache from provider: %s",
+                str(e),
+                exc_info=True,
+            )
+    
+    end_time = datetime.utcnow()
+    duration_ms = (end_time - start_time).total_seconds() * 1000
+    
+    return {
+        "timestamp": start_time.isoformat(),
+        "caches_cleaned": len(results),
+        "total_removed": total_removed,
+        "duration_ms": round(duration_ms, 2),
+        "results": results,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backward compatibility: cleanup del MetadataCache global
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def cleanup_expired_cache() -> Dict[str, Any]:
+    """
+    Limpia entradas expiradas del caché de metadatos (Files).
+    
+    Mantiene backward compatibility con el scheduler existente.
+    
+    Returns:
+        Dict con estadísticas de la limpieza
+    """
+    from app.modules.files.services.cache import get_metadata_cache
+    
+    cache = get_metadata_cache()
+    return await cleanup_cache(cache, "metadata")
 
 
 def register_cache_cleanup_job(scheduler) -> str:
     """
     Registra el job de limpieza de caché en el scheduler.
     
-    El job se ejecutará:
-    - Cada hora (top of the hour)
+    El job se ejecutará cada hora (intervalo desde el arranque del proceso,
+    no sincronizado con el "top of the hour"). Para cron real, configurar
+    el scheduler con trigger='cron' si está soportado.
+    
+    Operaciones:
     - Limpieza de entradas expiradas
     - Logging automático de estadísticas
     
@@ -134,14 +210,12 @@ def register_cache_cleanup_job(scheduler) -> str:
     scheduler.add_interval_job(
         func=cleanup_expired_cache,
         job_id=job_id,
-        hours=1,  # Cada hora
+        hours=1,
         minutes=0,
-        seconds=0
+        seconds=0,
     )
     
-    logger.info(
-        f"Job '{job_id}' registrado: limpieza de caché cada hora"
-    )
+    logger.info("[cache_cleanup] Job '%s' registered: hourly cleanup", job_id)
     
     return job_id
 

@@ -3,6 +3,8 @@
 backend/app/modules/files/services/cache/metadata_cache.py
 
 Sistema de caché en memoria para metadatos con TTL y LRU eviction.
+
+Implementa CacheBackend para garantizar consistencia con otros cachés del sistema.
 """
 
 from __future__ import annotations
@@ -13,23 +15,53 @@ import time
 from collections import OrderedDict
 from typing import Any, Optional
 
+from app.shared.cache import CacheBackend
+
 logger = logging.getLogger(__name__)
 
 
-class MetadataCache:
-    """Caché thread-safe con TTL y LRU eviction."""
+class MetadataCache(CacheBackend):
+    """
+    Caché thread-safe con TTL y LRU eviction.
+    
+    Implementa la interfaz CacheBackend con soporte para:
+    - TTL configurable por entrada (ttl=None para no expirar)
+    - LRU eviction cuando se alcanza max_size (si max_size no es None)
+    - Métricas separadas: expiraciones vs invalidaciones explícitas
+    
+    Política de TTL:
+    - ttl=None en set(): Usa default_ttl del cache
+    - ttl=0: La entrada NO se almacena (política: "no cachear")
+    - ttl<0: La entrada NO se almacena (política: "no cachear")
+    - default_ttl=None en constructor: Entradas nunca expiran por defecto
+    
+    Arquitectura:
+    Este caché es un L1 in-memory por proceso. En futuras iteraciones,
+    RedisCacheBackend actuará como L2 para RAG y otros casos de uso distribuido.
+    """
 
     def __init__(
         self,
-        max_size: int = 1000,
-        default_ttl: int = 3600,
+        max_size: Optional[int] = 1000,
+        default_ttl: Optional[int] = 3600,
         enable_stats: bool = True,
+        name: str = "metadata",
     ):
-        self.max_size = max_size
-        self.default_ttl = default_ttl
-        self.enable_stats = enable_stats
+        """
+        Inicializa el caché.
         
-        self._cache: OrderedDict[str, tuple[Any, float]] = OrderedDict()
+        Args:
+            max_size: Máximo número de entradas. None = sin límite.
+            default_ttl: TTL por defecto en segundos. None = no expira por defecto.
+            enable_stats: Si se recolectan estadísticas
+            name: Nombre identificador del caché (para logs/métricas)
+        """
+        self._max_size = max_size
+        self._default_ttl = default_ttl
+        self.enable_stats = enable_stats
+        self.name = name
+        
+        self._cache: OrderedDict[str, tuple[Any, Optional[float]]] = OrderedDict()
         self._lock = threading.RLock()
         
         # Estadísticas
@@ -37,6 +69,17 @@ class MetadataCache:
         self._misses = 0
         self._evictions = 0
         self._invalidations = 0
+        self._expired_removals = 0  # Nuevo: contador de expiraciones
+
+    @property
+    def max_size(self) -> Optional[int]:
+        """Tamaño máximo del caché."""
+        return self._max_size
+
+    @property
+    def default_ttl(self) -> Optional[int]:
+        """TTL por defecto en segundos. None si no expira por defecto."""
+        return self._default_ttl
 
     def get(self, key: str) -> Optional[Any]:
         """Obtiene un valor del caché."""
@@ -53,6 +96,7 @@ class MetadataCache:
                 del self._cache[key]
                 if self.enable_stats:
                     self._misses += 1
+                    self._expired_removals += 1  # Contar expiración
                 return None
 
             # Mover al final (LRU)
@@ -64,10 +108,27 @@ class MetadataCache:
             return value
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        """Almacena un valor en el caché."""
+        """
+        Almacena un valor en el caché.
+        
+        Política de TTL:
+        - ttl=None: Usa default_ttl. Si default_ttl también es None, no expira.
+        - ttl=0 o ttl<0: NO almacena la entrada (no cachear).
+        - ttl>0: Expira después de ttl segundos.
+        """
+        # Política: ttl <= 0 significa "no cachear"
+        if ttl is not None and ttl <= 0:
+            logger.debug(f"[{self.name}] set({key}): ttl={ttl} <= 0, not caching")
+            return
+        
         with self._lock:
-            ttl = ttl if ttl is not None else self.default_ttl
-            expiry = time.time() + ttl
+            # Determinar expiry
+            if ttl is not None:
+                expiry: Optional[float] = time.time() + ttl
+            elif self._default_ttl is not None:
+                expiry = time.time() + self._default_ttl
+            else:
+                expiry = None  # No expira
 
             # Si existe, actualizar
             if key in self._cache:
@@ -75,8 +136,8 @@ class MetadataCache:
                 self._cache.move_to_end(key)
                 return
 
-            # Verificar límite de tamaño
-            if len(self._cache) >= self.max_size:
+            # Verificar límite de tamaño (si max_size está definido)
+            if self._max_size is not None and len(self._cache) >= self._max_size:
                 # Evict LRU (primero del OrderedDict)
                 self._cache.popitem(last=False)
                 if self.enable_stats:
@@ -151,11 +212,16 @@ class MetadataCache:
             for key in expired_keys:
                 del self._cache[key]
             
+            # Incrementar contador de expiraciones
+            if self.enable_stats:
+                self._expired_removals += len(expired_keys)
+            
             # Log agregado de entradas malformadas (rate-limited: 1x por cleanup)
             if malformed_count > 0:
                 logger.warning(
-                    "MetadataCache.cleanup detected %d malformed entries (samples: %s). "
+                    "[%s] cleanup detected %d malformed entries (samples: %s). "
                     "Expected format: (value, expiry). Entries preserved but may indicate corruption.",
+                    self.name,
                     malformed_count,
                     ", ".join(malformed_samples),
                 )
@@ -163,18 +229,21 @@ class MetadataCache:
             return len(expired_keys)
 
     def get_stats(self) -> dict:
-        """Retorna estadísticas del caché."""
+        """Retorna estadísticas del caché según CacheBackend."""
         with self._lock:
             total_requests = self._hits + self._misses
             hit_rate = (self._hits / total_requests * 100) if total_requests > 0 else 0.0
             
             return {
+                "name": self.name,
                 "size": len(self._cache),
-                "max_size": self.max_size,
+                "max_size": self._max_size,
+                "default_ttl": self._default_ttl,
                 "hits": self._hits,
                 "misses": self._misses,
                 "evictions": self._evictions,
                 "invalidations": self._invalidations,
+                "expired_removals": self._expired_removals,
                 "hit_rate_percent": hit_rate,
                 "total_requests": total_requests,
             }
@@ -186,6 +255,7 @@ class MetadataCache:
             self._misses = 0
             self._evictions = 0
             self._invalidations = 0
+            self._expired_removals = 0
 
 
 # Singleton global

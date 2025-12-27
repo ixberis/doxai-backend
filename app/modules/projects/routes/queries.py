@@ -11,11 +11,14 @@ Ajuste 10/11/2025:
 - response_model_exclude_none=True en endpoints de lectura.
 - Mantiene contratos existentes y compatibilidad con tests.
 
+Ajuste 27/12/2025:
+- Agrega GET /active-projects y GET /closed-projects con sorting.
+
 Autor: Ixchel Beristain
-Fecha de actualización: 10/11/2025
+Fecha de actualización: 27/12/2025
 """
 from uuid import UUID
-from typing import Optional, List
+from typing import Optional, List, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from datetime import datetime
 
@@ -30,11 +33,22 @@ from app.modules.projects.schemas.project_file_event_log_schemas import (
     ProjectFileEventLogListResponse,
 )
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
+from app.modules.projects.enums.project_state_enum import ProjectState
 
 # Dependencias
 from app.modules.auth.services import get_current_user
 
 router = APIRouter(tags=["projects:queries"])
+
+# ---------------------------------------------------------------------------
+# Whitelist de columnas para ordenamiento
+# ---------------------------------------------------------------------------
+SORT_COLUMN_WHITELIST = {
+    "project_updated_at": "updated_at",
+    "project_created_at": "created_at",
+    "project_ready_at": "ready_at",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helper universal para user_id/email
@@ -103,6 +117,100 @@ def list_projects_for_user(
 
 
 # ---------------------------------------------------------------------------
+# Listar proyectos activos (state != ARCHIVED)
+# ---------------------------------------------------------------------------
+@router.get(
+    "/active-projects",
+    response_model=ProjectListResponse,
+    response_model_exclude_none=True,
+    summary="Listar proyectos activos del usuario",
+)
+def list_active_projects(
+    ordenar_por: str = Query("project_updated_at", description="Columna para ordenar"),
+    asc: bool = Query(False, description="Orden ascendente (default: descendente)"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    include_total: bool = Query(False),
+    user=Depends(get_current_user),
+    q: ProjectsQueryService = Depends(get_projects_query_service),
+):
+    """
+    Devuelve los proyectos activos (state != ARCHIVED) del usuario autenticado.
+    Soporta ordenamiento por project_updated_at, project_created_at, project_ready_at.
+    """
+    uid, _ = _uid_email(user)
+    
+    # Validar columna de ordenamiento
+    if ordenar_por not in SORT_COLUMN_WHITELIST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ordenar_por debe ser uno de: {', '.join(SORT_COLUMN_WHITELIST.keys())}"
+        )
+    
+    items, total = q.list_active_projects(
+        user_id=uid,
+        order_by=SORT_COLUMN_WHITELIST[ordenar_por],
+        asc=asc,
+        limit=limit,
+        offset=offset,
+        include_total=include_total,
+    )
+
+    return ProjectListResponse(
+        success=True,
+        items=[ProjectRead.model_validate(p) for p in items],
+        total=total,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Listar proyectos cerrados (state == ARCHIVED)
+# ---------------------------------------------------------------------------
+@router.get(
+    "/closed-projects",
+    response_model=ProjectListResponse,
+    response_model_exclude_none=True,
+    summary="Listar proyectos cerrados/archivados del usuario",
+)
+def list_closed_projects(
+    ordenar_por: str = Query("project_updated_at", description="Columna para ordenar"),
+    asc: bool = Query(False, description="Orden ascendente (default: descendente)"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    include_total: bool = Query(False),
+    user=Depends(get_current_user),
+    q: ProjectsQueryService = Depends(get_projects_query_service),
+):
+    """
+    Devuelve los proyectos cerrados/archivados (state == ARCHIVED) del usuario autenticado.
+    Soporta ordenamiento por project_updated_at, project_created_at, project_ready_at.
+    """
+    uid, _ = _uid_email(user)
+    
+    # Validar columna de ordenamiento
+    if ordenar_por not in SORT_COLUMN_WHITELIST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ordenar_por debe ser uno de: {', '.join(SORT_COLUMN_WHITELIST.keys())}"
+        )
+    
+    items, total = q.list_closed_projects(
+        user_id=uid,
+        order_by=SORT_COLUMN_WHITELIST[ordenar_por],
+        asc=asc,
+        limit=limit,
+        offset=offset,
+        include_total=include_total,
+    )
+
+    return ProjectListResponse(
+        success=True,
+        items=[ProjectRead.model_validate(p) for p in items],
+        total=total,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Listar proyectos en estado "ready"
 # ---------------------------------------------------------------------------
 @router.get(
@@ -123,18 +231,24 @@ def list_ready_projects(
     """
     uid, _ = _uid_email(user)
 
-    # Siempre pedir include_total=True para obtener tupla
-    items, total = q.list_ready_projects(
+    # Pedir include_total solo si se requiere
+    result = q.list_ready_projects(
         user_id=uid,
         limit=limit,
         offset=offset,
-        include_total=True,
+        include_total=include_total,
     )
+
+    if include_total:
+        items, total = result
+    else:
+        items = result
+        total = len(items)
 
     return ProjectListResponse(
         success=True,
         items=[ProjectRead.model_validate(p) for p in items],
-        total=total if include_total else None,
+        total=total,
     )
 
 
@@ -198,10 +312,26 @@ def list_project_file_events(
     Paginación:
       - Sin cursores: usa limit/offset (compatibilidad).
       - Con `after_created_at` y `after_id`: usa paginación por cursor (seek-based)
-        para listas largas, con orden (event_created_at DESC, id DESC).
+        para listas largas, con orden (created_at DESC, id DESC).
     """
     uid, _ = _uid_email(user)
-    # Los services no aceptan include_total en list_file_events, solo limit/offset
+    
+    # Cursor pagination: si ambos after_created_at y after_id vienen, usar seek
+    if after_created_at is not None and after_id is not None:
+        items = q.facade.list_file_events_seek(
+            project_id=project_id,
+            after_created_at=after_created_at,
+            after_id=after_id,
+            event_type=event_type,
+            limit=limit,
+        )
+        return ProjectFileEventLogListResponse(
+            success=True,
+            items=items,
+            total=len(items),
+        )
+    
+    # Fallback: limit/offset tradicional
     items_total = q.list_file_events(
         project_id=project_id,
         file_id=file_id,

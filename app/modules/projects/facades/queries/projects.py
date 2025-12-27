@@ -155,6 +155,104 @@ def list_ready_projects(
     return (items, total) if include_total else items
 
 
+def list_active_projects(
+    db: Session,
+    user_id: UUID,
+    order_by: str = "updated_at",
+    asc: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    include_total: bool = False,
+) -> Tuple[List[Project], int]:
+    """
+    Lista proyectos activos (state != ARCHIVED) de un usuario con ordenamiento.
+    
+    Args:
+        db: Sesión SQLAlchemy
+        user_id: ID del usuario propietario
+        order_by: Columna para ordenar (updated_at, created_at, ready_at)
+        asc: Orden ascendente (default: False = descendente)
+        limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
+        offset: Desplazamiento para paginación (default: 0)
+        include_total: Si True, ejecuta COUNT; si False, total = len(items)
+        
+    Returns:
+        Tupla (proyectos, total_count)
+    """
+    effective_limit = min(limit, MAX_LIMIT)
+    
+    # Base query: state != ARCHIVED
+    base_filter = (Project.user_id == user_id) & (Project.state != ProjectState.ARCHIVED)
+    
+    # Query con ordenamiento
+    query = select(Project).where(base_filter)
+    
+    # Mapear columna de ordenamiento
+    order_column = getattr(Project, order_by, Project.updated_at)
+    query = query.order_by(order_column.asc() if asc else order_column.desc())
+    query = query.offset(offset).limit(effective_limit)
+    
+    items = list(db.execute(query).scalars().all())
+    
+    # Solo ejecutar COUNT si se requiere
+    if include_total:
+        count_query = select(func.count(Project.id)).where(base_filter)
+        total = db.scalar(count_query) or 0
+    else:
+        total = len(items)
+    
+    return items, total
+
+
+def list_closed_projects(
+    db: Session,
+    user_id: UUID,
+    order_by: str = "updated_at",
+    asc: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    include_total: bool = False,
+) -> Tuple[List[Project], int]:
+    """
+    Lista proyectos cerrados/archivados (state == ARCHIVED) de un usuario con ordenamiento.
+    
+    Args:
+        db: Sesión SQLAlchemy
+        user_id: ID del usuario propietario
+        order_by: Columna para ordenar (updated_at, created_at, ready_at)
+        asc: Orden ascendente (default: False = descendente)
+        limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
+        offset: Desplazamiento para paginación (default: 0)
+        include_total: Si True, ejecuta COUNT; si False, total = len(items)
+        
+    Returns:
+        Tupla (proyectos, total_count)
+    """
+    effective_limit = min(limit, MAX_LIMIT)
+    
+    # Base query: state == ARCHIVED
+    base_filter = (Project.user_id == user_id) & (Project.state == ProjectState.ARCHIVED)
+    
+    # Query con ordenamiento
+    query = select(Project).where(base_filter)
+    
+    # Mapear columna de ordenamiento
+    order_column = getattr(Project, order_by, Project.updated_at)
+    query = query.order_by(order_column.asc() if asc else order_column.desc())
+    query = query.offset(offset).limit(effective_limit)
+    
+    items = list(db.execute(query).scalars().all())
+    
+    # Solo ejecutar COUNT si se requiere
+    if include_total:
+        count_query = select(func.count(Project.id)).where(base_filter)
+        total = db.scalar(count_query) or 0
+    else:
+        total = len(items)
+    
+    return items, total
+
+
 def count_projects_by_user(
     db: Session,
     user_id: UUID,
@@ -189,6 +287,8 @@ __all__ = [
     "get_by_slug",
     "list_by_user",
     "list_ready_projects",
+    "list_active_projects",
+    "list_closed_projects",
     "count_projects_by_user",
     "MAX_LIMIT",
 ]

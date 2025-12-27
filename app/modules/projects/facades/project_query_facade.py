@@ -99,6 +99,46 @@ class ProjectQueryFacade:
             include_total=include_total,
         )
     
+    def list_active_projects(
+        self,
+        user_id: UUID,
+        order_by: str = "updated_at",
+        asc: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        include_total: bool = False,
+    ) -> Tuple[List[Project], int]:
+        """Lista proyectos activos (state != ARCHIVED) con ordenamiento."""
+        return queries.list_active_projects(
+            db=self.db,
+            user_id=user_id,
+            order_by=order_by,
+            asc=asc,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
+    
+    def list_closed_projects(
+        self,
+        user_id: UUID,
+        order_by: str = "updated_at",
+        asc: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        include_total: bool = False,
+    ) -> Tuple[List[Project], int]:
+        """Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento."""
+        return queries.list_closed_projects(
+            db=self.db,
+            user_id=user_id,
+            order_by=order_by,
+            asc=asc,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
+    
     def count_projects_by_user(
         self,
         user_id: UUID,

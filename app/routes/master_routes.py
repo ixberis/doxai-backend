@@ -273,6 +273,19 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# USER PROFILE
+# ═══════════════════════════════════════════════════════════════════════════
+try:
+    from app.modules.user_profile.routes import user_profile_router
+
+    # User Profile solo en API (requiere autenticación)
+    _include_once(api, user_profile_router, "user_profile", _mounted_api)
+    logger.info("✅ Módulo User Profile montado")
+except Exception as e:
+    logger.warning("⚠ Router de User Profile no montado: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # INTERNAL EMAIL ROUTES
 # ═══════════════════════════════════════════════════════════════════════════
 try:

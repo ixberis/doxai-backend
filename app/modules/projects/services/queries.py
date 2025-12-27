@@ -65,6 +65,46 @@ class ProjectsQueryService:
             include_total=include_total,
         )
 
+    def list_active_projects(
+        self,
+        user_id: UUID,
+        *,
+        order_by: str = "updated_at",
+        asc: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        include_total: bool = False,
+    ):
+        """Lista proyectos activos (state != ARCHIVED) con ordenamiento."""
+        return self.facade.list_active_projects(
+            user_id=user_id,
+            order_by=order_by,
+            asc=asc,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
+
+    def list_closed_projects(
+        self,
+        user_id: UUID,
+        *,
+        order_by: str = "updated_at",
+        asc: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        include_total: bool = False,
+    ):
+        """Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento."""
+        return self.facade.list_closed_projects(
+            user_id=user_id,
+            order_by=order_by,
+            asc=asc,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
+
     # ---- Archivos ----
     def list_files(self, project_id: UUID, *, limit: int = 100, offset: int = 0, include_total: bool = False):
         return self.facade.list_files(project_id, limit=limit, offset=offset, include_total=include_total)

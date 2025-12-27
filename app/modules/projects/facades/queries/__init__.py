@@ -13,6 +13,8 @@ from .projects import (
     get_by_slug as get_project_by_slug,
     list_by_user as list_projects_by_user,
     list_ready_projects,
+    list_active_projects,
+    list_closed_projects,
     count_projects_by_user,
 )
 from .files import (
@@ -31,6 +33,8 @@ __all__ = [
     "get_project_by_slug",
     "list_projects_by_user",
     "list_ready_projects",
+    "list_active_projects",
+    "list_closed_projects",
     "count_projects_by_user",
     
     # Files
