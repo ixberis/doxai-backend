@@ -523,44 +523,47 @@ app.include_router(main_router)
 # ═══════════════════════════════════════════════════════════════════════════════
 def _log_critical_routes():
     """
-    Lista las rutas críticas de auth en startup para diagnóstico de 404.
-    Solo ejecuta si LOG_CRITICAL_ROUTES=1 o siempre en producción.
+    Log rutas críticas al startup para diagnóstico.
+    Solo se ejecuta si LOG_CRITICAL_ROUTES=1.
     """
-    env_name = os.getenv("ENVIRONMENT", "development").lower()
-    force_log = os.getenv("LOG_CRITICAL_ROUTES", "0") == "1"
-    is_prod = env_name == "production"
-    
-    if not force_log and not is_prod:
+    if os.getenv("LOG_CRITICAL_ROUTES", "0") != "1":
+        logger.info("📋 Critical routes logging disabled (set LOG_CRITICAL_ROUTES=1 to enable)")
         return
     
     critical_paths = [
-        "/api/auth/register",
-        "/api/auth/login",
-        "/api/auth/activation",
-        "/api/auth/password/forgot",
-        "/api/auth/password/reset",
-        "/api/auth/token/refresh",
-        "/auth/register",  # public layer
-        "/auth/login",
+        # Profile (causa de 500/404)
+        "/api/profile",
+        "/api/profile/profile",
+        "/api/profile/subscription",
+        # Projects (causa de 422 en producción)
+        "/api/projects/active-projects",
+        "/api/projects/closed-projects",
+        "/api/projects/ready",
     ]
     
-    # Collect all registered routes
+    # Collect all registered routes with full paths
+    # ROBUST: Only recurse for Mount objects, APIRoute already has final path
+    from starlette.routing import Mount
+    
     registered_routes = set()
-    for route in app.routes:
-        if hasattr(route, "path"):
-            registered_routes.add(route.path)
-        # Include nested routes from routers
-        if hasattr(route, "routes"):
-            for nested in route.routes:
-                if hasattr(nested, "path"):
-                    # Construct full path
-                    prefix = getattr(route, "path", "")
-                    nested_path = getattr(nested, "path", "")
-                    full_path = f"{prefix}{nested_path}".replace("//", "/")
-                    registered_routes.add(full_path)
+    
+    def _collect_routes(routes, prefix=""):
+        for route in routes:
+            path = getattr(route, "path", "")
+            
+            if hasattr(route, "methods"):
+                # APIRoute: path is already the full path from FastAPI
+                registered_routes.add(route.path)
+            elif isinstance(route, Mount):
+                # Only Mount needs prefix concatenation for nested routes
+                mount_prefix = f"{prefix}{path}".replace("//", "/")
+                if hasattr(route, "routes"):
+                    _collect_routes(route.routes, mount_prefix)
+    
+    _collect_routes(app.routes)
     
     logger.info("=" * 70)
-    logger.info("🔍 CRITICAL ROUTES CHECK (auth endpoints)")
+    logger.info("🔍 CRITICAL ROUTES CHECK")
     logger.info("=" * 70)
     
     missing = []
@@ -574,7 +577,7 @@ def _log_critical_routes():
     if missing:
         logger.error(f"⚠️ {len(missing)} critical route(s) NOT REGISTERED: {missing}")
     else:
-        logger.info("✅ All critical auth routes registered")
+        logger.info("✅ All critical routes registered")
     
     logger.info("=" * 70)
 
@@ -610,6 +613,86 @@ async def health_ready():
         }
     except Exception:
         return {"ready": True}
+
+
+@app.get("/api/_internal/routes")
+async def list_all_routes(request: Request):
+    """
+    Debug endpoint para listar todas las rutas registradas.
+    
+    SECURITY GATING:
+    - Production: requires ENABLE_INTERNAL_ROUTES_DEBUG=1 AND correct X-Internal-Debug-Key header
+    - Non-production: requires ENABLE_INTERNAL_ROUTES_DEBUG=1 (no header needed)
+    
+    Returns 404 if not enabled (to avoid leaking endpoint existence).
+    """
+    is_prod = _ENVIRONMENT == "production"
+    debug_enabled = os.getenv("ENABLE_INTERNAL_ROUTES_DEBUG", "0") == "1"
+    
+    if not debug_enabled:
+        # Return 404 to not leak existence
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    if is_prod:
+        # In production, also require secret header
+        expected_key = os.getenv("INTERNAL_DEBUG_KEY", "")
+        provided_key = request.headers.get("X-Internal-Debug-Key", "")
+        
+        if not expected_key or provided_key != expected_key:
+            # Return 404 to not leak existence
+            raise HTTPException(status_code=404, detail="Not Found")
+        
+        logger.info("🔓 Internal routes debug accessed with valid key in production")
+    else:
+        logger.debug("🔓 Internal routes debug accessed (non-production)")
+    
+    # ROBUST: Only recurse for Mount objects, APIRoute already has final path
+    from starlette.routing import Mount
+    
+    routes = []
+    
+    def _collect(route_list, prefix=""):
+        for route in route_list:
+            path = getattr(route, "path", "")
+            methods = list(getattr(route, "methods", [])) if hasattr(route, "methods") else None
+            name = getattr(route, "name", None)
+            
+            if methods:
+                # APIRoute: path is already the full path from FastAPI
+                routes.append({
+                    "path": route.path,
+                    "methods": methods,
+                    "name": name,
+                })
+            elif isinstance(route, Mount):
+                # Only Mount needs prefix concatenation for nested routes
+                mount_prefix = f"{prefix}{path}".replace("//", "/")
+                if hasattr(route, "routes"):
+                    _collect(route.routes, mount_prefix)
+    
+    _collect(app.routes)
+    
+    # Sort by path
+    routes.sort(key=lambda r: r["path"])
+    
+    # Critical routes check
+    critical = [
+        "/api/profile",
+        "/api/profile/profile",
+        "/api/projects/active-projects",
+        "/api/projects/closed-projects",
+    ]
+    
+    critical_status = {}
+    all_paths = {r["path"] for r in routes}
+    for c in critical:
+        critical_status[c] = c in all_paths
+    
+    return {
+        "total": len(routes),
+        "critical_status": critical_status,
+        "routes": routes,
+    }
 
 
 if __name__ == "__main__":
