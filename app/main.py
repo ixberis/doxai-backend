@@ -418,23 +418,34 @@ def _configure_cors(app_instance: FastAPI) -> dict:
         # Mezcla de "*" con otros - filtrar el "*"
         logger.warning("⚠️ CORS: Filtrando '*' de origins porque hay otros origins explícitos.")
         origins_list = [o for o in origins_list if o != "*"]
-        allow_origin_regex = os.getenv(
-            "CORS_ALLOW_ORIGIN_REGEX",
-            r"^https://.*\.vercel\.app$",
-        )
+        # En producción: solo regex si está explícitamente configurado
+        # En desarrollo: fallback a Vercel regex para comodidad
+        if is_production:
+            allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None
+        else:
+            allow_origin_regex = os.getenv(
+                "CORS_ALLOW_ORIGIN_REGEX",
+                r"^https://.*\.vercel\.app$",
+            )
     else:
         # Lista explícita de origins
-        allow_origin_regex = os.getenv(
-            "CORS_ALLOW_ORIGIN_REGEX",
-            r"^https://.*\.vercel\.app$",
-        )
+        # En producción: solo regex si está explícitamente configurado (fail-closed)
+        # En desarrollo: fallback a Vercel regex para previews
+        if is_production:
+            allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None
+        else:
+            allow_origin_regex = os.getenv(
+                "CORS_ALLOW_ORIGIN_REGEX",
+                r"^https://.*\.vercel\.app$",
+            )
 
-    # Asegurar dominios prod (SOLO si NO es wildcard puro y estamos en prod)
-    if not is_wildcard_only and is_production:
-        production_origins = ["https://app.doxai.site", "https://doxai.site"]
-        for prod_origin in production_origins:
-            if prod_origin not in origins_list:
-                origins_list.append(prod_origin)
+    # En desarrollo: auto-agregar dominios de producción para comodidad de testing
+    # En producción: fail-closed, solo lo que venga de CORS_ORIGINS (no auto-add)
+    if not is_wildcard_only and not is_production:
+        dev_convenience_origins = ["https://app.doxai.site", "https://doxai.site"]
+        for origin in dev_convenience_origins:
+            if origin not in origins_list:
+                origins_list.append(origin)
 
     # Construir config - NO incluir allow_origin_regex si es None (wildcard mode)
     cors_config = {
@@ -459,7 +470,7 @@ def _configure_cors(app_instance: FastAPI) -> dict:
     logger.info(f"  is_wildcard_only:     {is_wildcard_only}")
     logger.info(f"  CORS_ORIGINS (raw):   '{cors_origins_raw}' (env var)")
     logger.info(f"  origins_parsed:       {origins_list}")
-    logger.info(f"  allow_origin_regex:   '{allow_origin_regex}'")
+    logger.info(f"  allow_origin_regex:   {allow_origin_regex!r}")
     logger.info(f"  allow_credentials:    {allow_credentials}")
     logger.info(f"  allow_methods:        {allow_methods}")
     logger.info(f"  allow_headers:        {allow_headers}")
@@ -468,8 +479,10 @@ def _configure_cors(app_instance: FastAPI) -> dict:
 
     if not origins_list and not allow_origin_regex:
         logger.error("🚫 CORS IS DISABLED - No origins will be allowed!")
-    else:
+    elif allow_origin_regex:
         logger.info(f"✅ CORS ENABLED for {len(origins_list)} origin(s) + regex pattern")
+    else:
+        logger.info(f"✅ CORS ENABLED for {len(origins_list)} origin(s)")
 
     app_instance.add_middleware(CORSMiddleware, **cors_config)
     return cors_config
