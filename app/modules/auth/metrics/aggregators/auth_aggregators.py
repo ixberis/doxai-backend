@@ -99,66 +99,71 @@ class AuthAggregators:
     # Métricas de sesiones (tabla: public.user_sessions)
     # ─────────────────────────────────────────────────────────────
 
-    async def get_active_sessions(self) -> int:
+    async def get_active_sessions_stats(self) -> tuple[int, int, float]:
         """
-        Cuenta sesiones activas (no revocadas, no expiradas).
-        Tabla: public.user_sessions
-        Condición: revoked_at IS NULL AND expires_at > NOW()
+        Obtiene estadísticas completas de sesiones activas.
         
-        Intenta usar función SECURITY DEFINER si existe, 
-        fallback a query directa, luego fallback a logins recientes.
-        
-        SIEMPRE retorna int (nunca None).
+        Returns:
+            Tuple (active_sessions_total, active_users_total, sessions_per_user_avg)
+            - active_sessions_total: total de sesiones activas
+            - active_users_total: usuarios únicos con al menos 1 sesión activa
+            - sessions_per_user_avg: promedio de sesiones por usuario
         """
         # Intentar función SECURITY DEFINER primero
         try:
-            q = text("SELECT public.f_auth_active_sessions_count()")
+            q = text("SELECT * FROM public.f_auth_active_sessions_stats()")
             res = await self.db.execute(q)
             row = res.first()
-            if row and row[0] is not None:
-                count = int(row[0])
-                logger.debug("get_active_sessions source=function count=%d", count)
-                return count
+            if row:
+                sessions = int(row.active_sessions_total or 0)
+                users = int(row.active_users_total or 0)
+                avg = float(row.sessions_per_user_avg or 0.0)
+                logger.debug(
+                    "get_active_sessions_stats source=function sessions=%d users=%d avg=%.2f",
+                    sessions, users, avg
+                )
+                return (sessions, users, avg)
         except Exception as e:
-            logger.debug("get_active_sessions function failed: %s", e)
+            logger.debug("get_active_sessions_stats function failed: %s", e)
         
-        # Query directa sobre user_sessions
+        # Fallback: query directa
         try:
             q = text("""
-                SELECT COUNT(*) 
-                FROM public.user_sessions 
-                WHERE revoked_at IS NULL 
-                  AND expires_at > NOW()
+                WITH s AS (
+                    SELECT user_id
+                    FROM public.user_sessions
+                    WHERE revoked_at IS NULL
+                      AND expires_at > NOW()
+                )
+                SELECT
+                    (SELECT COUNT(*)::int FROM s) AS active_sessions_total,
+                    (SELECT COUNT(DISTINCT user_id)::int FROM s) AS active_users_total
             """)
             res = await self.db.execute(q)
             row = res.first()
-            if row and row[0] is not None:
-                count = int(row[0])
-                if count > 0:
-                    logger.debug("get_active_sessions source=user_sessions count=%d", count)
-                    return count
+            if row:
+                sessions = int(row.active_sessions_total or 0)
+                users = int(row.active_users_total or 0)
+                avg = round(sessions / users, 2) if users > 0 else 0.0
+                logger.debug(
+                    "get_active_sessions_stats source=direct sessions=%d users=%d avg=%.2f",
+                    sessions, users, avg
+                )
+                return (sessions, users, avg)
         except Exception as e:
-            logger.debug("get_active_sessions user_sessions failed: %s", e)
+            logger.debug("get_active_sessions_stats direct query failed: %s", e)
         
-        # Fallback: contar usuarios con login reciente (últimos 15 minutos)
-        try:
-            q = text("""
-                SELECT COUNT(DISTINCT user_id) 
-                FROM public.app_users 
-                WHERE user_last_login IS NOT NULL 
-                  AND user_last_login > NOW() - INTERVAL '15 minutes'
-            """)
-            res = await self.db.execute(q)
-            row = res.first()
-            if row and row[0] is not None:
-                count = int(row[0])
-                logger.debug("get_active_sessions source=last_login_fallback count=%d", count)
-                return count
-        except Exception as e:
-            logger.debug("get_active_sessions last_login_fallback failed: %s", e)
+        return (0, 0, 0.0)
+
+    async def get_active_sessions(self) -> int:
+        """
+        Cuenta sesiones activas (no revocadas, no expiradas).
+        Wrapper de compatibilidad que usa get_active_sessions_stats().
         
-        logger.debug("get_active_sessions source=default_zero count=0")
-        return 0
+        SIEMPRE retorna int (nunca None).
+        """
+        sessions, _, _ = await self.get_active_sessions_stats()
+        return sessions
 
     # ─────────────────────────────────────────────────────────────
     # Métodos individuales (fallback si vista no existe)

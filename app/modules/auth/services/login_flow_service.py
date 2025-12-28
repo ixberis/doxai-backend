@@ -207,7 +207,8 @@ class LoginFlowService:
 
         tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.user_id))
 
-        # Registrar sesión en user_sessions para métricas de Auth Metrics
+        # Multi-sesión: cada login crea nueva sesión (no revocamos anteriores)
+        # Esto permite Chrome+Firefox+celular simultáneos
         await self.session_service.create_session(
             user_id=user.user_id,
             access_token=tokens["access_token"],

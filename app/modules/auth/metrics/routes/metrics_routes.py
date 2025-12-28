@@ -119,9 +119,13 @@ async def get_auth_metrics_snapshot(db: AsyncSession = Depends(get_db)):
         
         # ─────────────────────────────────────────────────────────
         # 3) Sesiones activas (siempre query separada, tiempo real)
+        #    Multi-sesión: retorna sessions, users, avg
         # ─────────────────────────────────────────────────────────
-        auth_active_sessions_total = await agg.get_active_sessions()
-        logger.info(f"[auth_metrics_snapshot:{request_id}] sessions={auth_active_sessions_total}")
+        active_sessions, active_users, sessions_avg = await agg.get_active_sessions_stats()
+        logger.info(
+            f"[auth_metrics_snapshot:{request_id}] sessions={active_sessions} "
+            f"active_users={active_users} avg={sessions_avg:.2f}"
+        )
         
         # ─────────────────────────────────────────────────────────
         # 4) Update Prometheus gauges (if available)
@@ -131,7 +135,7 @@ async def get_auth_metrics_snapshot(db: AsyncSession = Depends(get_db)):
                 auth_active_sessions,
                 auth_activation_conversion_ratio as prometheus_ratio
             )
-            auth_active_sessions.set(auth_active_sessions_total)
+            auth_active_sessions.set(active_sessions)
             prometheus_ratio.set(auth_activation_conversion_ratio)
         except Exception:
             logger.debug(f"[auth_metrics_snapshot:{request_id}] Prometheus gauges not available")
@@ -147,14 +151,16 @@ async def get_auth_metrics_snapshot(db: AsyncSession = Depends(get_db)):
             users_suspended_total=users_suspended_total,
             users_current_total=users_current_total,
             users_activated_total=users_activated_total,
-            auth_active_sessions_total=auth_active_sessions_total,
+            auth_active_sessions_total=active_sessions,
+            auth_active_users_total=active_users,
+            auth_sessions_per_user_avg=sessions_avg,
             auth_activation_conversion_ratio=auth_activation_conversion_ratio,
             payments_paying_users_total=payments_paying_users_total,
             payments_conversion_ratio=payments_conversion_ratio,
             partial=partial,
             generated_at=generated_at,
             # Legacy aliases (deprecated)
-            active_sessions=auth_active_sessions_total,
+            active_sessions=active_sessions,
             activation_conversion_ratio=auth_activation_conversion_ratio,
         )
         

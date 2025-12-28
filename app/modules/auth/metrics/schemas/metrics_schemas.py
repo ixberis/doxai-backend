@@ -51,13 +51,20 @@ class AuthMetricsSnapshot(BaseModel):
     )
     
     # ─────────────────────────────────────────────────────────────
-    # Sesiones
+    # Sesiones (multi-sesión: usuarios pueden tener varios dispositivos)
     # ─────────────────────────────────────────────────────────────
     auth_active_sessions_total: Optional[int] = Field(
         None, 
-        description="Sesiones activas (no revocadas, no expiradas)"
+        description="Total de sesiones activas (no revocadas, no expiradas)"
     )
-    # NOTA: auth_active_users_total eliminado por redundancia con auth_active_sessions_total
+    auth_active_users_total: Optional[int] = Field(
+        None, 
+        description="Usuarios únicos con al menos 1 sesión activa"
+    )
+    auth_sessions_per_user_avg: Optional[float] = Field(
+        None, 
+        description="Promedio de sesiones por usuario (sesiones / usuarios)"
+    )
     
     # ─────────────────────────────────────────────────────────────
     # Conversión
