@@ -135,6 +135,3 @@ class CacheBackend(ABC):
             - total_requests: int - Total de requests
         """
         ...
-
-
-# Fin del archivo backend/app/shared/cache/cache_backend.py

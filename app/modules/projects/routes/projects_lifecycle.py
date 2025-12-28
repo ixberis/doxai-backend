@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
     response_model=ProjectResponse,
     summary="Cambiar status administrativo",
 )
-def change_status(
+async def change_status(
     project_id: UUID,
     status_slug: str,
     user=Depends(get_current_user),
@@ -80,7 +80,7 @@ def change_status(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status_slug}")
     
-    project = svc.change_status(
+    project = await svc.change_status(
         project_id,
         user_id=uid,
         user_email=uemail,
@@ -94,7 +94,7 @@ def change_status(
     response_model=ProjectResponse,
     summary="Transicionar estado técnico (workflow)",
 )
-def transition_state(
+async def transition_state(
     project_id: UUID,
     state_slug: str,
     user=Depends(get_current_user),
@@ -112,7 +112,7 @@ def transition_state(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid state: {state_slug}")
     
-    project = svc.transition_state(
+    project = await svc.transition_state(
         project_id,
         user_id=uid,
         user_email=uemail,
@@ -126,7 +126,7 @@ def transition_state(
     response_model=ProjectResponse,
     summary="Archivar proyecto",
 )
-def archive_project(
+async def archive_project(
     project_id: UUID,
     user=Depends(get_current_user),
     svc: ProjectsCommandService = Depends(get_projects_command_service),
@@ -135,7 +135,7 @@ def archive_project(
     Archiva (soft delete) un proyecto. Requiere propiedad.
     """
     uid, uemail = extract_user_id_and_email(user)
-    project = svc.archive(
+    project = await svc.archive(
         project_id,
         user_id=uid,
         user_email=uemail,

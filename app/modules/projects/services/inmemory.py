@@ -301,7 +301,9 @@ class InMemoryProjectsQueryService:
 
     async def list_projects_by_user(
         self,
-        user_id,
+        user_id=None,
+        *,
+        user_email: Optional[str] = None,
         state: Optional[str] = None,
         status: Optional[str] = None,
         include_total: bool = False,
@@ -311,8 +313,13 @@ class InMemoryProjectsQueryService:
         """
         Lista proyectos del usuario.
         Retorna: (items, total) si include_total=True, else items
+        Acepta user_id o user_email para filtrado.
         """
-        items = [p for p in self._projects if p["user_id"] == user_id]
+        items = self._projects[:]
+        if user_email is not None:
+            items = [p for p in items if p.get("user_email") == user_email]
+        elif user_id is not None:
+            items = [p for p in items if p["user_id"] == user_id]
         if state is not None:
             items = [p for p in items if p["state"] == state]
         if status is not None:
@@ -328,6 +335,8 @@ class InMemoryProjectsQueryService:
     async def list_ready_projects(
         self,
         user_id=None,
+        *,
+        user_email: Optional[str] = None,
         include_total: bool = False,
         limit: int = 50,
         offset: int = 0,
@@ -335,9 +344,12 @@ class InMemoryProjectsQueryService:
         """
         Lista proyectos en estado READY.
         Retorna: (items, total) si include_total=True, else items
+        Acepta user_id o user_email para filtrado.
         """
         items = [p for p in self._projects if p["state"] == ProjectState.READY.value]
-        if user_id is not None:
+        if user_email is not None:
+            items = [p for p in items if p.get("user_email") == user_email]
+        elif user_id is not None:
             items = [p for p in items if p["user_id"] == user_id]
 
         total = len(items)
@@ -349,8 +361,9 @@ class InMemoryProjectsQueryService:
 
     async def list_active_projects(
         self,
-        user_id,
+        user_id=None,
         *,
+        user_email: Optional[str] = None,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
@@ -361,11 +374,16 @@ class InMemoryProjectsQueryService:
         Lista proyectos activos (state != ARCHIVED) con ordenamiento.
         Siempre retorna Tuple[items, total].
         Usa _as_utc_aware para comparaciones seguras de datetimes.
+        Acepta user_id o user_email para filtrado.
         """
         items = [
             p for p in self._projects
             if p["state"] != ProjectState.ARCHIVED.value
-            and p["user_id"] == user_id
+            and (
+                (user_email is not None and p.get("user_email") == user_email)
+                or (user_id is not None and p["user_id"] == user_id)
+                or (user_email is None and user_id is None)
+            )
         ]
 
         # Ordenar con datetimes normalizados
@@ -387,8 +405,9 @@ class InMemoryProjectsQueryService:
 
     async def list_closed_projects(
         self,
-        user_id,
+        user_id=None,
         *,
+        user_email: Optional[str] = None,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
@@ -399,11 +418,16 @@ class InMemoryProjectsQueryService:
         Lista proyectos cerrados (state == ARCHIVED) con ordenamiento.
         Siempre retorna Tuple[items, total].
         Usa _as_utc_aware para comparaciones seguras de datetimes.
+        Acepta user_id o user_email para filtrado.
         """
         items = [
             p for p in self._projects
             if p["state"] == ProjectState.ARCHIVED.value
-            and p["user_id"] == user_id
+            and (
+                (user_email is not None and p.get("user_email") == user_email)
+                or (user_id is not None and p["user_id"] == user_id)
+                or (user_email is None and user_id is None)
+            )
         ]
 
         # Ordenar con datetimes normalizados

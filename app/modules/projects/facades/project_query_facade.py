@@ -61,23 +61,58 @@ class ProjectQueryFacade:
     
     async def list_by_user(
         self,
-        user_email: str,
+        user_email: Optional[str] = None,
+        *,
+        user_id=None,
         state: Optional[ProjectState] = None,
         status: Optional[ProjectStatus] = None,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> List[Project] | Tuple[List[Project], int]:
-        """Lista proyectos de un usuario con filtros opcionales (por email)."""
-        return await queries.list_projects_by_user(
-            db=self.db,
-            user_email=user_email,
-            state=state,
-            status=status,
-            limit=limit,
-            offset=offset,
-            include_total=include_total,
-        )
+        """
+        Lista proyectos de un usuario con filtros opcionales.
+        
+        Args:
+            user_email: Email del usuario (preferido en producción).
+            user_id: ID del usuario (para compatibilidad con tests legacy).
+            state: Filtro opcional de estado.
+            status: Filtro opcional de status.
+            limit: Límite de resultados.
+            offset: Offset para paginación.
+            include_total: Si True, retorna tupla (rows, total).
+        
+        Returns:
+            Lista de proyectos o tupla (proyectos, total) si include_total=True.
+        
+        Note:
+            user_id es para compatibilidad con tests; en prod usar user_email.
+        """
+        # Si se proporciona user_id, usar query por user_id
+        if user_id is not None:
+            return await queries.list_projects_by_user_id(
+                db=self.db,
+                user_id=user_id,
+                state=state,
+                status=status,
+                limit=limit,
+                offset=offset,
+                include_total=include_total,
+            )
+        
+        # Si se proporciona user_email, usar query por email
+        if user_email is not None:
+            return await queries.list_projects_by_user(
+                db=self.db,
+                user_email=user_email,
+                state=state,
+                status=status,
+                limit=limit,
+                offset=offset,
+                include_total=include_total,
+            )
+        
+        raise ValueError("Debe proporcionar user_email o user_id")
     
     async def list_ready_projects(
         self,

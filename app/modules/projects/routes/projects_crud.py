@@ -36,14 +36,19 @@ router = APIRouter(tags=["projects:crud"])
 
 def _coerce_to_project_read(p):
     """
-    Completa campos obligatorios faltantes antes de validar con ProjectRead.
-    Necesario para compatibilidad con stubs de tests que no generan todos los campos.
-    IMPORTANTE: Solo asigna valores default si NO existen (setdefault), nunca sobrescribe.
+    Convierte un Project (ORM) o dict a ProjectRead.
+    Para modelos ORM usa from_attributes=True de Pydantic.
+    Para dicts (stubs de tests) completa campos faltantes.
     """
-    d = p if isinstance(p, dict) else (p.__dict__ if hasattr(p, '__dict__') else {})
-    d = dict(d)
+    from app.modules.projects.models.project_models import Project as ProjectModel
+    
+    # Si es un modelo ORM, usar model_validate directamente (from_attributes=True)
+    if isinstance(p, ProjectModel):
+        return ProjectRead.model_validate(p)
+    
+    # Para dicts (stubs de tests), completar campos faltantes
+    d = dict(p) if isinstance(p, dict) else {}
     now = datetime.now(timezone.utc)
-    # Solo asignar si no existe (no sobrescribir id del path)
     d.setdefault("id", uuid4())
     d.setdefault("created_at", now)
     d.setdefault("updated_at", now)
@@ -63,7 +68,7 @@ logger = logging.getLogger(__name__)
     status_code=status.HTTP_201_CREATED,
     summary="Crear proyecto",
 )
-def create_project(
+async def create_project(
     payload: ProjectCreateIn,
     user=Depends(get_current_user),
     svc: ProjectsCommandService = Depends(get_projects_command_service),
@@ -72,7 +77,7 @@ def create_project(
     Crea un proyecto nuevo para el usuario autenticado.
     """
     uid, uemail = extract_user_id_and_email(user)
-    project = svc.create_project(
+    project = await svc.create_project(
         user_id=uid,
         user_email=uemail,
         project_name=payload.project_name,
@@ -87,7 +92,7 @@ def create_project(
     response_model=ProjectRead,
     summary="Obtener proyecto por ID",
 )
-def get_project_by_id(
+async def get_project_by_id(
     project_id: UUID,
     user=Depends(get_current_user),
     q: ProjectsQueryService = Depends(get_projects_query_service),
@@ -96,7 +101,7 @@ def get_project_by_id(
     Devuelve un proyecto por su ID, validando pertenencia del usuario.
     """
     uid, _ = extract_user_id_and_email(user)
-    project = q.get_project_by_id(project_id)
+    project = await q.get_project_by_id(project_id)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
@@ -140,7 +145,7 @@ def get_project_by_slug(
     response_model=ProjectResponse,
     summary="Actualizar metadatos (nombre, descripción)",
 )
-def update_project(
+async def update_project(
     project_id: UUID,
     payload: ProjectUpdateIn,
     user=Depends(get_current_user),
@@ -150,7 +155,7 @@ def update_project(
     Actualiza metadatos del proyecto (nombre/ descripción). Requiere propiedad.
     """
     uid, uemail = extract_user_id_and_email(user)
-    project = svc.update_project(
+    project = await svc.update_project(
         project_id,
         user_id=uid,
         user_email=uemail,
@@ -164,7 +169,7 @@ def update_project(
     response_model=dict,
     summary="Eliminar proyecto (hard delete; uso administrativo)",
 )
-def delete_project(
+async def delete_project(
     project_id: UUID,
     user=Depends(get_current_user),
     svc: ProjectsCommandService = Depends(get_projects_command_service),
@@ -173,7 +178,7 @@ def delete_project(
     Elimina físicamente un proyecto. Normalmente reservado a tareas administrativas.
     """
     uid, uemail = extract_user_id_and_email(user)
-    ok = svc.delete(
+    ok = await svc.delete(
         project_id,
         user_id=uid,
         user_email=uemail,

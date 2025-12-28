@@ -15,7 +15,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Optional
 
-from app.shared.cache import CacheBackend
+from app.shared.cache.cache_backend import CacheBackend
 
 logger = logging.getLogger(__name__)
 

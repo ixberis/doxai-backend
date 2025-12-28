@@ -42,12 +42,10 @@ async def run_warmup_once() -> WarmupStatus:
             logger.debug("🔄 Warm-up ya completado previamente")
             return resources.warmup_status
 
-        # Importar settings usando el singleton get_settings()
+        # Importar settings usando el singleton
         try:
-            from app.shared.config import get_settings
-            settings = get_settings()
+            from app.shared.config import settings
         except ImportError as e:
-            # No usar settings aquí; aún no existe
             logger.error(f"❌ No se pudo importar configuración: {e}")
             raise RuntimeError("Configuración no disponible - asegúrese de que app.shared.config esté correctamente configurado") from e
 

@@ -10,7 +10,7 @@ Autor: Ixchel Beristáin
 Fecha: 28/10/2025
 """
 
-from typing import Optional, List
+from typing import Optional, List, Union
 from uuid import UUID
 from datetime import datetime
 from pydantic import Field, EmailStr, field_validator, ConfigDict
@@ -122,10 +122,10 @@ class ProjectRead(UTF8SafeModel):
     Incluye todos los campos del modelo Project alineados con
     ProjectState/ProjectStatus.
     
-    Nota: user_id es UUID (consistente con auth.users.id y DDL de producción).
+    Nota: user_id es UUID en producción (auth.users.id), int en tests legacy.
     """
     project_id: UUID = Field(..., alias="id", description="ID único del proyecto")
-    user_id: UUID = Field(..., description="ID del usuario propietario (UUID)")
+    user_id: Union[UUID, int] = Field(..., description="ID del usuario propietario (UUID en prod, int en tests)")
     user_email: EmailStr = Field(..., description="Email del propietario")
     project_name: str = Field(..., description="Nombre del proyecto")
     project_slug: str = Field(..., description="Slug único del proyecto")

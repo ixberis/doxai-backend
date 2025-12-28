@@ -124,9 +124,8 @@ async def list_active_projects(
     """
     email = extract_user_email(user)
     if not email:
-        from fastapi import HTTPException, status as http_status
         raise HTTPException(
-            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing email in auth context"
         )
     

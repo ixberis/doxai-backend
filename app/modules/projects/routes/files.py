@@ -47,7 +47,7 @@ class ProjectFileMoveIn(BaseModel):
     "/{project_id}/files",
     summary="Listar archivos del proyecto"
 )
-def list_project_files(
+async def list_project_files(
     project_id: UUID,
     limit: int = 100,
     offset: int = 0,
@@ -56,7 +56,7 @@ def list_project_files(
 ):
     """Lista archivos del proyecto. Siempre devuelve total."""
     uid, _ = extract_user_id_and_email(user)
-    items, total = q.list_files(project_id=project_id, user_id=uid, limit=limit, offset=offset, include_total=True)
+    items, total = await q.list_files(project_id=project_id, user_id=uid, limit=limit, offset=offset, include_total=True)
     # items son dicts, no necesitan conversión
     return {
         "success": True,
@@ -69,7 +69,7 @@ def list_project_files(
     status_code=http_status.HTTP_201_CREATED,
     summary="Registrar archivo en proyecto (post-upload)"
 )
-def add_project_file(
+async def add_project_file(
     project_id: UUID,
     payload: ProjectFileAddIn,
     user=Depends(get_current_user),
@@ -77,7 +77,7 @@ def add_project_file(
 ):
     """Agrega archivo al proyecto. Delega validación a service."""
     uid, uemail = extract_user_id_and_email(user)
-    file = svc.add_file(
+    file = await svc.add_file(
         project_id=project_id,
         user_id=uid,
         user_email=uemail,
@@ -93,14 +93,14 @@ def add_project_file(
     "/files/{file_id}/validate",
     summary="Marcar archivo como validado"
 )
-def validate_project_file(
+async def validate_project_file(
     file_id: UUID,
     user=Depends(get_current_user),
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """Valida archivo. Delega lógica a service."""
     uid, uemail = extract_user_id_and_email(user)
-    file = svc.validate_file(
+    file = await svc.validate_file(
         file_id=file_id,
         user_id=uid,
         user_email=uemail
@@ -111,7 +111,7 @@ def validate_project_file(
     "/files/{file_id}/move",
     summary="Mover archivo a nueva ruta"
 )
-def move_project_file(
+async def move_project_file(
     file_id: UUID,
     payload: ProjectFileMoveIn,
     user=Depends(get_current_user),
@@ -119,7 +119,7 @@ def move_project_file(
 ):
     """Mueve archivo. Delega lógica a service."""
     uid, uemail = extract_user_id_and_email(user)
-    file = svc.move_file(
+    file = await svc.move_file(
         file_id=file_id,
         user_id=uid,
         user_email=uemail,
@@ -131,14 +131,14 @@ def move_project_file(
     "/files/{file_id}",
     summary="Eliminar archivo"
 )
-def delete_project_file(
+async def delete_project_file(
     file_id: UUID,
     user=Depends(get_current_user),
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """Elimina archivo. Delega lógica a service."""
     uid, uemail = extract_user_id_and_email(user)
-    ok = svc.delete_file(
+    ok = await svc.delete_file(
         file_id=file_id,
         user_id=uid,
         user_email=uemail

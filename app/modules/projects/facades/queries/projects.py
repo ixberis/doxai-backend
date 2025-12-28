@@ -111,6 +111,59 @@ async def list_by_user(
     return (items, total) if include_total else items
 
 
+async def list_by_user_id(
+    db: AsyncSession,
+    user_id,
+    state: Optional[ProjectState] = None,
+    status: Optional[ProjectStatus] = None,
+    limit: int = 50,
+    offset: int = 0,
+    include_total: bool = False
+) -> List[Project] | Tuple[List[Project], int]:
+    """
+    Lista proyectos de un usuario por user_id (UUID o int para tests).
+    
+    Args:
+        db: Sesión AsyncSession SQLAlchemy
+        user_id: ID del usuario (UUID en prod, int en tests)
+        state: Filtro opcional por estado técnico
+        status: Filtro opcional por status administrativo
+        limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
+        offset: Desplazamiento para paginación (default: 0)
+        include_total: Si True, devuelve (items, total_count)
+        
+    Returns:
+        Lista de proyectos o tupla (proyectos, total) si include_total=True
+    """
+    effective_limit = min(limit, MAX_LIMIT)
+    
+    # Filtrar por user_id (puede ser UUID o int en tests)
+    query = select(Project).where(Project.user_id == user_id)
+    
+    if state is not None:
+        query = query.where(Project.state == state)
+    
+    if status is not None:
+        query = query.where(Project.status == status)
+    
+    total = None
+    if include_total:
+        count_query = select(func.count(Project.id)).where(Project.user_id == user_id)
+        if state is not None:
+            count_query = count_query.where(Project.state == state)
+        if status is not None:
+            count_query = count_query.where(Project.status == status)
+        total = await db.scalar(count_query) or 0
+    
+    query = query.order_by(Project.created_at.desc())
+    query = query.offset(offset).limit(effective_limit)
+    
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+    
+    return (items, total) if include_total else items
+
+
 async def list_ready_projects(
     db: AsyncSession,
     user_email: Optional[str] = None,
@@ -289,6 +342,7 @@ __all__ = [
     "get_by_id",
     "get_by_slug",
     "list_by_user",
+    "list_by_user_id",
     "list_ready_projects",
     "list_active_projects",
     "list_closed_projects",
