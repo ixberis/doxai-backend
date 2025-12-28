@@ -7,12 +7,13 @@ Flujo de login y refresh de tokens:
 - Valida credenciales.
 - Verifica activación de cuenta.
 - Emite tokens de acceso/refresh.
+- Registra sesión en user_sessions para métricas.
 - Refresca tokens.
 - Progressive backoff for failed attempts.
 
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
-Updated: 18/12/2025 - Unified lockout with RateLimitService
+Updated: 28/12/2025 - Session registration in user_sessions
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from app.modules.auth.services.user_service import UserService
 from app.modules.auth.services.activation_service import ActivationService
 from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.services.token_issuer_service import TokenIssuerService
+from app.modules.auth.services.session_service import SessionService
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.shared.utils.security import verify_password
 from app.shared.utils.jwt_utils import verify_token_type
@@ -56,6 +58,8 @@ class LoginFlowService:
     - Rate limiting by IP (20/5min)
     - Lockout by email (5/15min)
     - Progressive backoff calculation
+    
+    Registers sessions in user_sessions table for Auth Metrics.
     """
 
     def __init__(
@@ -67,6 +71,7 @@ class LoginFlowService:
         self.user_service = UserService.with_session(db)
         self.activation_service = ActivationService(db)
         self.token_issuer = token_issuer or TokenIssuerService()
+        self.session_service = SessionService(db)
         self._rate_limiter = get_rate_limiter()
 
     async def _apply_backoff(self, ip_address: str, email: str) -> None:
@@ -201,6 +206,14 @@ class LoginFlowService:
         )
 
         tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.user_id))
+
+        # Registrar sesión en user_sessions para métricas de Auth Metrics
+        await self.session_service.create_session(
+            user_id=user.user_id,
+            access_token=tokens["access_token"],
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
 
         # Construir respuesta alineada con LoginResponse (schemas)
         return {

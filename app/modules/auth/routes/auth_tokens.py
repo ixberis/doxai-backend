@@ -4,12 +4,12 @@
 Rutas relacionadas con tokens / sesión de usuario:
 - Login
 - Refresh
-- Logout
+- Logout (con revocación de sesión)
 - Perfil (/me)
 
 Autor: DoxAI / Refactor Fase 3
 Fecha: 20/11/2025
-Updated: 18/12/2025 - Added rate limiting
+Updated: 28/12/2025 - Session revocation on logout
 """
 
 # Note: NOT using 'from __future__ import annotations' to ensure FastAPI
@@ -27,13 +27,17 @@ from app.modules.auth.schemas import (
     UserOut,
 )
 from app.modules.auth.services.user_service import get_current_user_from_token
+from app.modules.auth.services.session_service import SessionService
 from app.modules.auth.models.user_models import AppUser
 from app.shared.utils.jwt_utils import verify_token_type
 from app.modules.auth.services.audit_service import AuditService
 from app.shared.security.rate_limit_dep import RateLimitDep
 from app.shared.http_utils.request_meta import get_request_meta
+from app.shared.database.database import get_async_session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
+router = APIRouter(prefix="/auth", tags=["auth-tokens"])
 router = APIRouter(prefix="/auth", tags=["auth-tokens"])
 
 
@@ -98,17 +102,18 @@ async def refresh_token(
     "/logout",
     response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
-    summary="Logout (revoca el refresh token en el cliente)",
+    summary="Logout (revoca sesión en servidor)",
 )
 async def logout(
     payload: RefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
 ) -> MessageResponse:
     """
-    Logout "mínimo razonable":
+    Logout con revocación de sesión:
       - Valida el refresh_token (tipo 'refresh').
-      - No mantiene estado de revocación en servidor (por ahora).
-      - Sirve como punto único para que el frontend haga logout
-        y descarte los tokens en el cliente.
+      - Revoca todas las sesiones activas del usuario en user_sessions.
+      - Esto hace que Auth Metrics refleje correctamente las sesiones activas.
 
     Si el refresh_token es inválido o expirado, responde 401.
     """
@@ -132,10 +137,14 @@ async def logout(
             detail="Token sin identificador de usuario.",
         )
 
+    # Revocar todas las sesiones del usuario
+    session_service = SessionService(db)
+    revoked_count = await session_service.revoke_all_sessions_for_user(int(user_id))
+
     # Auditoría: logout exitoso
     AuditService.log_logout(user_id=str(user_id))
 
-    return MessageResponse(message="Logout exitoso.")
+    return MessageResponse(message=f"Logout exitoso. {revoked_count} sesión(es) revocada(s).")
 
 
 # ------------------------ PERFIL /me ------------------------ #
