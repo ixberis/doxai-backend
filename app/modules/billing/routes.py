@@ -220,65 +220,89 @@ async def start_checkout(
         )
     
     # 3) Intent nuevo - determinar si usar Stripe o dummy
-    if settings.payments_enabled and settings.stripe_enabled:
-        # Intentar crear sesión Stripe
-        try:
-            from .providers.stripe_provider import StripeProvider
-            
-            provider = StripeProvider()
-            
-            if provider.is_configured:
-                success_url, cancel_url = _get_checkout_urls(request, intent.id)
-                
-                result = await provider.create_checkout_session(
-                    intent_id=intent.id,
-                    user_id=user_id,
-                    package_id=package.id,
-                    package_name=package.name,
-                    credits_amount=package.credits,
-                    price_cents=package.price_cents,
-                    currency=package.currency,
-                    success_url=success_url,
-                    cancel_url=cancel_url,
-                )
-                
-                # Actualizar intent con datos de Stripe
-                intent.checkout_url = result.checkout_url
-                intent.provider = "stripe"
-                intent.status = CheckoutIntentStatus.PENDING.value
-                intent.provider_session_id = result.session_id
-                
-                await session.commit()
-                
-                logger.info(
-                    "Created Stripe checkout: user=%s intent=%s session=%s",
-                    user_id, intent.id, result.session_id,
-                )
-                
-                return BillingCheckoutResponse(
-                    checkout_url=intent.checkout_url,
-                    checkout_intent_id=intent.id,
-                )
-            else:
-                logger.warning("Stripe not configured, falling back to dummy URL")
-                
-        except Exception as e:
-            logger.exception("Failed to create Stripe session: %s", e)
-            # Fall through to dummy URL
+    if not settings.payments_enabled:
+        # Pagos deshabilitados globalmente
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "payments_disabled",
+                "message": "Payments are not enabled on this server",
+            },
+        )
     
-    # 4) Modo dummy (PAYMENTS_ENABLED=false o Stripe falló)
-    intent.checkout_url = f"/billing/credits?status=not_ready&intent=pending&intent_id={intent.id}"
-    await session.commit()
+    if not settings.stripe_enabled:
+        # Stripe deshabilitado (podría haber otro proveedor en el futuro)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "stripe_disabled",
+                "message": "Stripe payments are not enabled",
+            },
+        )
     
-    logger.info(
-        "Created checkout intent (dummy): user=%s intent=%s package=%s",
-        user_id, intent.id, payload.package_id,
-    )
+    # Stripe habilitado - crear sesión real
+    from .providers.stripe_provider import StripeProvider
     
-    return BillingCheckoutResponse(
-        checkout_url=intent.checkout_url,
-        checkout_intent_id=intent.id,
-    )
+    provider = StripeProvider()
+    
+    if not provider.is_configured:
+        # Log diagnóstico detallado (sin secretos)
+        diag = provider.get_diagnostic_info()
+        logger.error(
+            "Stripe not configured despite stripe_enabled=True. Diagnostic: %s",
+            diag,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "stripe_not_configured",
+                "message": "Stripe is enabled but not properly configured",
+                "diagnostic": diag,
+            },
+        )
+    
+    try:
+        success_url, cancel_url = _get_checkout_urls(request, intent.id)
+        
+        result = await provider.create_checkout_session(
+            intent_id=intent.id,
+            user_id=user_id,
+            package_id=package.id,
+            package_name=package.name,
+            credits_amount=package.credits,
+            price_cents=package.price_cents,
+            currency=package.currency,
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+        
+        # Actualizar intent con datos de Stripe
+        intent.checkout_url = result.checkout_url
+        intent.provider = "stripe"
+        intent.status = CheckoutIntentStatus.PENDING.value
+        intent.provider_session_id = result.session_id
+        
+        await session.commit()
+        
+        logger.info(
+            "Created Stripe checkout: user=%s intent=%s session=%s",
+            user_id, intent.id, result.session_id,
+        )
+        
+        return BillingCheckoutResponse(
+            checkout_url=intent.checkout_url,
+            checkout_intent_id=intent.id,
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to create Stripe session: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "stripe_session_failed",
+                "message": f"Failed to create Stripe checkout session: {str(e)}",
+            },
+        )
 
 
 # =============================================================================

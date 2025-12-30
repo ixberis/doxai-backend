@@ -14,8 +14,9 @@ Fecha: 25/10/2025
 
 from __future__ import annotations
 
+import os
 from typing import Optional
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +50,31 @@ class PaymentsSettings(BaseSettings):
         default=None,
         description="Stripe secret key (sk_live_... o sk_test_...)"
     )
+    
+    # =========================================================================
+    # FRONTEND URL (normalizado desde FRONTEND_URL o FRONTEND_BASE_URL)
+    # =========================================================================
+    
+    frontend_url: Optional[str] = Field(
+        default=None,
+        description="URL base del frontend para redirects de checkout"
+    )
+    
+    @field_validator('stripe_secret_key', mode='before')
+    @classmethod
+    def _load_stripe_secret_key(cls, v: Optional[str]) -> Optional[str]:
+        """Fallback a STRIPE_SECRET_KEY env var si no está en settings."""
+        if v:
+            return v
+        return os.getenv("STRIPE_SECRET_KEY")
+    
+    @field_validator('frontend_url', mode='before')
+    @classmethod
+    def _load_frontend_url(cls, v: Optional[str]) -> Optional[str]:
+        """Fallback a FRONTEND_URL o FRONTEND_BASE_URL."""
+        if v:
+            return v
+        return os.getenv("FRONTEND_URL") or os.getenv("FRONTEND_BASE_URL")
     
     stripe_publishable_key: Optional[str] = Field(
         default=None,

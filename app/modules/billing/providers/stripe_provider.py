@@ -54,22 +54,51 @@ class StripeProvider:
             secret_key: Stripe secret key. Si no se proporciona,
                         se intenta cargar desde settings o env.
         """
+        self._settings = get_payments_settings()
         self._secret_key = secret_key or self._load_secret_key()
         if self._secret_key and STRIPE_AVAILABLE:
             stripe.api_key = self._secret_key
     
     def _load_secret_key(self) -> Optional[str]:
-        """Carga la secret key desde settings o env."""
-        settings = get_payments_settings()
-        key = settings.stripe_secret_key or os.getenv("STRIPE_SECRET_KEY")
+        """Carga la secret key desde settings (con fallback a env en validator)."""
+        key = self._settings.stripe_secret_key
         if not key:
-            logger.warning("STRIPE_SECRET_KEY not configured")
+            logger.warning("STRIPE_SECRET_KEY not configured in settings")
         return key
+    
+    def _get_key_prefix(self) -> str:
+        """Retorna el prefijo de la key para diagnóstico (sk_test, sk_live, other)."""
+        if not self._secret_key:
+            return "none"
+        if self._secret_key.startswith("sk_test_"):
+            return "sk_test"
+        if self._secret_key.startswith("sk_live_"):
+            return "sk_live"
+        return "other"
     
     @property
     def is_configured(self) -> bool:
         """Retorna True si Stripe está configurado y el SDK está disponible."""
         return STRIPE_AVAILABLE and bool(self._secret_key)
+    
+    def get_diagnostic_info(self) -> dict:
+        """
+        Retorna información de diagnóstico para debugging (sin secretos).
+        
+        Returns:
+            Dict con estado de configuración
+        """
+        frontend_url = self._settings.frontend_url
+        return {
+            "stripe_sdk_available": STRIPE_AVAILABLE,
+            "payments_enabled": self._settings.payments_enabled,
+            "stripe_enabled": self._settings.stripe_enabled,
+            "has_secret_key": bool(self._secret_key),
+            "secret_key_prefix": self._get_key_prefix(),
+            "has_frontend_url": bool(frontend_url),
+            "frontend_url_host": frontend_url.split("//")[-1].split("/")[0] if frontend_url else None,
+            "is_configured": self.is_configured,
+        }
     
     async def create_checkout_session(
         self,
