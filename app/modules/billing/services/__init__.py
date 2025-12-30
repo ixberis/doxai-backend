@@ -9,8 +9,16 @@ Fecha: 2025-12-29
 """
 
 from .checkout_service import CheckoutService, apply_checkout_credits
+from app.modules.billing.credits.services import (
+    CreditService,
+    WalletService,
+    ReservationService,
+)
 
 __all__ = [
     "CheckoutService",
     "apply_checkout_credits",
+    "CreditService",
+    "WalletService",
+    "ReservationService",
 ]

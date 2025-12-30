@@ -30,13 +30,15 @@ from app.modules.rag.repositories.rag_job_event_repository import rag_job_event_
 from app.modules.rag.facades import convert_facade, ocr_facade, chunk_facade, embed_facade, integrate_facade
 from app.modules.files.services.storage_ops_service import AsyncStorageClient
 
-# Imports de Payments para integración de créditos
-from app.modules.payments.services.reservation_service import ReservationService
-from app.modules.payments.services.wallet_service import WalletService
-from app.modules.payments.services.credit_service import CreditService
-from app.modules.payments.repositories.usage_reservation_repository import UsageReservationRepository
-from app.modules.payments.repositories.wallet_repository import WalletRepository
-from app.modules.payments.repositories.credit_transaction_repository import CreditTransactionRepository
+# Imports de Billing para integración de créditos (servicios reales)
+from app.modules.billing.credits import (
+    ReservationService,
+    WalletService,
+    CreditService,
+    WalletRepository,
+    CreditTransactionRepository,
+    UsageReservationRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,15 +180,15 @@ async def run_indexing_job(
     # Repositorios y servicios
     job_repo = RagJobRepository()
     
-    # Payments services
+    # Billing credits services (repos inyectados explícitamente)
     reservation_repo = UsageReservationRepository()
     wallet_repo = WalletRepository()
-    transaction_repo = CreditTransactionRepository()
+    tx_repo = CreditTransactionRepository()
     
-    wallet_service = WalletService(wallet_repo, transaction_repo)
-    credit_service = CreditService(transaction_repo)
     reservation_service = ReservationService(
-        reservation_repo, wallet_repo, wallet_service, credit_service
+        reservation_repo=reservation_repo,
+        wallet_repo=wallet_repo,
+        tx_repo=tx_repo,
     )
     
     try:
@@ -234,21 +236,15 @@ async def run_indexing_job(
             },
         )
         
-        # TODO: Integración completa con Wallets v3:
-        # En este punto solo necesitamos un identificador de wallet para crear la
-        # reserva. En tests de RAG, ReservationService está completamente mockeado
-        # y no depende de que exista una wallet real en la base de datos.
-        #
-        # Para evitar depender del esquema de Payments (FKs contra app_users,
-        # tipos BIGINT vs UUID, etc.) utilizamos un identificador sintético
-        # derivado del user_id. En producción, este punto deberá sustituirse por
-        # una obtención real de la wallet del usuario.
-        synthetic_wallet_id = 1
+        # Convertir UUID user_id a int para billing
+        # user_id viene como UUID, necesitamos obtener el id numérico del usuario
+        # Por ahora usamos hash del UUID como id sintético (en prod, buscar en app_users)
+        numeric_user_id = abs(hash(str(user_id))) % (10**9)
 
-        # Crear reserva de créditos
+        # Crear reserva de créditos (user_id, no wallet_id)
         reservation = await reservation_service.create_reservation(
             db,
-            wallet_id=synthetic_wallet_id,
+            user_id=numeric_user_id,
             credits=estimation.total_estimated,
             operation_id=f"rag_job_{job_id}",
             ttl_minutes=30,

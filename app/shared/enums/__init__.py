@@ -4,9 +4,9 @@ backend/app/shared/enums/__init__.py
 
 Export central consolidado de enums compartidos entre múltiples módulos.
 
-Los enums específicos de auth y payments ahora están en sus módulos respectivos:
+Los enums específicos de auth y billing ahora están en sus módulos respectivos:
 - Auth enums → backend/app/modules/auth/enums/
-- Payments enums → backend/app/modules/payments/enums/
+- Billing enums → backend/app/modules/billing/ (si se necesitan)
 
 Este archivo solo exporta enums verdaderamente compartidos.
 

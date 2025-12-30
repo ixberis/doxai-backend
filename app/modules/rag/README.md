@@ -116,24 +116,24 @@ OPENAI_EMBEDDING_DIMENSION=1536                # Dimensión del vector
 
 ---
 
-## 💳 Integración con Payments
+## 💳 Integración con Billing/Credits
 
-El módulo RAG consume créditos del wallet del usuario por cada operación de indexación. La integración con Payments sigue el patrón de **reserva → consumo/liberación**:
+El módulo RAG consume créditos del wallet del usuario por cada operación de indexación. La integración con el módulo **Billing** (`app.modules.billing.credits`) sigue el patrón de **reserva → consumo/liberación**:
 
 ### Flujo de Créditos
 
 1. **Reserva (al iniciar job)**:
    - Se estima el costo en créditos: `base_cost + ocr_cost + embedding_cost`
-   - Se llama a `reserve_credits` de `app.modules.payments.facades.reservations`
+   - Se llama a `ReservationService.reserve()` de `app.modules.billing.credits`
    - Se guarda el `reservation_id` asociado al job
 
 2. **Consumo (al completar exitosamente)**:
    - Se calculan los créditos realmente usados (basado en chunks/embeddings generados)
-   - Se llama a `consume_reserved_credits` para confirmar el gasto
+   - Se llama a `ReservationService.consume()` para confirmar el gasto
    - Se actualiza el wallet del usuario
 
 3. **Liberación (en caso de fallo o cancelación)**:
-   - Se llama a `release_reservation` para devolver los créditos al wallet
+   - Se llama a `ReservationService.release()` para devolver los créditos al wallet
    - No se cobra al usuario por jobs fallidos
 
 ### Entidades Clave
@@ -281,7 +281,7 @@ pytest backend/tests/integration/test_rag_e2e_pipeline.py -v
 - **Azure Document Intelligence**: `AzureDocumentIntelligenceClient`
 - **OpenAI Embeddings**: `generate_embeddings`
 - **Supabase Storage**: `AsyncStorageClient` (upload/download)
-- **Payments** (opcional): Facades de reserva/consumo si es muy pesado
+- **Billing/Credits** (opcional): Services de reserva/consumo si es muy pesado
 
 **Ejemplo de mock**:
 ```python
@@ -364,7 +364,7 @@ El módulo está preparado para implementar endpoints de búsqueda semántica:
 ## 📚 Referencias Adicionales
 
 - **Guía de integración con Files**: Ver `backend/app/modules/files/README.md`
-- **Guía de integración con Payments**: Ver `backend/app/modules/payments/README.md`
+- **Guía de integración con Billing**: Ver `backend/app/modules/billing/README.md`
 - **Documentación de SQL**: Ver `database/rag/README.md` (si existe)
 - **Tests E2E**: Ver `backend/tests/integration/test_rag_e2e_pipeline.py` como ejemplo de flujo completo
 

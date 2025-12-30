@@ -41,7 +41,7 @@ IMPORT_MAPPINGS = {
     r'from app\.facades\.activation_facade': 'from app.modules.auth.services.activation_service',
     r'from app\.facades\.project_facade': 'from app.modules.projects.services.project_service',
     r'from app\.facades\.file_facade': 'from app.modules.files.services.file_service',
-    r'from app\.facades\.payment_facade': 'from app.modules.payments.services.payment_service',
+    # (legacy payments eliminado - billing es el único módulo de pagos)
     r'from app\.facades\.download_facade': 'from app.modules.files.services.bulk_download_service',
     r'from app\.facades\.': 'from app.modules.',  # Catch-all para otros facades
     
@@ -64,7 +64,7 @@ IMPORT_MAPPINGS = {
     r'from app\.schemas\.auth': 'from app.modules.auth.schemas',
     r'from app\.schemas\.project': 'from app.modules.projects.schemas',
     r'from app\.schemas\.file': 'from app.modules.files.schemas',
-    r'from app\.schemas\.payment': 'from app.modules.payments.schemas',
+    # (legacy payments schemas eliminado - usar billing.schemas)
     r'from app\.schemas\.': 'from app.modules.',  # Catch-all
     
     # ========================================================================

@@ -191,23 +191,12 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAYMENTS
+# PAYMENTS (LEGACY - ELIMINADO)
 # ═══════════════════════════════════════════════════════════════════════════
-USE_STUBS = os.getenv("USE_PAYMENT_STUBS", "").lower() == "true"
-
-if USE_STUBS:
-    stubs = _try_import_router([
-        "app.modules.payments.routes._stubs_tests_routes",
-        "app.modules.payments.routes._stubs_test_routes",
-    ])
-    if stubs:
-        _include_once(public, stubs, "payments", _mounted_public)
-else:
-    payments_main = _try_import_router(["app.modules.payments.routes"])
-    if payments_main:
-        # Payments solo en public (tiene su propio prefix /payments)
-        _include_once(public, payments_main, "payments", _mounted_public)
-        logger.info("✅ Módulo payments montado")
+# El módulo legacy 'payments' fue eliminado completamente.
+# Todo el flujo de checkout, webhooks, acreditación de créditos, recibos
+# e historial ahora pasa exclusivamente por el módulo 'billing'.
+# Ver: app/modules/billing/
 
 
 # ═══════════════════════════════════════════════════════════════════════════

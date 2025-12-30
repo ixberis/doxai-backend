@@ -31,7 +31,7 @@ from app.modules.auth.enums import ActivationStatus, UserStatus
 from app.modules.auth.models.activation_models import AccountActivation
 from app.modules.auth.models.user_models import AppUser as User
 from app.modules.auth.repositories import ActivationRepository, UserRepository
-from app.modules.payments.services.credit_service import CreditService
+from app.modules.billing.services import CreditService
 
 logger = logging.getLogger(__name__)
 

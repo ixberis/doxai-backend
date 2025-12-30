@@ -143,12 +143,8 @@ def main():
         'app/modules/projects/routes/selected_download_input_files_routes.py': '/projects',
         'app/modules/projects/routes/selected_download_product_files_routes.py': '/projects',
         'app/modules/rag/routes/rag_routes.py': '/rag',
-        'app/modules/payments/routes/abandoned_payment_router.py': '/payments',
-        'app/modules/payments/routes/payment_confirmation_router.py': '/payments',
-        'app/modules/payments/routes/payment_webhooks_router.py': '/payments/webhooks',
-        'app/modules/payments/routes/resume_payment_router.py': '/payments',
-        'app/modules/payments/routes/subscription_session_router.py': '/payments',
-        'app/modules/payments/routes/subscription_status_router.py': '/payments',
+        # Legacy payments routes removed - now in billing module
+        'app/modules/billing/routes.py': '/billing',
     }
     
     base_path = Path.cwd() / 'backend'

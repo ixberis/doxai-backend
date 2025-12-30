@@ -11,9 +11,9 @@ Fecha: 2025-12-29
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, List
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -217,6 +217,60 @@ class CheckoutIntentRepository:
         intent.status = new_status.value
         await session.flush()
         return intent
+    
+    async def compute_credits_balance(
+        self,
+        session: AsyncSession,
+        user_id: int,
+    ) -> int:
+        """
+        Calcula el balance de créditos de un usuario.
+        
+        Se calcula como SUM de credits_amount de checkout_intents
+        con status='completed' para el usuario.
+        
+        Args:
+            session: Sesión de base de datos
+            user_id: ID del usuario
+            
+        Returns:
+            Balance total de créditos (0 si no hay intents)
+        """
+        stmt = select(func.coalesce(func.sum(CheckoutIntent.credits_amount), 0)).where(
+            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.status == CheckoutIntentStatus.COMPLETED.value,
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one()
+    
+    async def list_by_user(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[CheckoutIntent]:
+        """
+        Lista los checkout intents de un usuario ordenados por fecha.
+        
+        Args:
+            session: Sesión de base de datos
+            user_id: ID del usuario
+            limit: Máximo de resultados
+            offset: Offset para paginación
+            
+        Returns:
+            Lista de CheckoutIntent
+        """
+        stmt = (
+            select(CheckoutIntent)
+            .where(CheckoutIntent.user_id == user_id)
+            .order_by(CheckoutIntent.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
 
 
 __all__ = ["CheckoutIntentRepository"]

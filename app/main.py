@@ -260,15 +260,8 @@ async def lifespan(app: FastAPI):
                 logger.info("🚫 Cancelling active analysis jobs...")
                 await job_registry.cancel_all_tasks(timeout=30.0)
 
-                # Cerrar clientes HTTP de PayPal
-                try:
-                    from app.modules.payments.services.webhooks.signature_verification import (
-                        close_paypal_http_clients,
-                    )
-                    await close_paypal_http_clients()
-                    logger.info("💳 Clientes HTTP de PayPal cerrados")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error cerrando clientes PayPal: {e}")
+                # PayPal clients cleanup (legacy payments module removed)
+                # No action needed - billing uses Stripe only
 
                 # Cierre de recursos cacheados
                 try:
