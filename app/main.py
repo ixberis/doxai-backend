@@ -220,12 +220,19 @@ async def lifespan(app: FastAPI):
 
         scheduler = get_scheduler()
 
-        # Job 1: limpieza (si existe)
+        # Job 1: limpieza de caché (si existe)
         try:
             from app.shared.scheduler.jobs import register_cache_cleanup_job
             register_cache_cleanup_job(scheduler)
         except Exception as e:
             logger.debug(f"Cache cleanup job no disponible: {e}")
+
+        # Job 2: expiración de checkout intents
+        try:
+            from app.modules.billing.jobs import register_expire_intents_job
+            register_expire_intents_job()
+        except Exception as e:
+            logger.debug(f"Expire intents job no disponible: {e}")
 
         scheduler.start()
         logger.info("⏰ Scheduler iniciado con jobs programados")

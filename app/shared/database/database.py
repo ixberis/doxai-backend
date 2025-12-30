@@ -265,6 +265,10 @@ async def session_scope(configure: bool = True) -> AsyncGenerator[AsyncSession, 
                 pass
 
 
+# Alias para uso en jobs
+get_async_session_context = session_scope
+
+
 async def check_database_health(timeout_s: float = 3.0, sql: str = "SELECT 1") -> bool:
     """
     Verifica conectividad a la base de datos.
@@ -392,6 +396,7 @@ __all__ = [
     "SessionLocal",
     "Base",
     "get_async_session",
+    "get_async_session_context",
     "get_db",
     "session_scope",
     "check_database_health",
