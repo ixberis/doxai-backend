@@ -245,15 +245,40 @@ class AuthAggregators:
         return 0
 
     async def get_paying_users_total(self) -> int:
-        """Cuenta usuarios distintos con al menos 1 pago exitoso."""
+        """
+        Cuenta usuarios distintos con al menos 1 checkout completado.
+        
+        Fuente de verdad: billing.checkout_intents con status='completed'.
+        Fallback: public.credit_transactions con operation_code='CHECKOUT'.
+        """
         try:
-            q = text("SELECT COUNT(DISTINCT user_id) FROM public.payments WHERE status = 'succeeded'")
+            # Primary: checkout_intents with status='completed'
+            q = text("""
+                SELECT COUNT(DISTINCT user_id) 
+                FROM billing.checkout_intents 
+                WHERE status = 'completed'
+            """)
             res = await self.db.execute(q)
             row = res.first()
             if row and row[0] is not None:
                 return int(row[0])
         except Exception as e:
-            logger.debug("get_paying_users_total failed: %s", e)
+            logger.debug("get_paying_users_total (checkout_intents) failed: %s", e)
+        
+        # Fallback: credit_transactions with operation_code='CHECKOUT'
+        try:
+            q = text("""
+                SELECT COUNT(DISTINCT user_id) 
+                FROM public.credit_transactions 
+                WHERE operation_code = 'CHECKOUT'
+            """)
+            res = await self.db.execute(q)
+            row = res.first()
+            if row and row[0] is not None:
+                return int(row[0])
+        except Exception as e:
+            logger.debug("get_paying_users_total (credit_transactions) failed: %s", e)
+        
         return 0
 
     async def get_activation_conversion_ratio(self) -> float:
