@@ -2,42 +2,49 @@
 """
 backend/app/modules/billing/utils/pdf_receipt_generator.py
 
-Generador de recibos PDF para checkouts completados.
+Generador de recibos PDF estilo OpenAI para checkouts completados.
 
-Utiliza ReportLab con fuente Unicode embebida para renderizar
-correctamente caracteres españoles (áéíóú ñ ¿¡).
+Características:
+- Layout limpio y comercial (no técnico)
+- Invoice number legible
+- Secciones: Issuer, Bill to, Line items, Totals, Payment details
+- Datos fiscales si existen
+- Disclaimer: "No es factura CFDI"
+- Fuente Unicode embebida (OpenSans)
 
 Autor: DoxAI
-Fecha: 2025-12-29
+Fecha: 2025-12-31
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
-# Importación condicional de ReportLab para evitar fallos en tests sin la dependencia
+# Importación condicional de ReportLab
 try:
     from reportlab.lib.pagesizes import letter
+    from reportlab.lib.colors import HexColor
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
-    letter = (612, 792)  # Fallback page size
+    letter = (612, 792)
     pdfmetrics = None
     TTFont = None
     canvas = None
+    HexColor = None
 
 
 @dataclass
 class ReceiptData:
-    """Datos necesarios para generar un recibo PDF."""
+    """Datos básicos del recibo (legacy, para compatibilidad)."""
     checkout_intent_id: int
     user_id: int
     credits_amount: int
@@ -51,15 +58,31 @@ class ReceiptData:
     completed_at: datetime
 
 
+@dataclass
+class InvoiceSnapshot:
+    """Snapshot completo del invoice para PDF."""
+    invoice_number: str
+    issued_at: datetime
+    paid_at: Optional[datetime]
+    issuer: Dict[str, Any]
+    bill_to: Dict[str, Any]
+    line_items: List[Dict[str, Any]]
+    totals: Dict[str, Any]
+    payment_details: Dict[str, Any]
+    notes: Dict[str, Any] = field(default_factory=dict)
+
+
 # Registrar fuente Unicode al importar el módulo
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "assets", "fonts")
 _FONT_PATH = os.path.join(_FONT_DIR, "OpenSans-Regular.ttf")
+_FONT_BOLD_PATH = os.path.join(_FONT_DIR, "OpenSans-Bold.ttf")
 _FONT_NAME = "DoxAIFont"
+_FONT_BOLD_NAME = "DoxAIFontBold"
 _FONT_REGISTERED = False
 
 
 def _ensure_font_registered():
-    """Registra la fuente Unicode si aún no está registrada."""
+    """Registra las fuentes Unicode si aún no están registradas."""
     global _FONT_REGISTERED
     if not REPORTLAB_AVAILABLE:
         return
@@ -67,183 +90,410 @@ def _ensure_font_registered():
         if os.path.exists(_FONT_PATH):
             pdfmetrics.registerFont(TTFont(_FONT_NAME, _FONT_PATH))
             _FONT_REGISTERED = True
-        else:
-            # Fallback: usar Helvetica (built-in, sin soporte completo Unicode)
-            pass
+        if os.path.exists(_FONT_BOLD_PATH):
+            pdfmetrics.registerFont(TTFont(_FONT_BOLD_NAME, _FONT_BOLD_PATH))
 
 
 def _format_price(price_cents: int, currency: str) -> str:
     """Formatea precio en centavos a string legible."""
     price = price_cents / 100
-    if currency == "MXN":
+    if currency.upper() == "MXN":
         return f"${price:,.2f} MXN"
-    elif currency == "USD":
+    elif currency.upper() == "USD":
         return f"${price:,.2f} USD"
     else:
-        return f"{price:,.2f} {currency}"
+        return f"{price:,.2f} {currency.upper()}"
 
 
-def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
+def _format_date(dt: datetime) -> str:
+    """Formatea fecha a formato legible."""
+    return dt.strftime("%d de %B de %Y").replace(
+        "January", "enero"
+    ).replace(
+        "February", "febrero"
+    ).replace(
+        "March", "marzo"
+    ).replace(
+        "April", "abril"
+    ).replace(
+        "May", "mayo"
+    ).replace(
+        "June", "junio"
+    ).replace(
+        "July", "julio"
+    ).replace(
+        "August", "agosto"
+    ).replace(
+        "September", "septiembre"
+    ).replace(
+        "October", "octubre"
+    ).replace(
+        "November", "noviembre"
+    ).replace(
+        "December", "diciembre"
+    )
+
+
+# Colores del tema
+COLORS = {
+    "primary": HexColor("#1a1a2e") if HexColor else None,
+    "secondary": HexColor("#4a4a68") if HexColor else None,
+    "accent": HexColor("#0066cc") if HexColor else None,
+    "muted": HexColor("#6b7280") if HexColor else None,
+    "border": HexColor("#e5e7eb") if HexColor else None,
+    "success": HexColor("#10b981") if HexColor else None,
+}
+
+
+def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     """
-    Genera un PDF de recibo para un checkout completado.
+    Genera un PDF de recibo estilo OpenAI desde un snapshot.
     
     Args:
-        data: Datos del recibo a generar
+        snapshot: Datos del invoice
         
     Returns:
         bytes del PDF generado
-        
-    Raises:
-        RuntimeError: Si ReportLab no está instalado
     """
     if not REPORTLAB_AVAILABLE:
-        raise RuntimeError(
-            "ReportLab is not installed. Install it with: pip install reportlab"
-        )
+        raise RuntimeError("ReportLab is not installed")
     
     _ensure_font_registered()
     
-    # Formatear datos
-    price_formatted = _format_price(data.price_cents, data.currency)
-    completed_str = data.completed_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-    generated_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    
-    package_display = data.package_name or data.package_id or "N/A"
-    provider_display = (data.provider or "N/A").upper()
-    session_display = data.provider_session_id or "N/A"
-    
-    # Generar hash de verificación
-    hash_input = f"{data.checkout_intent_id}:{data.user_id}:{data.credits_amount}:{completed_str}"
-    doc_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16].upper()
-    
-    # Idempotency key
-    idempotency_key = f"checkout_intent_{data.checkout_intent_id}"
-    
-    # Crear PDF en memoria
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter  # 612 x 792 puntos
+    width, height = letter
     
-    # Configurar fuente
-    font_name = _FONT_NAME if _FONT_REGISTERED else "Helvetica"
+    font = _FONT_NAME if _FONT_REGISTERED else "Helvetica"
+    font_bold = _FONT_BOLD_NAME if _FONT_REGISTERED and os.path.exists(_FONT_BOLD_PATH) else font
     
-    # Posición inicial
+    margin_left = 50
+    margin_right = 50
+    content_width = width - margin_left - margin_right
     y = height - 50
-    line_height = 16
-    left_margin = 50
     
-    def draw_line(text: str, bold: bool = False, size: int = 11):
-        """Dibuja una línea de texto y avanza Y."""
+    def draw_text(text: str, x: float, size: int = 10, bold: bool = False, color=None):
         nonlocal y
-        if bold:
-            c.setFont(f"{font_name}", size + 1)
+        c.setFont(font_bold if bold else font, size)
+        if color and COLORS.get(color):
+            c.setFillColor(COLORS[color])
         else:
-            c.setFont(font_name, size)
-        c.drawString(left_margin, y, text)
-        y -= line_height
+            c.setFillColorRGB(0, 0, 0)
+        c.drawString(x, y, text)
     
-    def draw_separator():
-        """Dibuja una línea separadora."""
+    def draw_right_text(text: str, size: int = 10, bold: bool = False, color=None):
         nonlocal y
-        c.setStrokeColorRGB(0.7, 0.7, 0.7)
-        c.line(left_margin, y + 5, width - left_margin, y + 5)
-        y -= line_height
+        c.setFont(font_bold if bold else font, size)
+        if color and COLORS.get(color):
+            c.setFillColor(COLORS[color])
+        else:
+            c.setFillColorRGB(0, 0, 0)
+        text_width = c.stringWidth(text, font_bold if bold else font, size)
+        c.drawString(width - margin_right - text_width, y, text)
     
-    # === ENCABEZADO ===
-    c.setFont(font_name, 16)
-    c.drawString(left_margin, y, "Recibo de compra de créditos")
-    y -= 24
+    def line_break(amount: float = 16):
+        nonlocal y
+        y -= amount
     
-    c.setFont(font_name, 10)
-    c.setFillColorRGB(0.4, 0.4, 0.4)
-    c.drawString(left_margin, y, "Documento generado electrónicamente")
-    y -= line_height
+    def draw_line():
+        nonlocal y
+        c.setStrokeColor(COLORS["border"] or HexColor("#e5e7eb"))
+        c.setLineWidth(0.5)
+        c.line(margin_left, y, width - margin_right, y)
+        y -= 12
     
-    c.setFillColorRGB(0, 0.4, 0.8)
-    c.drawString(left_margin, y, "https://doxai.site")
-    y -= line_height * 2
+    # === HEADER ===
+    # Logo / Trade name
+    c.setFont(font_bold, 24)
+    c.setFillColor(COLORS["primary"] or HexColor("#1a1a2e"))
+    c.drawString(margin_left, y, snapshot.issuer.get("trade_name", "DoxAI"))
     
+    # Invoice number and date (right side)
+    c.setFont(font, 10)
+    c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
+    invoice_text = f"Recibo #{snapshot.invoice_number}"
+    c.drawRightString(width - margin_right, y, invoice_text)
+    y -= 18
+    
+    date_text = f"Fecha: {_format_date(snapshot.issued_at)}"
+    c.drawRightString(width - margin_right, y + 5, date_text)
+    
+    y -= 30
+    draw_line()
+    
+    # === FROM / TO SECTION ===
+    col1_x = margin_left
+    col2_x = width / 2 + 20
+    section_y = y
+    
+    # FROM (Issuer)
+    c.setFont(font_bold, 9)
+    c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
+    c.drawString(col1_x, section_y, "DE:")
+    section_y -= 16
+    
+    c.setFont(font, 10)
     c.setFillColorRGB(0, 0, 0)
-    draw_line(f"Fecha de emisión: {generated_str}")
-    y -= line_height
+    c.drawString(col1_x, section_y, snapshot.issuer.get("name", ""))
+    section_y -= 14
     
-    # === DATOS DEL CLIENTE ===
-    draw_separator()
-    c.setFont(font_name, 12)
-    c.drawString(left_margin, y, "DATOS DEL CLIENTE")
-    y -= line_height + 4
+    if snapshot.issuer.get("address"):
+        addr = snapshot.issuer["address"]
+        addr_line = f"{addr.get('street', '')}, {addr.get('city', '')}"
+        c.drawString(col1_x, section_y, addr_line)
+        section_y -= 14
+        
+        addr_line2 = f"{addr.get('state', '')} {addr.get('zip', '')}, {addr.get('country', '')}"
+        c.drawString(col1_x, section_y, addr_line2)
+        section_y -= 14
     
-    draw_line(f"User ID: {data.user_id}")
-    y -= line_height
+    if snapshot.issuer.get("email"):
+        c.drawString(col1_x, section_y, snapshot.issuer["email"])
     
-    # === DETALLES DE LA TRANSACCIÓN ===
-    draw_separator()
-    c.setFont(font_name, 12)
-    c.drawString(left_margin, y, "DETALLES DE LA TRANSACCIÓN")
-    y -= line_height + 4
+    # TO (Bill to)
+    section_y = y
+    c.setFont(font_bold, 9)
+    c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
+    c.drawString(col2_x, section_y, "PARA:")
+    section_y -= 16
     
-    draw_line(f"Checkout Intent ID: {data.checkout_intent_id}")
-    draw_line("Estado: COMPLETED")
-    draw_line(f"Fecha de pago: {completed_str}")
-    draw_line(f"Proveedor de pago: {provider_display}")
-    draw_line(f"Session ID: {session_display}")
-    y -= 4
-    draw_line(f"Moneda: {data.currency}")
-    draw_line(f"Importe pagado: {price_formatted}")
-    y -= line_height
-    
-    # === PAQUETE ADQUIRIDO ===
-    draw_separator()
-    c.setFont(font_name, 12)
-    c.drawString(left_margin, y, "PAQUETE ADQUIRIDO")
-    y -= line_height + 4
-    
-    draw_line(f"Paquete: {package_display}")
-    draw_line(f"Créditos acreditados: {data.credits_amount:,}")
-    y -= line_height
-    
-    # === INFORMACIÓN DE AUDITORÍA ===
-    draw_separator()
-    c.setFont(font_name, 12)
-    c.drawString(left_margin, y, "INFORMACIÓN DE AUDITORÍA")
-    y -= line_height + 4
-    
-    draw_line("Los créditos fueron acreditados de forma idempotente")
-    draw_line("al monedero del usuario conforme al ledger interno de DoxAI.")
-    y -= 4
-    draw_line(f"Idempotency Key: {idempotency_key}")
-    y -= line_height
-    
-    # === AVISO LEGAL ===
-    draw_separator()
-    c.setFont(font_name, 12)
-    c.drawString(left_margin, y, "AVISO LEGAL")
-    y -= line_height + 4
-    
-    c.setFont(font_name, 9)
-    c.setFillColorRGB(0.3, 0.3, 0.3)
-    c.drawString(left_margin, y, "Este recibo no constituye una factura fiscal. Para efectos fiscales")
-    y -= 14
-    c.drawString(left_margin, y, "consulte a su proveedor autorizado.")
-    y -= line_height * 2
-    
+    c.setFont(font, 10)
     c.setFillColorRGB(0, 0, 0)
-    draw_line(f"Documento generado: {generated_str}", size=9)
-    draw_line(f"Hash de verificación: {doc_hash}", size=9)
     
-    # Finalizar PDF
+    bill_to = snapshot.bill_to
+    c.drawString(col2_x, section_y, bill_to.get("name", ""))
+    section_y -= 14
+    
+    if bill_to.get("email"):
+        c.drawString(col2_x, section_y, bill_to["email"])
+        section_y -= 14
+    
+    # Datos fiscales si existen
+    if bill_to.get("fiscal"):
+        fiscal = bill_to["fiscal"]
+        section_y -= 6
+        
+        c.setFont(font_bold, 9)
+        c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
+        c.drawString(col2_x, section_y, "DATOS FISCALES:")
+        section_y -= 14
+        
+        c.setFont(font, 10)
+        c.setFillColorRGB(0, 0, 0)
+        
+        if fiscal.get("rfc"):
+            c.drawString(col2_x, section_y, f"RFC: {fiscal['rfc']}")
+            section_y -= 14
+        
+        if fiscal.get("razon_social"):
+            c.drawString(col2_x, section_y, fiscal["razon_social"])
+            section_y -= 14
+        
+        if fiscal.get("regimen_fiscal"):
+            c.drawString(col2_x, section_y, f"Régimen: {fiscal['regimen_fiscal']}")
+            section_y -= 14
+        
+        if fiscal.get("domicilio_cp"):
+            c.drawString(col2_x, section_y, f"C.P.: {fiscal['domicilio_cp']}")
+    
+    y = min(y, section_y) - 30
+    draw_line()
+    
+    # === LINE ITEMS ===
+    c.setFont(font_bold, 10)
+    c.setFillColorRGB(0, 0, 0)
+    c.drawString(margin_left, y, "CONCEPTO")
+    c.drawRightString(width - margin_right - 150, y, "CRÉDITOS")
+    c.drawRightString(width - margin_right, y, "IMPORTE")
+    y -= 16
+    
+    c.setStrokeColor(COLORS["border"] or HexColor("#e5e7eb"))
+    c.setLineWidth(0.5)
+    c.line(margin_left, y + 4, width - margin_right, y + 4)
+    y -= 8
+    
+    c.setFont(font, 10)
+    for item in snapshot.line_items:
+        c.drawString(margin_left, y, item.get("description", ""))
+        c.drawRightString(width - margin_right - 150, y, f"{item.get('credits', 0):,}")
+        c.drawRightString(width - margin_right, y, _format_price(item.get("total_cents", 0), item.get("currency", "MXN")))
+        y -= 18
+    
+    y -= 10
+    draw_line()
+    
+    # === TOTALS ===
+    totals = snapshot.totals
+    totals_x = width - margin_right - 200
+    
+    # Subtotal
+    c.setFont(font, 10)
+    c.setFillColorRGB(0, 0, 0)
+    c.drawString(totals_x, y, "Subtotal:")
+    c.drawRightString(width - margin_right, y, totals.get("formatted", {}).get("subtotal", ""))
+    y -= 16
+    
+    # Tax (if any)
+    if totals.get("tax_rate", 0) > 0:
+        tax_label = f"IVA ({int(totals['tax_rate'] * 100)}%):"
+        c.drawString(totals_x, y, tax_label)
+        c.drawRightString(width - margin_right, y, totals.get("formatted", {}).get("tax", ""))
+        y -= 16
+    
+    # Total
+    c.setFont(font_bold, 12)
+    c.drawString(totals_x, y, "Total:")
+    c.drawRightString(width - margin_right, y, totals.get("formatted", {}).get("total", ""))
+    y -= 20
+    
+    # Paid badge
+    c.setFont(font_bold, 10)
+    c.setFillColor(COLORS["success"] or HexColor("#10b981"))
+    c.drawString(totals_x, y, "✓ PAGADO")
+    c.setFillColorRGB(0, 0, 0)
+    c.drawRightString(width - margin_right, y, totals.get("formatted", {}).get("paid", ""))
+    
+    y -= 40
+    draw_line()
+    
+    # === PAYMENT DETAILS ===
+    c.setFont(font_bold, 9)
+    c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
+    c.drawString(margin_left, y, "DETALLES DEL PAGO")
+    y -= 16
+    
+    payment = snapshot.payment_details
+    c.setFont(font, 9)
+    c.setFillColorRGB(0, 0, 0)
+    
+    if payment.get("provider"):
+        c.drawString(margin_left, y, f"Proveedor: {payment['provider']}")
+        y -= 14
+    
+    if payment.get("checkout_intent_id"):
+        c.drawString(margin_left, y, f"Referencia: #{payment['checkout_intent_id']}")
+        y -= 14
+    
+    if snapshot.paid_at:
+        c.drawString(margin_left, y, f"Fecha de pago: {snapshot.paid_at.strftime('%Y-%m-%d %H:%M UTC')}")
+    
+    y -= 40
+    
+    # === DISCLAIMER ===
+    c.setStrokeColor(COLORS["border"] or HexColor("#e5e7eb"))
+    c.setLineWidth(0.5)
+    c.line(margin_left, y + 10, width - margin_right, y + 10)
+    y -= 10
+    
+    c.setFont(font, 8)
+    c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
+    
+    notes = snapshot.notes
+    disclaimer = notes.get("disclaimer", "Este documento es un recibo comercial y no constituye una factura fiscal (CFDI).")
+    c.drawString(margin_left, y, disclaimer)
+    y -= 12
+    
+    terms = notes.get("terms", "Los créditos no son reembolsables ni transferibles.")
+    c.drawString(margin_left, y, terms)
+    y -= 20
+    
+    # Footer
+    c.setFont(font, 8)
+    c.drawString(margin_left, y, f"Documento generado: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    
+    # Hash de verificación
+    hash_input = f"{snapshot.invoice_number}:{snapshot.payment_details.get('checkout_intent_id', '')}"
+    doc_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16].upper()
+    c.drawRightString(width - margin_right, y, f"Hash: {doc_hash}")
+    
+    # Website footer
+    y -= 20
+    c.setFillColor(COLORS["accent"] or HexColor("#0066cc"))
+    c.drawCentredString(width / 2, y, snapshot.issuer.get("website", "https://doxai.site"))
+    
     c.showPage()
     c.save()
     
-    # Obtener bytes
     pdf_bytes = buffer.getvalue()
     buffer.close()
     
     return pdf_bytes
 
 
+def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
+    """
+    Genera PDF de recibo (legacy - para compatibilidad).
+    
+    Construye un snapshot básico y llama a generate_invoice_pdf.
+    Para nuevos usos, preferir get_or_create_invoice + generate_invoice_pdf.
+    """
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab is not installed")
+    
+    # Construir snapshot básico
+    snapshot = InvoiceSnapshot(
+        invoice_number=f"DOX-{data.completed_at.year}-{data.checkout_intent_id:04d}",
+        issued_at=data.completed_at,
+        paid_at=data.completed_at,
+        issuer={
+            "name": "JUVARE SOLUCIONES TECNOLÓGICAS S.A. DE C.V.",
+            "trade_name": "DoxAI",
+            "email": "facturacion@doxai.site",
+            "website": "https://doxai.site",
+            "address": {
+                "street": "Av. Revolución",
+                "city": "Ciudad de México",
+                "state": "CDMX",
+                "zip": "01000",
+                "country": "México",
+            },
+        },
+        bill_to={
+            "user_id": data.user_id,
+            "name": f"Usuario #{data.user_id}",
+            "email": None,
+        },
+        line_items=[
+            {
+                "description": data.package_name or f"Paquete de créditos ({data.package_id})",
+                "quantity": 1,
+                "credits": data.credits_amount,
+                "total_cents": data.price_cents,
+                "currency": data.currency,
+            }
+        ],
+        totals={
+            "subtotal_cents": data.price_cents,
+            "tax_rate": 0.0,
+            "tax_amount_cents": 0,
+            "total_cents": data.price_cents,
+            "paid_cents": data.price_cents,
+            "currency": data.currency,
+            "formatted": {
+                "subtotal": _format_price(data.price_cents, data.currency),
+                "tax": _format_price(0, data.currency),
+                "total": _format_price(data.price_cents, data.currency),
+                "paid": _format_price(data.price_cents, data.currency),
+            },
+        },
+        payment_details={
+            "provider": (data.provider or "").upper(),
+            "provider_session_id": data.provider_session_id,
+            "checkout_intent_id": data.checkout_intent_id,
+        },
+        notes={
+            "disclaimer": "Este documento es un recibo comercial y no constituye una factura fiscal (CFDI).",
+            "terms": "Los créditos no son reembolsables ni transferibles.",
+        },
+    )
+    
+    return generate_invoice_pdf(snapshot)
+
+
 __all__ = [
     "ReceiptData",
+    "InvoiceSnapshot",
     "generate_checkout_receipt_pdf",
+    "generate_invoice_pdf",
     "REPORTLAB_AVAILABLE",
 ]

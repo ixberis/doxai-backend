@@ -38,7 +38,7 @@ from app.modules.user_profile.services import ProfileService
 from app.modules.auth.services import get_current_user
 from app.shared.auth_context import extract_user_id
 
-router = APIRouter(prefix="/profile", tags=["User Profile"])
+router = APIRouter(tags=["User Profile"])
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def _profile_dto_to_response(dto) -> dict:
 # ===== Profile Routes =====
 
 @router.get(
-    "",
+    "/",
     response_model=UserProfileResponse,
     summary="Obtener perfil de usuario",
     description="Obtiene el perfil completo del usuario autenticado"
@@ -175,7 +175,7 @@ async def get_user_profile_alias(
 
 
 @router.put(
-    "",
+    "/",
     response_model=UserProfileUpdateResponse,
     summary="Actualizar perfil de usuario",
     description="Actualiza nombre y/o teléfono del usuario autenticado"
