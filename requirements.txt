@@ -11,6 +11,9 @@ pydantic-settings>=2.0.0,<3.0.0
 httpx>=0.26.0,<0.28.0
 aiohttp>=3.9.0,<4.0.0
 
+# Payments (Stripe)
+stripe>=10.0.0,<11.0.0
+
 # Validation
 email-validator>=2.0.0,<3.0.0
 
