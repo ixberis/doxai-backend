@@ -226,7 +226,7 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     col2_x = width / 2 + 20
     section_y = y
     
-    # FROM (Issuer)
+    # FROM (Issuer) - incluye RFC del emisor
     c.setFont(font_bold, 9)
     c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
     c.drawString(col1_x, section_y, "DE:")
@@ -237,15 +237,28 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     c.drawString(col1_x, section_y, snapshot.issuer.get("name", ""))
     section_y -= 14
     
+    # RFC del emisor
+    if snapshot.issuer.get("rfc"):
+        c.drawString(col1_x, section_y, f"RFC: {snapshot.issuer['rfc']}")
+        section_y -= 14
+    
     if snapshot.issuer.get("address"):
         addr = snapshot.issuer["address"]
-        addr_line = f"{addr.get('street', '')}, {addr.get('city', '')}"
-        c.drawString(col1_x, section_y, addr_line)
-        section_y -= 14
-        
-        addr_line2 = f"{addr.get('state', '')} {addr.get('zip', '')}, {addr.get('country', '')}"
-        c.drawString(col1_x, section_y, addr_line2)
-        section_y -= 14
+        # Línea 1: calle completa
+        addr_line = addr.get("street", "")
+        if addr_line:
+            c.drawString(col1_x, section_y, addr_line)
+            section_y -= 14
+        # Línea 2: ciudad, estado, CP, país
+        city = addr.get("city", "")
+        state = addr.get("state", "")
+        zip_code = addr.get("zip", "")
+        country = addr.get("country", "")
+        parts = [p for p in [city, state, zip_code, country] if p]
+        addr_line2 = ", ".join(parts)
+        if addr_line2:
+            c.drawString(col1_x, section_y, addr_line2)
+            section_y -= 14
     
     if snapshot.issuer.get("email"):
         c.drawString(col1_x, section_y, snapshot.issuer["email"])
@@ -261,40 +274,37 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     c.setFillColorRGB(0, 0, 0)
     
     bill_to = snapshot.bill_to
-    c.drawString(col2_x, section_y, bill_to.get("name", ""))
-    section_y -= 14
+    fiscal = bill_to.get("fiscal") or {}
     
-    if bill_to.get("email"):
-        c.drawString(col2_x, section_y, bill_to["email"])
+    # Nombre: preferir razon_social fiscal, si no bill_to.name
+    name_line = fiscal.get("razon_social") or bill_to.get("name", "")
+    if name_line:
+        c.drawString(col2_x, section_y, name_line)
         section_y -= 14
     
-    # Datos fiscales si existen
-    if bill_to.get("fiscal"):
-        fiscal = bill_to["fiscal"]
-        section_y -= 6
-        
-        c.setFont(font_bold, 9)
-        c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
-        c.drawString(col2_x, section_y, "DATOS FISCALES:")
+    # RFC (solo si existe en fiscal)
+    if fiscal.get("rfc"):
+        c.drawString(col2_x, section_y, f"RFC: {fiscal['rfc']}")
         section_y -= 14
-        
-        c.setFont(font, 10)
-        c.setFillColorRGB(0, 0, 0)
-        
-        if fiscal.get("rfc"):
-            c.drawString(col2_x, section_y, f"RFC: {fiscal['rfc']}")
-            section_y -= 14
-        
-        if fiscal.get("razon_social"):
-            c.drawString(col2_x, section_y, fiscal["razon_social"])
-            section_y -= 14
-        
-        if fiscal.get("regimen_fiscal"):
-            c.drawString(col2_x, section_y, f"Régimen: {fiscal['regimen_fiscal']}")
-            section_y -= 14
-        
-        if fiscal.get("domicilio_cp"):
-            c.drawString(col2_x, section_y, f"C.P.: {fiscal['domicilio_cp']}")
+    
+    # Domicilio fiscal completo (si existe)
+    if fiscal.get("domicilio"):
+        c.drawString(col2_x, section_y, fiscal["domicilio"])
+        section_y -= 14
+    elif fiscal.get("domicilio_cp"):
+        c.drawString(col2_x, section_y, f"C.P.: {fiscal['domicilio_cp']}")
+        section_y -= 14
+    
+    # Régimen fiscal (si existe)
+    if fiscal.get("regimen_fiscal"):
+        c.drawString(col2_x, section_y, f"Régimen: {fiscal['regimen_fiscal']}")
+        section_y -= 14
+    
+    # Email: preferir fiscal.email, si no bill_to.email
+    email_line = fiscal.get("email") or bill_to.get("email")
+    if email_line:
+        c.drawString(col2_x, section_y, email_line)
+        section_y -= 14
     
     y = min(y, section_y) - 30
     draw_line()
@@ -430,24 +440,28 @@ def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("ReportLab is not installed")
     
+    # ISSUER_INFO: datos fiscales reales del emisor (persona física)
+    ISSUER_INFO = {
+        "name": "Ixchel Beristáin Mendoza",
+        "trade_name": "DoxAI",
+        "rfc": "BEMI720420H72",
+        "email": "facturacion@doxai.site",
+        "website": "https://doxai.site",
+        "address": {
+            "street": "Guanajuato 229, Roma Norte, Cuauhtémoc",
+            "city": "Ciudad de México",
+            "state": "CDMX",
+            "zip": "06700",
+            "country": "México",
+        },
+    }
+    
     # Construir snapshot básico
     snapshot = InvoiceSnapshot(
         invoice_number=f"DOX-{data.completed_at.year}-{data.checkout_intent_id:04d}",
         issued_at=data.completed_at,
         paid_at=data.completed_at,
-        issuer={
-            "name": "JUVARE SOLUCIONES TECNOLÓGICAS S.A. DE C.V.",
-            "trade_name": "DoxAI",
-            "email": "facturacion@doxai.site",
-            "website": "https://doxai.site",
-            "address": {
-                "street": "Av. Revolución",
-                "city": "Ciudad de México",
-                "state": "CDMX",
-                "zip": "01000",
-                "country": "México",
-            },
-        },
+        issuer=ISSUER_INFO,
         bill_to={
             "user_id": data.user_id,
             "name": f"Usuario #{data.user_id}",

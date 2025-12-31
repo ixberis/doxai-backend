@@ -66,6 +66,19 @@ def setup_logging(
             "handlers": ["console"],
             "level": level.upper(),
         },
+        "loggers": {
+            # Silence noisy python_multipart debug logs in production
+            "python_multipart": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            "python_multipart.multipart": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+        },
     }
     
     logging.config.dictConfig(logging_config)
