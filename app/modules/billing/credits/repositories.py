@@ -135,7 +135,7 @@ class CreditTransactionRepository:
         
         tx = CreditTransaction(
             user_id=user_id,
-            tx_type=tx_type.value if isinstance(tx_type, CreditTxType) else tx_type,
+            tx_type=tx_type if isinstance(tx_type, CreditTxType) else CreditTxType(tx_type),
             credits_delta=credits_delta,
             balance_after=balance_after,
             description=description,
@@ -188,7 +188,7 @@ class CreditTransactionRepository:
         if tx_type:
             stmt = stmt.where(
                 CreditTransaction.tx_type == (
-                    tx_type.value if isinstance(tx_type, CreditTxType) else tx_type
+                    tx_type if isinstance(tx_type, CreditTxType) else CreditTxType(tx_type)
                 )
             )
         result = await session.execute(stmt)
@@ -249,6 +249,9 @@ class UsageReservationRepository:
         """
         Crea una reservación de créditos.
         """
+        # Normalizar status a enum si viene como string
+        status_enum = status if isinstance(status, ReservationStatus) else ReservationStatus(status)
+        
         reservation = UsageReservation(
             user_id=user_id,
             credits_reserved=credits_reserved,
@@ -257,7 +260,7 @@ class UsageReservationRepository:
             job_id=job_id,
             idempotency_key=idempotency_key,
             reason=reason,
-            reservation_status=status.value if isinstance(status, ReservationStatus) else status,
+            reservation_status=status_enum,
             reservation_expires_at=expires_at,
         )
         session.add(reservation)
@@ -318,9 +321,9 @@ class UsageReservationRepository:
         """
         now = datetime.now(timezone.utc)
         
-        reservation.reservation_status = (
-            new_status.value if isinstance(new_status, ReservationStatus) else new_status
-        )
+        # Normalizar a enum si viene como string
+        status_enum = new_status if isinstance(new_status, ReservationStatus) else ReservationStatus(new_status)
+        reservation.reservation_status = status_enum
         reservation.updated_at = now
         
         if credits_consumed is not None:
@@ -349,8 +352,8 @@ class UsageReservationRepository:
             .where(
                 UsageReservation.user_id == user_id,
                 UsageReservation.reservation_status.in_([
-                    ReservationStatus.PENDING.value,
-                    ReservationStatus.ACTIVE.value,
+                    ReservationStatus.PENDING,
+                    ReservationStatus.ACTIVE,
                 ]),
             )
             .order_by(UsageReservation.created_at.desc())

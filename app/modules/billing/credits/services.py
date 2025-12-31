@@ -425,13 +425,13 @@ class ReservationService:
             return False
         
         # Idempotencia: si ya está consumed, retornar OK
-        if reservation.reservation_status == ReservationStatus.CONSUMED.value:
+        if reservation.reservation_status == ReservationStatus.CONSUMED:
             logger.debug("Reservation %s already consumed (idempotent)", reservation.id)
             return True
         
         if reservation.reservation_status not in [
-            ReservationStatus.ACTIVE.value,
-            ReservationStatus.PENDING.value,
+            ReservationStatus.ACTIVE,
+            ReservationStatus.PENDING,
         ]:
             logger.warning(
                 "Reservation %s not consumable: status=%s",
@@ -449,7 +449,7 @@ class ReservationService:
                 reservation.id,
             )
             # Actualizar estado si no está actualizado
-            if reservation.reservation_status != ReservationStatus.CONSUMED.value:
+            if reservation.reservation_status != ReservationStatus.CONSUMED:
                 await self.reservation_repo.update_status(
                     session, reservation, ReservationStatus.CONSUMED,
                     credits_consumed=abs(existing_tx.credits_delta),
@@ -525,8 +525,8 @@ class ReservationService:
             return False
         
         if reservation.reservation_status not in [
-            ReservationStatus.ACTIVE.value,
-            ReservationStatus.PENDING.value,
+            ReservationStatus.ACTIVE,
+            ReservationStatus.PENDING,
         ]:
             logger.debug(
                 "Reservation %s already processed: status=%s",

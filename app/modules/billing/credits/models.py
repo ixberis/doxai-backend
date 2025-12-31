@@ -156,11 +156,12 @@ class CreditTransaction(Base):
         nullable=True,
     )
     
-    tx_type: Mapped[str] = mapped_column(
+    tx_type: Mapped[CreditTxType] = mapped_column(
         SQLEnum(
             CreditTxType,
             name="credit_tx_type_enum",
             create_type=False,
+            values_callable=lambda e: [x.value for x in e],
         ),
         nullable=False,
     )
@@ -282,11 +283,12 @@ class UsageReservation(Base):
         nullable=True,
     )
     
-    reservation_status: Mapped[str] = mapped_column(
+    reservation_status: Mapped[ReservationStatus] = mapped_column(
         SQLEnum(
             ReservationStatus,
             name="reservation_status_enum",
             create_type=False,
+            values_callable=lambda e: [x.value for x in e],
         ),
         nullable=False,
     )
