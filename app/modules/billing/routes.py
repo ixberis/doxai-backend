@@ -43,6 +43,8 @@ from .schemas import (
     CheckoutHistoryItem,
     CheckoutHistoryResponse,
     CheckoutReceiptResponse,
+    ReceiptListItem,
+    ReceiptListResponse,
 )
 from .repository import CheckoutIntentRepository
 from .models import CheckoutIntent, CheckoutIntentStatus
@@ -697,6 +699,119 @@ async def get_checkout_receipt_pdf(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
+    )
+
+
+# =============================================================================
+# Receipts List Endpoint (Auth requerido) - Solo completados
+# =============================================================================
+
+@router.get(
+    "/receipts",
+    response_model=ReceiptListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Listar recibos del usuario",
+    description="""
+    Lista los recibos de compras completadas del usuario autenticado.
+    
+    Solo incluye checkouts con status 'completed'.
+    Ordenados por fecha de compra descendente (más recientes primero).
+    Soporta paginación basada en cursor opcional.
+    """,
+)
+async def list_receipts(
+    status_filter: str = Query(default="completed", description="Filtrar por status (solo 'completed' soportado)"),
+    limit: int = Query(default=50, ge=1, le=100, description="Límite por página"),
+    cursor: Optional[str] = Query(default=None, description="Cursor para paginación"),
+    session: AsyncSession = Depends(get_async_session),
+    user_id_str: str = Depends(get_current_user_id),
+) -> ReceiptListResponse:
+    """
+    Lista los recibos de compras completadas.
+    
+    Args:
+        status_filter: Solo 'completed' está soportado
+        limit: Límite de resultados (1-100)
+        cursor: Cursor opcional para paginación
+        session: Sesión de base de datos
+        user_id_str: User ID del JWT
+        
+    Returns:
+        ReceiptListResponse con items y next_cursor
+        
+    Raises:
+        401: No autenticado
+    """
+    # Convertir user_id a int
+    try:
+        user_id = int(user_id_str)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Solo soportamos status=completed para recibos
+    if status_filter != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_status_filter",
+                "message": "Only 'completed' status is supported for receipts",
+            },
+        )
+    
+    # Parsear cursor si existe (es el ID del último item)
+    cursor_id: Optional[int] = None
+    if cursor:
+        try:
+            cursor_id = int(cursor)
+        except ValueError:
+            pass  # Ignorar cursor inválido
+    
+    # Query base: solo checkouts completados del usuario
+    query = (
+        select(CheckoutIntent)
+        .where(
+            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.status == CheckoutIntentStatus.COMPLETED.value,
+        )
+        .order_by(CheckoutIntent.updated_at.desc(), CheckoutIntent.id.desc())
+        .limit(limit + 1)  # +1 para detectar si hay más páginas
+    )
+    
+    # Aplicar cursor si existe
+    if cursor_id:
+        query = query.where(CheckoutIntent.id < cursor_id)
+    
+    result = await session.execute(query)
+    intents = list(result.scalars().all())
+    
+    # Determinar si hay siguiente página
+    has_more = len(intents) > limit
+    if has_more:
+        intents = intents[:limit]  # Recortar al límite real
+    
+    # Construir respuesta
+    items = [
+        ReceiptListItem(
+            intent_id=intent.id,
+            status=intent.status,
+            credits=intent.credits_amount,
+            amount=intent.price_cents,
+            currency=intent.currency.lower(),
+            purchased_at=intent.updated_at,  # updated_at es cuando se completó
+        )
+        for intent in intents
+    ]
+    
+    # Cursor para siguiente página (último ID)
+    next_cursor = str(intents[-1].id) if has_more and intents else None
+    
+    return ReceiptListResponse(
+        items=items,
+        next_cursor=next_cursor,
     )
 
 

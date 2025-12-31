@@ -108,6 +108,8 @@ class CheckoutHistoryItem(BaseModel):
     id: int = Field(description="ID del checkout intent.")
     status: str = Field(description="Estado: created, pending, completed, expired, cancelled.")
     credits_amount: int = Field(description="Cantidad de créditos.")
+    price_cents: int = Field(description="Precio en centavos.")
+    currency: str = Field(description="Moneda (USD, MXN, etc.).")
     provider: Optional[str] = Field(default=None, description="Proveedor de pago.")
     created_at: datetime = Field(description="Fecha de creación.")
     updated_at: datetime = Field(description="Última actualización.")
@@ -120,6 +122,24 @@ class CheckoutHistoryResponse(BaseModel):
     total: int = Field(description="Total de checkouts del usuario.")
     limit: int = Field(description="Límite por página.")
     offset: int = Field(description="Offset actual.")
+
+
+class ReceiptListItem(BaseModel):
+    """Item en la lista de recibos (solo checkouts completados)."""
+    
+    intent_id: int = Field(description="ID del checkout intent.")
+    status: str = Field(description="Estado (siempre 'completed').")
+    credits: int = Field(description="Créditos adquiridos.")
+    amount: int = Field(description="Monto en centavos.")
+    currency: str = Field(description="Moneda (USD, MXN, etc.).")
+    purchased_at: datetime = Field(description="Fecha de compra.")
+
+
+class ReceiptListResponse(BaseModel):
+    """Respuesta del listado de recibos."""
+    
+    items: list[ReceiptListItem] = Field(description="Lista de recibos.")
+    next_cursor: Optional[str] = Field(default=None, description="Cursor para siguiente página.")
 
 
 class CheckoutReceiptResponse(BaseModel):
@@ -176,4 +196,6 @@ __all__ = [
     "CheckoutHistoryItem",
     "CheckoutHistoryResponse",
     "CheckoutReceiptResponse",
+    "ReceiptListItem",
+    "ReceiptListResponse",
 ]
