@@ -106,18 +106,15 @@ def build_receipt_urls(token: str, intent_id: Optional[int] = None) -> Dict[str,
     
     Args:
         token: Token público del invoice
-        intent_id: ID del checkout intent (para view_url autenticado)
+        intent_id: ID del checkout intent (ignorado, se mantiene por compatibilidad)
         
     Returns:
         Dict con view_url, pdf_url y json_url
     """
     base_url = get_app_public_base_url().rstrip("/")
     
-    # view_url apunta a ruta real de la UI (autenticada con intent_id)
-    if intent_id:
-        view_url = f"{base_url}/billing/credits?status=success&intent_id={intent_id}"
-    else:
-        view_url = f"{base_url}/billing/receipts"
+    # view_url siempre apunta a la página de recibos
+    view_url = f"{base_url}/billing/receipts"
     
     return {
         "view_url": view_url,
