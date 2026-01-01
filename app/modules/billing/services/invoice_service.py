@@ -71,15 +71,25 @@ def _build_bill_to(
     """
     Construye sección "Bill to" del recibo.
     
-    Caso A: Si hay perfil fiscal activo → datos fiscales completos.
-    Caso B: Si no hay perfil → nombre + email del usuario.
-    Caso C: Edge case (sin datos) → "Usuario #{id}".
+    Lógica para determinar el nombre del receptor:
+    - Si hay perfil fiscal activo/verificado:
+      - Si use_razon_social=True → usar razon_social
+      - Si use_razon_social=False → usar user_name
+    - Si no hay perfil → user_name o email del usuario
+    - Edge case (sin datos) → "Usuario #{id}"
     """
     # Caso A: Tax profile activo/verificado
     if tax_profile and tax_profile.status in ("active", "verified"):
+        # Determinar nombre según use_razon_social
+        if tax_profile.use_razon_social and tax_profile.razon_social:
+            recipient_name = tax_profile.razon_social
+        else:
+            # use_razon_social=False → usar nombre del usuario
+            recipient_name = user_name or f"Usuario #{user_id}"
+        
         return {
             "user_id": user_id,
-            "name": tax_profile.razon_social or user_name or f"Usuario #{user_id}",
+            "name": recipient_name,
             "rfc": tax_profile.rfc,
             "tax_regime": tax_profile.regimen_fiscal_clave,
             "postal_code": tax_profile.domicilio_fiscal_cp,

@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # Regex para RFC mexicano (persona física: 13 chars, moral: 12 chars)
@@ -42,6 +42,10 @@ class TaxProfileBase(BaseModel):
         None, 
         max_length=255,
         description="Razón social o nombre fiscal"
+    )
+    use_razon_social: bool = Field(
+        False,
+        description="Si true, usar razón social en recibos (Persona Moral); si false, usar nombre del usuario."
     )
     regimen_fiscal_clave: Optional[str] = Field(
         None, 
@@ -95,6 +99,16 @@ class TaxProfileBase(BaseModel):
         if v not in ALLOWED_REGIMENES:
             raise ValueError("Régimen fiscal inválido (clave SAT no reconocida)")
         return v
+    
+    @model_validator(mode='after')
+    def validate_razon_social_required(self) -> 'TaxProfileBase':
+        """Si use_razon_social=True, razon_social no puede estar vacío."""
+        if self.use_razon_social:
+            if not self.razon_social or not self.razon_social.strip():
+                raise ValueError(
+                    "Razón social es obligatoria cuando 'Tengo razón social' está activado."
+                )
+        return self
 
 
 class TaxProfileUpsertRequest(TaxProfileBase):

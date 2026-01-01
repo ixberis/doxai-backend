@@ -141,6 +141,13 @@ class UserTaxProfile(Base):
         doc="Email para envío de facturas.",
     )
     
+    # Flag: ¿usar razón social en recibos? (Persona Moral)
+    use_razon_social: Mapped[bool] = mapped_column(
+        nullable=False,
+        default=False,
+        doc="Si true, usar razon_social en recibos; si false, usar nombre del usuario.",
+    )
+    
     # Uso CFDI predeterminado (para futuro)
     uso_cfdi_default: Mapped[Optional[str]] = mapped_column(
         String(10),

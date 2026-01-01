@@ -84,6 +84,7 @@ async def upsert_tax_profile(
         profile = UserTaxProfile(
             user_id=user_id,
             status=TaxProfileStatus.DRAFT.value,
+            use_razon_social=False,
         )
         db.add(profile)
     
