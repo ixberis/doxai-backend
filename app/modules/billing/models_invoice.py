@@ -9,6 +9,7 @@ No es un CFDI - solo recibo comercial con datos fiscales opcionales.
 
 Autor: DoxAI
 Fecha: 2025-12-31
+Actualizado: 2026-01-01 (public_token para enlaces públicos)
 """
 
 from __future__ import annotations
@@ -104,12 +105,44 @@ class BillingInvoice(Base):
         onupdate=func.now(),
     )
     
+    # =========================================================================
+    # Campos para enlaces públicos (compartir recibo sin login)
+    # =========================================================================
+    
+    public_token: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        unique=True,
+        index=True,
+        doc="Token URL-safe para acceso público al recibo sin autenticación.",
+    )
+    
+    public_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="Fecha de expiración del token público.",
+    )
+    
+    purchase_email_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="Timestamp de envío del email de confirmación de compra.",
+    )
+    
     __table_args__ = (
         Index("ix_billing_invoices_user_issued", "user_id", "issued_at"),
     )
     
     def __repr__(self) -> str:
         return f"<BillingInvoice id={self.id} number={self.invoice_number} user={self.user_id}>"
+    
+    def is_public_token_valid(self) -> bool:
+        """Verifica si el token público existe y no ha expirado."""
+        if not self.public_token:
+            return False
+        if not self.public_token_expires_at:
+            return True  # Sin expiración = siempre válido
+        return datetime.now(self.public_token_expires_at.tzinfo) < self.public_token_expires_at
 
 
 __all__ = ["BillingInvoice"]

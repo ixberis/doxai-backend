@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirmación de compra - DoxAI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #ffffff;
+    }
+    .header {
+      text-align: center;
+      padding: 20px 0;
+      border-bottom: 2px solid #4A6CF7;
+    }
+    .logo {
+      max-width: 120px;
+    }
+    h1 {
+      color: #22c55e;
+      margin-top: 20px;
+      font-size: 24px;
+    }
+    .success-icon {
+      font-size: 48px;
+      color: #22c55e;
+    }
+    .content {
+      padding: 30px 20px;
+    }
+    .summary-box {
+      background-color: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+    }
+    .summary-title {
+      font-weight: bold;
+      color: #1e293b;
+      margin-bottom: 15px;
+      font-size: 16px;
+    }
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .summary-row:last-child {
+      border-bottom: none;
+    }
+    .summary-label {
+      color: #64748b;
+    }
+    .summary-value {
+      color: #1e293b;
+      font-weight: 500;
+    }
+    .total-row {
+      background-color: #f0fdf4;
+      padding: 12px;
+      border-radius: 6px;
+      margin-top: 15px;
+    }
+    .total-label {
+      color: #166534;
+      font-weight: bold;
+    }
+    .total-value {
+      color: #166534;
+      font-weight: bold;
+      font-size: 18px;
+    }
+    .credits-highlight {
+      background: linear-gradient(135deg, #4A6CF7, #6366f1);
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      text-align: center;
+      margin: 20px 0;
+    }
+    .credits-number {
+      font-size: 32px;
+      font-weight: bold;
+      display: block;
+    }
+    .credits-label {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+    .button-container {
+      text-align: center;
+      margin: 30px 0;
+    }
+    .button {
+      display: inline-block;
+      background-color: #4A6CF7;
+      color: white !important;
+      padding: 14px 28px;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: bold;
+      margin: 5px;
+    }
+    .button-secondary {
+      background-color: #64748b;
+    }
+    .transaction-info {
+      background-color: #fefce8;
+      border-left: 4px solid #eab308;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 14px;
+    }
+    .footer {
+      text-align: center;
+      font-size: 12px;
+      color: #94a3b8;
+      padding: 20px;
+      border-top: 1px solid #e2e8f0;
+    }
+    .disclaimer {
+      font-style: italic;
+      color: #94a3b8;
+      font-size: 12px;
+      margin-top: 20px;
+    }
+    /* Table fallback for email clients */
+    .summary-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .summary-table td {
+      padding: 8px 0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .summary-table td:last-child {
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="https://doxai.vercel.app/logo.png" alt="DoxAI Logo" class="logo">
+      <div class="success-icon">✓</div>
+      <h1>¡Compra exitosa!</h1>
+    </div>
+
+    <div class="content">
+      <p>Hola <strong>{{ user_name }}</strong>,</p>
+
+      <p>¡Gracias por tu compra! Tu pago ha sido procesado exitosamente y los créditos ya están disponibles en tu cuenta.</p>
+
+      <div class="credits-highlight">
+        <span class="credits-number">{{ credits_amount }}</span>
+        <span class="credits-label">créditos agregados a tu cuenta</span>
+      </div>
+
+      <div class="summary-box">
+        <div class="summary-title">Resumen de compra</div>
+        <table class="summary-table">
+          <tr>
+            <td class="summary-label">Paquete</td>
+            <td class="summary-value">{{ package_name }}</td>
+          </tr>
+          <tr>
+            <td class="summary-label">Créditos</td>
+            <td class="summary-value">{{ credits_amount }}</td>
+          </tr>
+          <tr>
+            <td class="summary-label">Fecha de pago</td>
+            <td class="summary-value">{{ payment_date }}</td>
+          </tr>
+          <tr>
+            <td class="summary-label">Método de pago</td>
+            <td class="summary-value">{{ provider }}</td>
+          </tr>
+        </table>
+        <div class="total-row">
+          <table width="100%">
+            <tr>
+              <td class="total-label">Total pagado</td>
+              <td class="total-value" style="text-align: right;">{{ amount }}</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="transaction-info">
+        <strong>ID de transacción:</strong> {{ transaction_id }}<br>
+        <strong>Número de recibo:</strong> {{ invoice_number }}
+      </div>
+
+      <div class="button-container">
+        <a href="{{ receipt_view_url }}" class="button">Ver recibo</a>
+        <a href="{{ receipt_pdf_url }}" class="button button-secondary">Descargar PDF</a>
+      </div>
+
+      <p>Si el botón no funciona, copia y pega este enlace en tu navegador:</p>
+      <p style="word-break: break-all; font-size: 12px; color: #64748b;">{{ receipt_pdf_url }}</p>
+
+      <p class="disclaimer">
+        * Este documento es un recibo comercial y no constituye una factura fiscal (CFDI).
+        Los créditos no son reembolsables ni transferibles.
+      </p>
+    </div>
+
+    <div class="footer">
+      <p>Este es un correo automático, por favor no respondas a esta dirección.</p>
+      <p>&copy; {{ current_year }} DoxAI. Todos los derechos reservados.</p>
+      <p><a href="{{ frontend_url }}" style="color: #4A6CF7;">doxai.site</a></p>
+    </div>
+  </div>
+</body>
+</html>

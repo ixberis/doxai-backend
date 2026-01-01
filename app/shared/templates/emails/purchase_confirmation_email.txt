@@ -1,0 +1,47 @@
+CONFIRMACIÓN DE COMPRA - DoxAI
+================================
+
+Hola {{ user_name }},
+
+¡Gracias por tu compra! Tu pago ha sido procesado exitosamente.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRÉDITOS AGREGADOS: {{ credits_amount }}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RESUMEN DE COMPRA
+-----------------
+Paquete:          {{ package_name }}
+Créditos:         {{ credits_amount }}
+Fecha de pago:    {{ payment_date }}
+Método de pago:   {{ provider }}
+
+TOTAL PAGADO:     {{ amount }}
+
+DATOS DE TRANSACCIÓN
+--------------------
+ID de transacción:   {{ transaction_id }}
+Número de recibo:    {{ invoice_number }}
+
+VER TU RECIBO
+-------------
+Ver recibo en línea:
+{{ receipt_view_url }}
+
+Descargar recibo PDF:
+{{ receipt_pdf_url }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+* Este documento es un recibo comercial y no constituye una factura fiscal (CFDI).
+* Los créditos no son reembolsables ni transferibles.
+
+Gracias por elegir DoxAI.
+
+Atentamente,
+El equipo de DoxAI
+
+--
+Este es un correo automático, por favor no respondas a esta dirección.
+© {{ current_year }} DoxAI. Todos los derechos reservados.
+https://doxai.site

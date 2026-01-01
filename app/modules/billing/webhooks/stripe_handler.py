@@ -5,10 +5,12 @@ backend/app/modules/billing/webhooks/stripe_handler.py
 Handler de webhooks Stripe para billing (checkout de créditos).
 
 Procesa eventos:
-- checkout.session.completed: Aplica créditos al usuario
+- checkout.session.completed: Aplica créditos al usuario + envía email
+- checkout.session.expired: Marca intent como expirado
 
 Autor: DoxAI
 Fecha: 2025-12-29
+Actualizado: 2026-01-01 (email de confirmación de compra)
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import logging
 import os
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.config.settings_payments import get_payments_settings
@@ -65,6 +68,70 @@ def verify_stripe_webhook_signature(
     return event
 
 
+async def _send_purchase_email_best_effort(
+    session: AsyncSession,
+    intent_id: int,
+    user_id: int,
+) -> bool:
+    """
+    Envía email de confirmación de compra (best-effort).
+    
+    No propaga excepciones - solo loguea errores.
+    
+    Args:
+        session: Sesión de base de datos
+        intent_id: ID del checkout intent
+        user_id: ID del usuario
+        
+    Returns:
+        True si se envió, False si falló o ya estaba enviado
+    """
+    try:
+        from app.modules.billing.services.invoice_service import get_invoice_by_intent_id
+        from app.modules.billing.services.purchase_email_service import send_purchase_confirmation_email
+        from app.modules.billing.repository import CheckoutIntentRepository
+        from app.modules.auth.models import AppUser
+        
+        # Obtener invoice
+        invoice = await get_invoice_by_intent_id(session, intent_id)
+        if not invoice:
+            logger.warning("No invoice found for email: intent=%s", intent_id)
+            return False
+        
+        # Obtener intent
+        repo = CheckoutIntentRepository()
+        intent = await repo.get_by_id(session, intent_id)
+        if not intent:
+            logger.warning("Intent not found for email: intent=%s", intent_id)
+            return False
+        
+        # Obtener datos del usuario
+        user_result = await session.execute(
+            select(AppUser).where(AppUser.user_id == user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        
+        if not user or not user.user_email:
+            logger.warning("User or email not found for purchase email: user=%s", user_id)
+            return False
+        
+        # Enviar email (idempotente)
+        return await send_purchase_confirmation_email(
+            session=session,
+            invoice=invoice,
+            intent=intent,
+            user_email=user.user_email,
+            user_name=user.user_full_name,
+        )
+        
+    except Exception as e:
+        logger.error(
+            "purchase_confirmation_email_failed: intent=%s user=%s error=%s",
+            intent_id, user_id, str(e),
+        )
+        return False
+
+
 async def handle_stripe_checkout_completed(
     session: AsyncSession,
     event: stripe.Event,
@@ -73,7 +140,7 @@ async def handle_stripe_checkout_completed(
     Procesa evento checkout.session.completed de Stripe.
     
     Extrae el checkout_intent_id de metadata y aplica los créditos
-    al ledger de forma idempotente.
+    al ledger de forma idempotente. Luego envía email de confirmación.
     
     Args:
         session: Sesión de base de datos
@@ -177,6 +244,13 @@ async def handle_stripe_checkout_completed(
                 log_msg = "[completed_after_expired] " + log_msg
             logger.info(log_msg, intent_id, intent.credits_amount)
             
+            # ─────────────────────────────────────────────────────────────
+            # ENVIAR EMAIL DE CONFIRMACIÓN (best-effort, no bloquea webhook)
+            # ─────────────────────────────────────────────────────────────
+            email_sent = await _send_purchase_email_best_effort(
+                session, intent_id, intent.user_id
+            )
+            
             return {
                 "status": "success",
                 "credits_applied": True,
@@ -184,18 +258,42 @@ async def handle_stripe_checkout_completed(
                 "checkout_intent_id": intent_id,
                 "stripe_session_id": stripe_session_id,
                 "was_expired": was_expired,
+                "purchase_email_sent": email_sent,
             }
         else:
             logger.info(
                 "Credits already applied for intent %s (idempotent)",
                 intent_id,
             )
+            
+            # ─────────────────────────────────────────────────────────────
+            # REINTENTAR EMAIL SI NO SE ENVIÓ (webhook reintentado)
+            # ─────────────────────────────────────────────────────────────
+            email_sent = False
+            try:
+                from app.modules.billing.services.invoice_service import get_invoice_by_intent_id
+                invoice = await get_invoice_by_intent_id(session, intent_id)
+                if invoice and not invoice.purchase_email_sent_at:
+                    logger.info(
+                        "Retrying purchase email on idempotent webhook: intent=%s",
+                        intent_id,
+                    )
+                    email_sent = await _send_purchase_email_best_effort(
+                        session, intent_id, intent.user_id
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to retry email on idempotent webhook: intent=%s error=%s",
+                    intent_id, str(e),
+                )
+            
             return {
                 "status": "success",
                 "credits_applied": False,
                 "reason": "already_processed",
                 "checkout_intent_id": intent_id,
                 "stripe_session_id": stripe_session_id,
+                "purchase_email_sent": email_sent,
             }
             
     except ValueError as e:
