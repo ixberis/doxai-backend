@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING, TypeAlias
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,11 +29,18 @@ from app.modules.billing.models import CheckoutIntentStatus
 
 # Import condicional de stripe para permitir tests sin el módulo
 try:
-    import stripe
+    import stripe as stripe_sdk
     STRIPE_AVAILABLE = True
 except ImportError:
-    stripe = None  # type: ignore
+    stripe_sdk = None  # type: ignore[assignment]
     STRIPE_AVAILABLE = False
+
+# Type alias para evitar warnings de Pylance cuando stripe_sdk=None
+if TYPE_CHECKING:
+    import stripe as stripe_types
+    StripeEvent: TypeAlias = stripe_types.Event
+else:
+    StripeEvent: TypeAlias = Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +49,7 @@ def verify_stripe_webhook_signature(
     payload: bytes,
     sig_header: str,
     webhook_secret: Optional[str] = None,
-) -> stripe.Event:
+) -> StripeEvent:
     """
     Verifica la firma de un webhook de Stripe.
     
@@ -52,19 +59,23 @@ def verify_stripe_webhook_signature(
         webhook_secret: Secret del webhook (si no se provee, usa env/settings)
         
     Returns:
-        stripe.Event verificado
+        StripeEvent verificado
         
     Raises:
-        stripe.error.SignatureVerificationError: Si la firma es inválida
+        SignatureVerificationError: Si la firma es inválida
         ValueError: Si no hay webhook secret configurado
+        RuntimeError: Si stripe SDK no está instalado
     """
+    if not STRIPE_AVAILABLE or stripe_sdk is None:
+        raise RuntimeError("stripe SDK not installed")
+    
     settings = get_payments_settings()
     secret = webhook_secret or settings.stripe_webhook_secret or os.getenv("STRIPE_WEBHOOK_SECRET")
     
     if not secret:
         raise ValueError("STRIPE_WEBHOOK_SECRET not configured")
     
-    event = stripe.Webhook.construct_event(payload, sig_header, secret)
+    event = stripe_sdk.Webhook.construct_event(payload, sig_header, secret)
     return event
 
 
@@ -87,18 +98,11 @@ async def _send_purchase_email_best_effort(
         True si se envió, False si falló o ya estaba enviado
     """
     try:
-        from app.modules.billing.services.invoice_service import get_invoice_by_intent_id
+        from app.modules.billing.services.invoice_service import get_or_create_invoice
         from app.modules.billing.services.purchase_email_service import send_purchase_confirmation_email
-        from app.modules.billing.repository import CheckoutIntentRepository
         from app.modules.auth.models import AppUser
         
-        # Obtener invoice
-        invoice = await get_invoice_by_intent_id(session, intent_id)
-        if not invoice:
-            logger.warning("No invoice found for email: intent=%s", intent_id)
-            return False
-        
-        # Obtener intent
+        # Obtener intent primero (reutiliza el repo global)
         repo = CheckoutIntentRepository()
         intent = await repo.get_by_id(session, intent_id)
         if not intent:
@@ -114,6 +118,15 @@ async def _send_purchase_email_best_effort(
         if not user or not user.user_email:
             logger.warning("User or email not found for purchase email: user=%s", user_id)
             return False
+        
+        # Crear o recuperar invoice (idempotente)
+        invoice = await get_or_create_invoice(
+            session=session,
+            intent=intent,
+            user_email=user.user_email,
+            user_name=user.user_full_name,
+        )
+        logger.info("Invoice ready for email: invoice_id=%s intent=%s", invoice.id, intent_id)
         
         # Enviar email (idempotente)
         return await send_purchase_confirmation_email(
@@ -134,7 +147,7 @@ async def _send_purchase_email_best_effort(
 
 async def handle_stripe_checkout_completed(
     session: AsyncSession,
-    event: stripe.Event,
+    event: StripeEvent,
 ) -> Dict[str, Any]:
     """
     Procesa evento checkout.session.completed de Stripe.
@@ -268,24 +281,13 @@ async def handle_stripe_checkout_completed(
             
             # ─────────────────────────────────────────────────────────────
             # REINTENTAR EMAIL SI NO SE ENVIÓ (webhook reintentado)
+            # _send_purchase_email_best_effort hace get_or_create_invoice
+            # y send_purchase_confirmation_email es idempotente por
+            # purchase_email_sent_at, así que es seguro llamarlo siempre.
             # ─────────────────────────────────────────────────────────────
-            email_sent = False
-            try:
-                from app.modules.billing.services.invoice_service import get_invoice_by_intent_id
-                invoice = await get_invoice_by_intent_id(session, intent_id)
-                if invoice and not invoice.purchase_email_sent_at:
-                    logger.info(
-                        "Retrying purchase email on idempotent webhook: intent=%s",
-                        intent_id,
-                    )
-                    email_sent = await _send_purchase_email_best_effort(
-                        session, intent_id, intent.user_id
-                    )
-            except Exception as e:
-                logger.warning(
-                    "Failed to retry email on idempotent webhook: intent=%s error=%s",
-                    intent_id, str(e),
-                )
+            email_sent = await _send_purchase_email_best_effort(
+                session, intent_id, intent.user_id
+            )
             
             return {
                 "status": "success",
@@ -311,7 +313,7 @@ async def handle_stripe_checkout_completed(
 
 async def handle_stripe_checkout_expired(
     session: AsyncSession,
-    event: stripe.Event,
+    event: StripeEvent,
 ) -> Dict[str, Any]:
     """
     Procesa evento checkout.session.expired de Stripe.
@@ -412,7 +414,7 @@ async def handle_stripe_checkout_expired(
 
 async def handle_stripe_billing_webhook(
     session: AsyncSession,
-    event: stripe.Event,
+    event: StripeEvent,
 ) -> Dict[str, Any]:
     """
     Router principal para webhooks de billing Stripe.

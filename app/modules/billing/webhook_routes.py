@@ -28,10 +28,10 @@ from .webhooks.stripe_handler import (
 
 # Import condicional de stripe para permitir tests sin el módulo
 try:
-    import stripe
+    import stripe as stripe_sdk
     STRIPE_AVAILABLE = True
 except ImportError:
-    stripe = None  # type: ignore
+    stripe_sdk = None  # type: ignore[assignment]
     STRIPE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ async def stripe_billing_webhook(
             logger.warning("INSECURE: Skipping webhook signature verification")
             import json
             event_data = json.loads(raw_body)
-            event = stripe.Event.construct_from(event_data, stripe.api_key)
+            event = stripe_sdk.Event.construct_from(event_data, stripe_sdk.api_key)
         else:
             event = verify_stripe_webhook_signature(raw_body, sig_header)
     except ValueError as e:
@@ -91,7 +91,7 @@ async def stripe_billing_webhook(
         )
     except Exception as e:
         # Handle SignatureVerificationError when stripe is available
-        if STRIPE_AVAILABLE and isinstance(e, stripe.error.SignatureVerificationError):
+        if STRIPE_AVAILABLE and stripe_sdk and isinstance(e, stripe_sdk.error.SignatureVerificationError):
             logger.warning("Invalid webhook signature: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
