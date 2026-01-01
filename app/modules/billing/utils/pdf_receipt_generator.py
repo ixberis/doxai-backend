@@ -71,6 +71,7 @@ class InvoiceSnapshot:
     totals: Dict[str, Any]
     payment_details: Dict[str, Any]
     notes: Dict[str, Any] = field(default_factory=dict)
+    receipt_from: Dict[str, Any] = field(default_factory=dict)
 
 
 # Registrar fuente Unicode al importar el módulo
@@ -319,7 +320,14 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     section_y_left = y
     section_y_right = y
     
-    # FROM (Issuer) - incluye RFC del emisor
+    # FROM (receipt_from) - recibo comercial simple, NO fiscal
+    # Usar receipt_from si existe, si no fallback a constantes
+    from_info = snapshot.receipt_from if snapshot.receipt_from else {
+        "name": "JUVARE",
+        "country": "México",
+        "email": "doxai@juvare.mx",
+    }
+    
     c.setFont(font_bold, 9)
     c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
     c.drawString(col1_x, section_y_left, "DE:")
@@ -328,40 +336,17 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     c.setFont(font, 10)
     c.setFillColorRGB(0, 0, 0)
     
-    # Nombre emisor (con wrap para nombres largos)
-    issuer_name = snapshot.issuer.get("name", "")
-    if issuer_name:
-        section_y_left = _draw_wrapped_text(c, issuer_name, col1_x, section_y_left, col_width, font, 10, 14)
+    # Name (JUVARE)
+    c.drawString(col1_x, section_y_left, from_info.get("name", "JUVARE"))
+    section_y_left -= 14
     
-    # RFC del emisor
-    if snapshot.issuer.get("rfc"):
-        c.setFont(font, 10)
-        c.drawString(col1_x, section_y_left, f"RFC: {snapshot.issuer['rfc']}")
-        section_y_left -= 14
+    # Country
+    c.drawString(col1_x, section_y_left, from_info.get("country", "México"))
+    section_y_left -= 14
     
-    if snapshot.issuer.get("address"):
-        addr = snapshot.issuer["address"]
-        # Línea 1: calle completa (con wrap)
-        addr_line = addr.get("street", "")
-        if addr_line:
-            c.setFillColorRGB(0, 0, 0)
-            section_y_left = _draw_wrapped_text(c, addr_line, col1_x, section_y_left, col_width, font, 10, 14)
-        # Línea 2: ciudad, estado, CP, país
-        city = addr.get("city", "")
-        state = addr.get("state", "")
-        zip_code = addr.get("zip", "")
-        country = addr.get("country", "")
-        parts = [p for p in [city, state, zip_code, country] if p]
-        addr_line2 = ", ".join(parts)
-        if addr_line2:
-            c.setFont(font, 10)
-            c.drawString(col1_x, section_y_left, addr_line2)
-            section_y_left -= 14
-    
-    # Email del emisor (con wrap para emails largos)
-    if snapshot.issuer.get("email"):
-        c.setFillColorRGB(0, 0, 0)
-        section_y_left = _draw_wrapped_text(c, snapshot.issuer["email"], col1_x, section_y_left, col_width, font, 10, 14)
+    # Email
+    c.drawString(col1_x, section_y_left, from_info.get("email", "doxai@juvare.mx"))
+    section_y_left -= 14
     
     # TO (Bill to)
     c.setFont(font_bold, 9)
@@ -551,20 +536,17 @@ def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("ReportLab is not installed")
     
-    # ISSUER_INFO: datos fiscales reales del emisor (persona física)
+    # Branding para header del PDF
     ISSUER_INFO = {
-        "name": "Ixchel Beristáin Mendoza",
         "trade_name": "DoxAI",
-        "rfc": "BEMI720420H72",
-        "email": "facturacion@doxai.site",
         "website": "https://doxai.site",
-        "address": {
-            "street": "Guanajuato 229, Roma Norte, Cuauhtémoc",
-            "city": "Ciudad de México",
-            "state": "CDMX",
-            "zip": "06700",
-            "country": "México",
-        },
+    }
+    
+    # Datos comerciales para bloque "DE" (NO fiscal)
+    RECEIPT_FROM = {
+        "name": "JUVARE",
+        "country": "México",
+        "email": "doxai@juvare.mx",
     }
     
     # Construir snapshot básico
@@ -573,6 +555,7 @@ def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
         issued_at=data.completed_at,
         paid_at=data.completed_at,
         issuer=ISSUER_INFO,
+        receipt_from=RECEIPT_FROM,
         bill_to={
             "user_id": data.user_id,
             "name": f"Usuario #{data.user_id}",

@@ -33,21 +33,17 @@ from app.modules.user_profile.models.tax_profile import UserTaxProfile
 logger = logging.getLogger(__name__)
 
 
-# Datos del emisor (DoxAI / JUVARE)
+# Datos del emisor (branding para header del PDF)
 ISSUER_INFO = {
-    "name": "JUVARE SOLUCIONES TECNOLÓGICAS S.A. DE C.V.",
     "trade_name": "DoxAI",
-    "rfc": "JST000000XXX",  # Placeholder - actualizar con RFC real
-    "address": {
-        "street": "Av. Revolución",
-        "number": "1234",
-        "city": "Ciudad de México",
-        "state": "CDMX",
-        "zip": "01000",
-        "country": "México",
-    },
-    "email": "facturacion@doxai.site",
     "website": "https://doxai.site",
+}
+
+# Datos comerciales para el bloque "DE" del recibo (NO fiscal)
+RECEIPT_FROM = {
+    "name": "JUVARE",
+    "country": "México",
+    "email": "doxai@juvare.mx",
 }
 
 
@@ -258,6 +254,7 @@ async def get_or_create_invoice(
     snapshot = {
         "version": "1.0",
         "issuer": ISSUER_INFO,
+        "receipt_from": RECEIPT_FROM,
         "bill_to": _build_bill_to(
             user_id=intent.user_id,
             user_email=user_email,
@@ -354,4 +351,5 @@ __all__ = [
     "get_or_create_invoice",
     "get_invoice_by_intent_id",
     "ISSUER_INFO",
+    "RECEIPT_FROM",
 ]
