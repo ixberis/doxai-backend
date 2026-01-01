@@ -57,6 +57,9 @@ class ReceiptData:
     package_name: Optional[str]
     created_at: datetime
     completed_at: datetime
+    # Campos opcionales para fallback nombre+email (legacy)
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
 
 
 @dataclass
@@ -358,41 +361,36 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     c.setFillColorRGB(0, 0, 0)
     
     bill_to = snapshot.bill_to
-    fiscal = bill_to.get("fiscal") or {}
     
-    # Nombre: preferir razon_social fiscal, si no bill_to.name (con wrap)
-    name_line = fiscal.get("razon_social") or bill_to.get("name", "")
+    # Línea 1: Nombre (razón social o nombre de usuario) - con wrap
+    name_line = bill_to.get("name", "")
     if name_line:
         section_y_right = _draw_wrapped_text(c, name_line, col2_x, section_y_right, col_width, font, 10, 14)
     
-    # RFC (solo si existe en fiscal)
-    if fiscal.get("rfc"):
+    # Línea 2: RFC (solo si existe - caso con tax profile)
+    if bill_to.get("rfc"):
         c.setFont(font, 10)
         c.setFillColorRGB(0, 0, 0)
-        c.drawString(col2_x, section_y_right, f"RFC: {fiscal['rfc']}")
+        c.drawString(col2_x, section_y_right, bill_to["rfc"])
         section_y_right -= 14
     
-    # Domicilio fiscal completo (si existe) - con wrap para direcciones largas
-    if fiscal.get("domicilio"):
-        c.setFillColorRGB(0, 0, 0)
-        section_y_right = _draw_wrapped_text(c, fiscal["domicilio"], col2_x, section_y_right, col_width, font, 10, 14)
-    elif fiscal.get("domicilio_cp"):
+    # Línea 3: Régimen fiscal con descripción (solo si existe)
+    if bill_to.get("tax_regime"):
         c.setFont(font, 10)
         c.setFillColorRGB(0, 0, 0)
-        c.drawString(col2_x, section_y_right, f"C.P.: {fiscal['domicilio_cp']}")
-        section_y_right -= 14
-    
-    # Régimen fiscal (clave + descripción desde catálogo SAT)
-    if fiscal.get("regimen_fiscal"):
-        c.setFont(font, 10)
-        c.setFillColorRGB(0, 0, 0)
-        regimen_full = _get_regimen_with_description(fiscal["regimen_fiscal"])
-        regimen_text = f"Régimen: {regimen_full}"
+        regimen_full = _get_regimen_with_description(bill_to["tax_regime"])
         # Usar wrap porque el texto con descripción suele ser largo
-        section_y_right = _draw_wrapped_text(c, regimen_text, col2_x, section_y_right, col_width, font, 10, 14)
+        section_y_right = _draw_wrapped_text(c, regimen_full, col2_x, section_y_right, col_width, font, 10, 14)
     
-    # Email: preferir fiscal.email, si no bill_to.email (con wrap para emails largos)
-    email_line = fiscal.get("email") or bill_to.get("email")
+    # Línea 4: Código postal (solo si existe)
+    if bill_to.get("postal_code"):
+        c.setFont(font, 10)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(col2_x, section_y_right, bill_to["postal_code"])
+        section_y_right -= 14
+    
+    # Línea 5: Email (billing_email para tax profile, email para fallback usuario)
+    email_line = bill_to.get("billing_email") or bill_to.get("email")
     if email_line:
         c.setFillColorRGB(0, 0, 0)
         section_y_right = _draw_wrapped_text(c, email_line, col2_x, section_y_right, col_width, font, 10, 14)
@@ -558,8 +556,8 @@ def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
         receipt_from=RECEIPT_FROM,
         bill_to={
             "user_id": data.user_id,
-            "name": f"Usuario #{data.user_id}",
-            "email": None,
+            "name": data.user_name or f"Usuario #{data.user_id}",
+            "email": data.user_email,
         },
         line_items=[
             {

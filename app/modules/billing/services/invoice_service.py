@@ -71,43 +71,34 @@ def _build_bill_to(
     """
     Construye sección "Bill to" del recibo.
     
-    Si hay perfil fiscal activo, incluye datos fiscales.
-    Si no, solo nombre/email básico.
+    Caso A: Si hay perfil fiscal activo → datos fiscales completos.
+    Caso B: Si no hay perfil → nombre + email del usuario.
+    Caso C: Edge case (sin datos) → "Usuario #{id}".
     """
-    bill_to: Dict[str, Any] = {
-        "user_id": user_id,
-        "name": user_name or f"Usuario #{user_id}",
-        "email": user_email,
-    }
-    
+    # Caso A: Tax profile activo/verificado
     if tax_profile and tax_profile.status in ("active", "verified"):
-        bill_to["fiscal"] = {
+        return {
+            "user_id": user_id,
+            "name": tax_profile.razon_social or user_name or f"Usuario #{user_id}",
             "rfc": tax_profile.rfc,
-            "razon_social": tax_profile.razon_social,
-            "regimen_fiscal": tax_profile.regimen_fiscal_clave,
-            "domicilio_cp": tax_profile.domicilio_fiscal_cp,
-            "domicilio": None,
+            "tax_regime": tax_profile.regimen_fiscal_clave,
+            "postal_code": tax_profile.domicilio_fiscal_cp,
+            "billing_email": tax_profile.email_facturacion,
         }
-        
-        # Construir domicilio completo si hay datos
-        if tax_profile.domicilio_calle:
-            addr_parts = [tax_profile.domicilio_calle]
-            if tax_profile.domicilio_num_ext:
-                addr_parts.append(f"#{tax_profile.domicilio_num_ext}")
-            if tax_profile.domicilio_num_int:
-                addr_parts.append(f"Int. {tax_profile.domicilio_num_int}")
-            if tax_profile.domicilio_colonia:
-                addr_parts.append(f"Col. {tax_profile.domicilio_colonia}")
-            if tax_profile.domicilio_municipio:
-                addr_parts.append(tax_profile.domicilio_municipio)
-            if tax_profile.domicilio_estado:
-                addr_parts.append(tax_profile.domicilio_estado)
-            if tax_profile.domicilio_fiscal_cp:
-                addr_parts.append(f"C.P. {tax_profile.domicilio_fiscal_cp}")
-            
-            bill_to["fiscal"]["domicilio"] = ", ".join(addr_parts)
     
-    return bill_to
+    # Caso B: Sin tax profile pero con datos de usuario
+    if user_name or user_email:
+        return {
+            "user_id": user_id,
+            "name": user_name or f"Usuario #{user_id}",
+            "email": user_email,
+        }
+    
+    # Caso C: Edge case - solo user_id
+    return {
+        "user_id": user_id,
+        "name": f"Usuario #{user_id}",
+    }
 
 
 def _build_line_items(
