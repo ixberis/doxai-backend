@@ -219,7 +219,49 @@ async def get_or_create_invoice(
     existing = result.scalar_one_or_none()
     
     if existing:
-        logger.debug("Invoice already exists: intent=%s invoice=%s", intent.id, existing.invoice_number)
+        # Backfill: si bill_to tiene "Usuario #..." o falta email, actualizar con datos reales
+        snap = existing.snapshot_json or {}
+        bill_to = snap.get("bill_to", {})
+        current_name = bill_to.get("name", "")
+        current_email = bill_to.get("billing_email") or bill_to.get("email")
+        
+        needs_backfill = (
+            current_name.startswith("Usuario #") or 
+            (not current_email and (user_name or user_email))
+        )
+        
+        if needs_backfill and (user_name or user_email):
+            # Obtener tax profile para el backfill
+            tax_result = await session.execute(
+                select(UserTaxProfile).where(
+                    UserTaxProfile.user_id == intent.user_id,
+                    UserTaxProfile.status.in_(["active", "verified"]),
+                )
+            )
+            tax_profile = tax_result.scalar_one_or_none()
+            
+            bill_to_new = _build_bill_to(
+                user_id=intent.user_id,
+                user_email=user_email,
+                user_name=user_name,
+                tax_profile=tax_profile,
+            )
+            
+            snap["bill_to"] = bill_to_new
+            existing.snapshot_json = snap
+            await session.commit()
+            await session.refresh(existing)
+            
+            logger.info(
+                "Backfilled bill_to for existing invoice: invoice=%s old_name=%s new_name=%s new_email=%s",
+                existing.invoice_number,
+                current_name,
+                bill_to_new.get("name"),
+                bill_to_new.get("billing_email") or bill_to_new.get("email"),
+            )
+        else:
+            logger.debug("Invoice already exists: intent=%s invoice=%s", intent.id, existing.invoice_number)
+        
         return existing
     
     # Obtener perfil fiscal del usuario (si existe)
@@ -242,16 +284,26 @@ async def get_or_create_invoice(
     now = datetime.now(timezone.utc)
     year = now.year
     
+    bill_to = _build_bill_to(
+        user_id=intent.user_id,
+        user_email=user_email,
+        user_name=user_name,
+        tax_profile=tax_profile,
+    )
+    
+    logger.debug(
+        "Building invoice snapshot: user_id=%s bill_to_name=%s bill_to_email=%s tax_profile=%s",
+        intent.user_id,
+        bill_to.get("name"),
+        bill_to.get("billing_email") or bill_to.get("email"),
+        tax_profile.status if tax_profile else None,
+    )
+    
     snapshot = {
         "version": "1.0",
         "issuer": ISSUER_INFO,
         "receipt_from": RECEIPT_FROM,
-        "bill_to": _build_bill_to(
-            user_id=intent.user_id,
-            user_email=user_email,
-            user_name=user_name,
-            tax_profile=tax_profile,
-        ),
+        "bill_to": bill_to,
         "line_items": _build_line_items(
             package_id=intent.package_id,
             package_name=package_name,

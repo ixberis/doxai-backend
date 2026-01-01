@@ -671,9 +671,25 @@ async def get_checkout_receipt_pdf(
     # Usar snapshot de invoice (preferido) en lugar de legacy ReceiptData
     from .services.invoice_service import get_or_create_invoice
     from .utils.pdf_receipt_generator import generate_invoice_pdf, InvoiceSnapshot
+    from app.modules.auth.models import AppUser
+    
+    # Obtener datos del usuario para bill_to
+    user_result = await session.execute(
+        select(AppUser).where(AppUser.user_id == user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    user_name = user.user_full_name if user else None
+    user_email = user.user_email if user else None
+    
+    logger.debug(
+        "Generating receipt: user_id=%s user_name=%s user_email=%s",
+        user_id, user_name, user_email,
+    )
     
     # Obtener o crear invoice desde snapshot
-    invoice = await get_or_create_invoice(session, intent)
+    invoice = await get_or_create_invoice(
+        session, intent, user_email=user_email, user_name=user_name
+    )
     
     if invoice and invoice.snapshot_json:
         # Construir InvoiceSnapshot desde JSON guardado
@@ -714,6 +730,8 @@ async def get_checkout_receipt_pdf(
             package_name=package_name,
             created_at=intent.created_at,
             completed_at=completed_at,
+            user_name=user_name,
+            user_email=user_email,
         )
         pdf_bytes = generate_checkout_receipt_pdf(receipt_data)
     
