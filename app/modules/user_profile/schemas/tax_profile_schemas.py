@@ -23,11 +23,47 @@ RFC_PATTERN = re.compile(r'^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$', re.IGNORECASE)
 # Regex para código postal (5 dígitos)
 CP_PATTERN = re.compile(r'^\d{5}$')
 
-# Catálogo SAT de regímenes fiscales permitidos
-ALLOWED_REGIMENES = frozenset({
-    '601', '603', '605', '606', '607', '608', '610', '611', '612',
-    '614', '615', '616', '620', '621', '622', '623', '624', '625', '626',
+# ============================================================================
+# Catálogos SAT de regímenes fiscales - MUTUAMENTE EXCLUYENTES
+# ============================================================================
+
+# Regímenes para Personas Morales (PM) - use_razon_social = True
+ALLOWED_REGIMENES_PM = frozenset({
+    '601',  # General de Ley Personas Morales
+    '603',  # Personas Morales con Fines no Lucrativos
+    '607',  # Enajenación o Adquisición de Bienes
+    '609',  # Consolidación
+    '620',  # Sociedades Cooperativas de Producción que optan por Diferir sus Ingresos
+    '622',  # Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras
+    '623',  # Opcional para Grupos de Sociedades
+    '624',  # Coordinados
+    '626',  # RESICO (Régimen Simplificado de Confianza)
+    '628',  # Hidrocarburos
 })
+
+# Regímenes para Personas Físicas (PF) - use_razon_social = False
+# Lista EXPLÍCITA (NO es complemento de PM)
+ALLOWED_REGIMENES_PF = frozenset({
+    '605',  # Sueldos y Salarios e Ingresos Asimilados a Salarios
+    '606',  # Arrendamiento
+    '608',  # Demás ingresos
+    '610',  # Residentes en el Extranjero sin Establecimiento Permanente en México
+    '611',  # Ingresos por Dividendos (socios y accionistas)
+    '612',  # Personas Físicas con Actividades Empresariales y Profesionales
+    '614',  # Ingresos por intereses
+    '615',  # Régimen de los ingresos por obtención de premios
+    '616',  # Sin obligaciones fiscales
+    '621',  # Incorporación Fiscal
+    '625',  # Régimen de las Actividades Empresariales con ingresos a través de Plataformas Tecnológicas
+})
+
+# Catálogo unificado (para validación general de clave SAT válida)
+ALLOWED_REGIMENES = ALLOWED_REGIMENES_PM | ALLOWED_REGIMENES_PF
+
+# Guard: verificar exclusión mutua en tiempo de carga
+_intersection = ALLOWED_REGIMENES_PM & ALLOWED_REGIMENES_PF
+if _intersection:
+    raise RuntimeError(f"SAT regime keys present in both PF and PM catalogs: {_intersection}")
 
 
 class TaxProfileBase(BaseModel):
@@ -93,6 +129,7 @@ class TaxProfileBase(BaseModel):
     @field_validator('regimen_fiscal_clave')
     @classmethod
     def validate_regimen(cls, v: Optional[str]) -> Optional[str]:
+        """Valida que la clave exista en el catálogo SAT (PF o PM)."""
         if v is None or v == "":
             return None
         v = v.strip()
@@ -101,13 +138,36 @@ class TaxProfileBase(BaseModel):
         return v
     
     @model_validator(mode='after')
-    def validate_razon_social_required(self) -> 'TaxProfileBase':
-        """Si use_razon_social=True, razon_social no puede estar vacío."""
+    def validate_razon_social_and_regimen_consistency(self) -> 'TaxProfileBase':
+        """
+        Valida:
+        1. Si use_razon_social=True, razon_social no puede estar vacío.
+        2. Si hay régimen fiscal, debe ser compatible con el tipo (PM vs PF).
+        """
+        # Validar razon_social requerida para PM
         if self.use_razon_social:
             if not self.razon_social or not self.razon_social.strip():
                 raise ValueError(
                     "Razón social es obligatoria cuando 'Tengo razón social' está activado."
                 )
+        
+        # Validar consistencia régimen vs tipo (PM/PF)
+        if self.regimen_fiscal_clave:
+            if self.use_razon_social:
+                # PM: régimen debe estar en catálogo PM
+                if self.regimen_fiscal_clave not in ALLOWED_REGIMENES_PM:
+                    raise ValueError(
+                        f"Régimen fiscal '{self.regimen_fiscal_clave}' no es válido para Persona Moral. "
+                        f"Claves permitidas: {sorted(ALLOWED_REGIMENES_PM)}"
+                    )
+            else:
+                # PF: régimen debe estar en catálogo PF
+                if self.regimen_fiscal_clave not in ALLOWED_REGIMENES_PF:
+                    raise ValueError(
+                        f"Régimen fiscal '{self.regimen_fiscal_clave}' no es válido para Persona Física. "
+                        f"Claves permitidas: {sorted(ALLOWED_REGIMENES_PF)}"
+                    )
+        
         return self
 
 
@@ -144,4 +204,7 @@ __all__ = [
     "TaxProfileUpsertRequest",
     "TaxProfileResponse",
     "TaxProfileSummary",
+    "ALLOWED_REGIMENES",
+    "ALLOWED_REGIMENES_PM",
+    "ALLOWED_REGIMENES_PF",
 ]
