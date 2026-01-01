@@ -7,7 +7,6 @@ Rutas para gestión de perfil fiscal.
 Endpoints:
 - GET /api/profile/tax-profile
 - PUT /api/profile/tax-profile (upsert)
-- POST /api/profile/tax-profile/cedula (upload para extracción)
 
 Autor: DoxAI
 Fecha: 2025-12-31
@@ -18,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +29,6 @@ from ..models.tax_profile import UserTaxProfile, TaxProfileStatus
 from ..schemas.tax_profile_schemas import (
     TaxProfileUpsertRequest,
     TaxProfileResponse,
-    CedulaUploadResponse,
 )
 
 router = APIRouter(tags=["Tax Profile"])
@@ -103,80 +101,6 @@ async def upsert_tax_profile(
     logger.info("Tax profile upserted: user=%s rfc=%s status=%s", user_id, profile.rfc, profile.status)
     
     return TaxProfileResponse.model_validate(profile)
-
-
-@router.post(
-    "/tax-profile/cedula",
-    response_model=CedulaUploadResponse,
-    summary="Subir cédula fiscal para extracción",
-    description="""
-    Sube un PDF de cédula fiscal para extraer datos automáticamente.
-    
-    El sistema intentará extraer: RFC, razón social, régimen fiscal, 
-    código postal y domicilio.
-    
-    Los campos extraídos se devuelven como propuesta - el usuario
-    debe confirmar/editar antes de guardar con PUT /tax-profile.
-    """,
-)
-async def upload_cedula_fiscal(
-    file: UploadFile = File(...),
-    user=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> CedulaUploadResponse:
-    """
-    Procesa cédula fiscal y extrae datos.
-    
-    Por ahora retorna campos vacíos para captura manual.
-    La extracción automática se implementará con RAG/OCR.
-    """
-    user_id = extract_user_id(user)
-    
-    # Validar tipo de archivo
-    if file.content_type not in ["application/pdf", "image/jpeg", "image/png"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_file_type",
-                "message": "Solo se aceptan archivos PDF, JPG o PNG.",
-            },
-        )
-    
-    # Validar tamaño (máx 10MB)
-    file_size = 0
-    content = await file.read()
-    file_size = len(content)
-    
-    if file_size > 10 * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "file_too_large",
-                "message": "El archivo excede el límite de 10MB.",
-            },
-        )
-    
-    logger.info(
-        "Cedula upload: user=%s filename=%s size=%d",
-        user_id, file.filename, file_size,
-    )
-    
-    # TODO: Implementar extracción con RAG/OCR
-    # Por ahora retornamos campos vacíos para captura manual
-    
-    # Placeholder: en el futuro aquí iría:
-    # 1. Guardar archivo en storage
-    # 2. Procesar con OCR si es imagen/escaneado
-    # 3. Extraer texto y usar RAG/regex para campos
-    # 4. Retornar propuesta con confianza
-    
-    return CedulaUploadResponse(
-        success=True,
-        message="Archivo recibido. Por favor completa los datos manualmente.",
-        extracted_fields=None,
-        confidence=None,
-        requires_review=True,
-    )
 
 
 __all__ = ["router"]

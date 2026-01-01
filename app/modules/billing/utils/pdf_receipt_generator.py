@@ -11,6 +11,7 @@ Características:
 - Datos fiscales si existen
 - Disclaimer: "No es factura CFDI"
 - Fuente Unicode embebida (OpenSans)
+- Multiline text support para textos largos (domicilios, razón social)
 
 Autor: DoxAI
 Fecha: 2025-12-31
@@ -23,7 +24,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 # Importación condicional de ReportLab
 try:
@@ -134,6 +135,45 @@ def _format_date(dt: datetime) -> str:
     )
 
 
+# Catálogo SAT de regímenes fiscales (clave -> descripción)
+SAT_REGIMEN_DESCRIPTIONS = {
+    "601": "General de Ley Personas Morales",
+    "603": "Personas Morales con Fines no Lucrativos",
+    "605": "Sueldos y Salarios e Ingresos Asimilados a Salarios",
+    "606": "Arrendamiento",
+    "607": "Régimen de Enajenación o Adquisición de Bienes",
+    "608": "Demás ingresos",
+    "610": "Residentes en el Extranjero sin Establecimiento Permanente en México",
+    "611": "Ingresos por Dividendos (socios y accionistas)",
+    "612": "Personas Físicas con Actividades Empresariales y Profesionales",
+    "614": "Ingresos por intereses",
+    "615": "Régimen de los ingresos por obtención de premios",
+    "616": "Sin obligaciones fiscales",
+    "620": "Sociedades Cooperativas de Producción que optan por diferir sus ingresos",
+    "621": "Incorporación Fiscal",
+    "622": "Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras",
+    "623": "Opcional para Grupos de Sociedades",
+    "624": "Coordinados",
+    "625": "Régimen de las Actividades Empresariales con ingresos a través de Plataformas Tecnológicas",
+    "626": "Régimen Simplificado de Confianza",
+}
+
+
+def _get_regimen_with_description(clave: str) -> str:
+    """
+    Devuelve el régimen con su descripción si existe.
+    Ejemplo: "612 - Personas Físicas con Actividades Empresariales y Profesionales"
+    """
+    if not clave:
+        return ""
+    # Limpiar la clave (puede venir como "612" o ya con descripción)
+    clave_limpia = clave.split("-")[0].strip() if "-" in clave else clave.strip()
+    descripcion = SAT_REGIMEN_DESCRIPTIONS.get(clave_limpia)
+    if descripcion:
+        return f"{clave_limpia} - {descripcion}"
+    return clave  # Devolver original si no se encuentra
+
+
 # Colores del tema
 COLORS = {
     "primary": HexColor("#1a1a2e") if HexColor else None,
@@ -143,6 +183,55 @@ COLORS = {
     "border": HexColor("#e5e7eb") if HexColor else None,
     "success": HexColor("#10b981") if HexColor else None,
 }
+
+
+def _draw_wrapped_text(c, text: str, x: float, y: float, max_width: float, 
+                        font_name: str, font_size: int = 10, 
+                        line_height: int = 14) -> float:
+    """
+    Dibuja texto con wrap automático para evitar sobreposición.
+    
+    Args:
+        c: Canvas de ReportLab
+        text: Texto a dibujar
+        x: Posición X inicial
+        y: Posición Y inicial (top)
+        max_width: Ancho máximo permitido
+        font_name: Nombre de la fuente
+        font_size: Tamaño de fuente
+        line_height: Altura de línea
+        
+    Returns:
+        Nueva posición Y después de dibujar
+    """
+    if not text:
+        return y
+    
+    c.setFont(font_name, font_size)
+    
+    # Split text into words and wrap
+    words = text.split()
+    lines = []
+    current_line = ""
+    
+    for word in words:
+        test_line = f"{current_line} {word}".strip() if current_line else word
+        if c.stringWidth(test_line, font_name, font_size) <= max_width:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+    
+    if current_line:
+        lines.append(current_line)
+    
+    # Draw each line
+    for line in lines:
+        c.drawString(x, y, line)
+        y -= line_height
+    
+    return y
 
 
 def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
@@ -170,6 +259,7 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     margin_left = 50
     margin_right = 50
     content_width = width - margin_left - margin_right
+    col_width = (width - margin_left - margin_right - 40) / 2  # Width for each column
     y = height - 50
     
     def draw_text(text: str, x: float, size: int = 10, bold: bool = False, color=None):
@@ -224,31 +314,38 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     # === FROM / TO SECTION ===
     col1_x = margin_left
     col2_x = width / 2 + 20
-    section_y = y
+    
+    # Track left and right column y positions separately
+    section_y_left = y
+    section_y_right = y
     
     # FROM (Issuer) - incluye RFC del emisor
     c.setFont(font_bold, 9)
     c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
-    c.drawString(col1_x, section_y, "DE:")
-    section_y -= 16
+    c.drawString(col1_x, section_y_left, "DE:")
+    section_y_left -= 16
     
     c.setFont(font, 10)
     c.setFillColorRGB(0, 0, 0)
-    c.drawString(col1_x, section_y, snapshot.issuer.get("name", ""))
-    section_y -= 14
+    
+    # Nombre emisor (con wrap para nombres largos)
+    issuer_name = snapshot.issuer.get("name", "")
+    if issuer_name:
+        section_y_left = _draw_wrapped_text(c, issuer_name, col1_x, section_y_left, col_width, font, 10, 14)
     
     # RFC del emisor
     if snapshot.issuer.get("rfc"):
-        c.drawString(col1_x, section_y, f"RFC: {snapshot.issuer['rfc']}")
-        section_y -= 14
+        c.setFont(font, 10)
+        c.drawString(col1_x, section_y_left, f"RFC: {snapshot.issuer['rfc']}")
+        section_y_left -= 14
     
     if snapshot.issuer.get("address"):
         addr = snapshot.issuer["address"]
-        # Línea 1: calle completa
+        # Línea 1: calle completa (con wrap)
         addr_line = addr.get("street", "")
         if addr_line:
-            c.drawString(col1_x, section_y, addr_line)
-            section_y -= 14
+            c.setFillColorRGB(0, 0, 0)
+            section_y_left = _draw_wrapped_text(c, addr_line, col1_x, section_y_left, col_width, font, 10, 14)
         # Línea 2: ciudad, estado, CP, país
         city = addr.get("city", "")
         state = addr.get("state", "")
@@ -257,18 +354,20 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
         parts = [p for p in [city, state, zip_code, country] if p]
         addr_line2 = ", ".join(parts)
         if addr_line2:
-            c.drawString(col1_x, section_y, addr_line2)
-            section_y -= 14
+            c.setFont(font, 10)
+            c.drawString(col1_x, section_y_left, addr_line2)
+            section_y_left -= 14
     
+    # Email del emisor (con wrap para emails largos)
     if snapshot.issuer.get("email"):
-        c.drawString(col1_x, section_y, snapshot.issuer["email"])
+        c.setFillColorRGB(0, 0, 0)
+        section_y_left = _draw_wrapped_text(c, snapshot.issuer["email"], col1_x, section_y_left, col_width, font, 10, 14)
     
     # TO (Bill to)
-    section_y = y
     c.setFont(font_bold, 9)
     c.setFillColor(COLORS["muted"] or HexColor("#6b7280"))
-    c.drawString(col2_x, section_y, "PARA:")
-    section_y -= 16
+    c.drawString(col2_x, section_y_right, "PARA:")
+    section_y_right -= 16
     
     c.setFont(font, 10)
     c.setFillColorRGB(0, 0, 0)
@@ -276,37 +375,49 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     bill_to = snapshot.bill_to
     fiscal = bill_to.get("fiscal") or {}
     
-    # Nombre: preferir razon_social fiscal, si no bill_to.name
+    # Nombre: preferir razon_social fiscal, si no bill_to.name (con wrap)
     name_line = fiscal.get("razon_social") or bill_to.get("name", "")
     if name_line:
-        c.drawString(col2_x, section_y, name_line)
-        section_y -= 14
+        section_y_right = _draw_wrapped_text(c, name_line, col2_x, section_y_right, col_width, font, 10, 14)
     
     # RFC (solo si existe en fiscal)
     if fiscal.get("rfc"):
-        c.drawString(col2_x, section_y, f"RFC: {fiscal['rfc']}")
-        section_y -= 14
+        c.setFont(font, 10)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(col2_x, section_y_right, f"RFC: {fiscal['rfc']}")
+        section_y_right -= 14
     
-    # Domicilio fiscal completo (si existe)
+    # Domicilio fiscal completo (si existe) - con wrap para direcciones largas
     if fiscal.get("domicilio"):
-        c.drawString(col2_x, section_y, fiscal["domicilio"])
-        section_y -= 14
+        c.setFillColorRGB(0, 0, 0)
+        section_y_right = _draw_wrapped_text(c, fiscal["domicilio"], col2_x, section_y_right, col_width, font, 10, 14)
     elif fiscal.get("domicilio_cp"):
-        c.drawString(col2_x, section_y, f"C.P.: {fiscal['domicilio_cp']}")
-        section_y -= 14
+        c.setFont(font, 10)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(col2_x, section_y_right, f"C.P.: {fiscal['domicilio_cp']}")
+        section_y_right -= 14
     
-    # Régimen fiscal (si existe)
+    # Régimen fiscal (clave + descripción desde catálogo SAT)
     if fiscal.get("regimen_fiscal"):
-        c.drawString(col2_x, section_y, f"Régimen: {fiscal['regimen_fiscal']}")
-        section_y -= 14
+        c.setFont(font, 10)
+        c.setFillColorRGB(0, 0, 0)
+        regimen_full = _get_regimen_with_description(fiscal["regimen_fiscal"])
+        regimen_text = f"Régimen: {regimen_full}"
+        # Usar wrap porque el texto con descripción suele ser largo
+        section_y_right = _draw_wrapped_text(c, regimen_text, col2_x, section_y_right, col_width, font, 10, 14)
     
-    # Email: preferir fiscal.email, si no bill_to.email
+    # Email: preferir fiscal.email, si no bill_to.email (con wrap para emails largos)
     email_line = fiscal.get("email") or bill_to.get("email")
     if email_line:
-        c.drawString(col2_x, section_y, email_line)
-        section_y -= 14
+        c.setFillColorRGB(0, 0, 0)
+        section_y_right = _draw_wrapped_text(c, email_line, col2_x, section_y_right, col_width, font, 10, 14)
     
-    y = min(y, section_y) - 30
+    # Use the lowest y from both columns + adequate padding
+    y = min(section_y_left, section_y_right) - 24
+    # Ensure minimum spacing before table header (at least 40px from bottom of sections)
+    min_table_y = height - 320
+    if y > min_table_y:
+        y = min_table_y
     draw_line()
     
     # === LINE ITEMS ===

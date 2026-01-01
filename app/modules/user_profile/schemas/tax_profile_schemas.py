@@ -23,6 +23,12 @@ RFC_PATTERN = re.compile(r'^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$', re.IGNORECASE)
 # Regex para código postal (5 dígitos)
 CP_PATTERN = re.compile(r'^\d{5}$')
 
+# Catálogo SAT de regímenes fiscales permitidos
+ALLOWED_REGIMENES = frozenset({
+    '601', '603', '605', '606', '607', '608', '610', '611', '612',
+    '614', '615', '616', '620', '621', '622', '623', '624', '625', '626',
+})
+
 
 class TaxProfileBase(BaseModel):
     """Campos base del perfil fiscal."""
@@ -85,10 +91,9 @@ class TaxProfileBase(BaseModel):
     def validate_regimen(cls, v: Optional[str]) -> Optional[str]:
         if v is None or v == "":
             return None
-        # Solo validar que sea numérico y entre 3-4 dígitos
         v = v.strip()
-        if not v.isdigit() or len(v) < 3 or len(v) > 4:
-            raise ValueError("Clave de régimen fiscal inválida (3-4 dígitos)")
+        if v not in ALLOWED_REGIMENES:
+            raise ValueError("Régimen fiscal inválido (clave SAT no reconocida)")
         return v
 
 
@@ -120,20 +125,9 @@ class TaxProfileSummary(BaseModel):
     email_facturacion: Optional[str] = None
 
 
-class CedulaUploadResponse(BaseModel):
-    """Respuesta tras subir cédula fiscal con campos extraídos."""
-    
-    success: bool
-    message: str
-    extracted_fields: Optional[TaxProfileBase] = None
-    confidence: Optional[dict] = None
-    requires_review: bool = True
-
-
 __all__ = [
     "TaxProfileBase",
     "TaxProfileUpsertRequest",
     "TaxProfileResponse",
     "TaxProfileSummary",
-    "CedulaUploadResponse",
 ]

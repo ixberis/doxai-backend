@@ -668,27 +668,54 @@ async def get_checkout_receipt_pdf(
             },
         )
     
-    # Obtener nombre del paquete si está disponible
-    package = get_package_by_id(intent.package_id) if intent.package_id else None
-    package_name = package.name if package else None
+    # Usar snapshot de invoice (preferido) en lugar de legacy ReceiptData
+    from .services.invoice_service import get_or_create_invoice
+    from .utils.pdf_receipt_generator import generate_invoice_pdf, InvoiceSnapshot
     
-    # Preparar datos del recibo
-    receipt_data = ReceiptData(
-        checkout_intent_id=intent.id,
-        user_id=user_id,
-        credits_amount=intent.credits_amount,
-        price_cents=intent.price_cents,
-        currency=intent.currency,
-        provider=intent.provider,
-        provider_session_id=intent.provider_session_id,
-        package_id=intent.package_id,
-        package_name=package_name,
-        created_at=intent.created_at,
-        completed_at=intent.updated_at,
-    )
+    # Obtener o crear invoice desde snapshot
+    invoice = await get_or_create_invoice(session, intent)
     
-    # Generar PDF
-    pdf_bytes = generate_checkout_receipt_pdf(receipt_data)
+    if invoice and invoice.snapshot_json:
+        # Construir InvoiceSnapshot desde JSON guardado
+        snap = invoice.snapshot_json
+        snapshot = InvoiceSnapshot(
+            invoice_number=invoice.invoice_number,
+            issued_at=invoice.issued_at,
+            paid_at=invoice.paid_at,
+            issuer=snap.get("issuer", {}),
+            bill_to=snap.get("bill_to", {}),
+            line_items=snap.get("line_items", []),
+            totals=snap.get("totals", {}),
+            payment_details=snap.get("payment_details", {}),
+            notes=snap.get("notes", {}),
+        )
+        pdf_bytes = generate_invoice_pdf(snapshot)
+    else:
+        # Fallback legacy (solo para compatibilidad)
+        package = get_package_by_id(intent.package_id) if intent.package_id else None
+        package_name = package.name if package else None
+        
+        # Determinar completed_at: paid_at > created_at > updated_at
+        completed_at = (
+            getattr(intent, 'paid_at', None)
+            or intent.created_at
+            or intent.updated_at
+        )
+        
+        receipt_data = ReceiptData(
+            checkout_intent_id=intent.id,
+            user_id=user_id,
+            credits_amount=intent.credits_amount,
+            price_cents=intent.price_cents,
+            currency=intent.currency,
+            provider=intent.provider,
+            provider_session_id=intent.provider_session_id,
+            package_id=intent.package_id,
+            package_name=package_name,
+            created_at=intent.created_at,
+            completed_at=completed_at,
+        )
+        pdf_bytes = generate_checkout_receipt_pdf(receipt_data)
     
     # Retornar respuesta con PDF
     filename = f"doxai-receipt-{intent_id}.pdf"
