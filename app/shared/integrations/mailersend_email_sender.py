@@ -7,16 +7,20 @@ Usa templates de templates/emails/ como fuente de verdad.
 
 Autor: Ixchel Beristain
 Creado: 2025-12-16
+Actualizado: 2026-01-02 - Instrumentación de eventos para métricas
 
 Notas:
 - MailerSend API es más confiable que SMTP en entornos cloud (Railway, Vercel).
 - No requiere TLS cert validation del sistema operativo.
 - Soporta tracking de emails y webhooks (no implementados aquí).
+- Cada envío registra evento en auth_email_events para métricas.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import httpx
@@ -29,6 +33,7 @@ from app.shared.integrations.email_templates import (
 
 if TYPE_CHECKING:
     from app.shared.config.settings_base import BaseAppSettings
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +59,7 @@ def _normalize_base_url(url: Optional[str]) -> Optional[str]:
 
 
 class MailerSendEmailSender:
-    """Envío de correos usando MailerSend API."""
+    """Envío de correos usando MailerSend API con instrumentación de eventos."""
 
     def __init__(
         self,
@@ -64,6 +69,7 @@ class MailerSendEmailSender:
         timeout: int = 30,
         frontend_url: Optional[str] = None,
         support_email: Optional[str] = None,
+        db_session: Optional["AsyncSession"] = None,
     ):
         if not api_key:
             raise ValueError("MAILERSEND_API_KEY es requerido")
@@ -76,6 +82,124 @@ class MailerSendEmailSender:
         self.timeout = timeout
         self.frontend_url = _normalize_base_url(frontend_url)
         self.support_email = support_email or "soporte@doxai.site"
+        self._db_session = db_session  # Optional: for event logging
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Event Logging Helpers (for auth_email_events metrics)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    @staticmethod
+    def _generate_idempotency_key(email_type: str, to_email: str, unique_context: str) -> str:
+        """
+        Generate a stable idempotency key for deduplication.
+        
+        Args:
+            email_type: Type of email (account_activation, welcome, etc.)
+            to_email: Recipient email
+            unique_context: Additional unique context (e.g., token hash)
+            
+        Returns:
+            SHA-256 hash truncated to 64 chars
+        """
+        raw = f"{email_type}:{to_email}:{unique_context}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:64]
+    
+    @staticmethod
+    def _extract_domain(email: str) -> Optional[str]:
+        """Extract domain from email (no PII)."""
+        if not email or "@" not in email:
+            return None
+        try:
+            return email.split("@")[1].lower().strip()
+        except (IndexError, AttributeError):
+            return None
+    
+    async def _log_email_event(
+        self,
+        *,
+        email_type: str,
+        status: str,
+        to_email: str,
+        user_id: Optional[int] = None,
+        provider_message_id: Optional[str] = None,
+        latency_ms: Optional[int] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> None:
+        """
+        Log email event to auth_email_events table.
+        
+        Silently fails if no db session or on error (doesn't block email sending).
+        """
+        if not self._db_session:
+            return
+        
+        try:
+            from sqlalchemy import text
+            
+            q = text("""
+                INSERT INTO public.auth_email_events (
+                    email_type,
+                    status,
+                    recipient_domain,
+                    user_id,
+                    provider,
+                    provider_message_id,
+                    latency_ms,
+                    error_code,
+                    error_message,
+                    idempotency_key,
+                    updated_at
+                ) VALUES (
+                    :email_type::public.auth_email_type,
+                    :status::public.auth_email_event_status,
+                    :recipient_domain,
+                    :user_id,
+                    'mailersend',
+                    :provider_message_id,
+                    :latency_ms,
+                    :error_code,
+                    :error_message,
+                    :idempotency_key,
+                    CASE WHEN :status != 'pending' THEN now() ELSE NULL END
+                )
+                ON CONFLICT (idempotency_key)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    provider_message_id = COALESCE(EXCLUDED.provider_message_id, auth_email_events.provider_message_id),
+                    latency_ms = COALESCE(EXCLUDED.latency_ms, auth_email_events.latency_ms),
+                    error_code = COALESCE(EXCLUDED.error_code, auth_email_events.error_code),
+                    error_message = COALESCE(EXCLUDED.error_message, auth_email_events.error_message),
+                    updated_at = now()
+            """)
+            
+            await self._db_session.execute(q, {
+                "email_type": email_type,
+                "status": status,
+                "recipient_domain": self._extract_domain(to_email),
+                "user_id": user_id,
+                "provider_message_id": provider_message_id,
+                "latency_ms": latency_ms,
+                "error_code": error_code,
+                "error_message": (error_message or "")[:500] if error_message else None,
+                "idempotency_key": idempotency_key,
+            })
+            
+            # flush() to ensure event is visible within transaction,
+            # but let the request transaction handle commit
+            await self._db_session.flush()
+            
+            logger.debug(
+                "email_event_logged: type=%s status=%s latency_ms=%s",
+                email_type,
+                status,
+                latency_ms,
+            )
+            
+        except Exception as e:
+            # Don't fail email sending due to logging errors
+            logger.warning("email_event_log_failed: %s", str(e))
 
     @classmethod
     def from_settings(cls, settings: BaseAppSettings) -> "MailerSendEmailSender":
@@ -362,9 +486,15 @@ class MailerSendEmailSender:
                 raise RuntimeError(f"MailerSend request error: {e}") from e
 
     async def send_activation_email(
-        self, to_email: str, full_name: str, activation_token: str
+        self, to_email: str, full_name: str, activation_token: str,
+        user_id: Optional[int] = None,
     ) -> None:
-        """Envía email de activación de cuenta."""
+        """Envía email de activación de cuenta con instrumentación."""
+        email_type = "account_activation"
+        idempotency_key = self._generate_idempotency_key(
+            email_type, to_email, hashlib.sha256(activation_token.encode()).hexdigest()[:16]
+        )
+        
         html, text, used_template = self._build_activation_body(
             full_name, activation_token
         )
@@ -377,12 +507,57 @@ class MailerSendEmailSender:
             "loaded" if used_template else "fallback",
         )
 
-        await self._send_email(to_email, "Active su cuenta en DoxAI", html, text)
+        # Log pending event
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        
+        start_time = time.perf_counter()
+        try:
+            message_id = await self._send_email(to_email, "Active su cuenta en DoxAI", html, text)
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            # Log sent event
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                user_id=user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            error_code = getattr(e, "error_code", "unknown_error")
+            
+            # Log failed event
+            await self._log_email_event(
+                email_type=email_type,
+                status="failed",
+                to_email=to_email,
+                user_id=user_id,
+                latency_ms=latency_ms,
+                error_code=str(error_code),
+                error_message=str(e)[:500],
+                idempotency_key=idempotency_key,
+            )
+            raise
 
     async def send_password_reset_email(
-        self, to_email: str, full_name: str, reset_token: str
+        self, to_email: str, full_name: str, reset_token: str,
+        user_id: Optional[int] = None,
     ) -> None:
-        """Envía email de reset de contraseña."""
+        """Envía email de reset de contraseña con instrumentación."""
+        email_type = "password_reset_request"
+        idempotency_key = self._generate_idempotency_key(
+            email_type, to_email, hashlib.sha256(reset_token.encode()).hexdigest()[:16]
+        )
+        
         html, text, used_template = self._build_password_reset_body(
             full_name, reset_token
         )
@@ -395,12 +570,58 @@ class MailerSendEmailSender:
             "loaded" if used_template else "fallback",
         )
 
-        await self._send_email(to_email, "Restablecer contraseña - DoxAI", html, text)
+        # Log pending event
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        
+        start_time = time.perf_counter()
+        try:
+            message_id = await self._send_email(to_email, "Restablecer contraseña - DoxAI", html, text)
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            # Log sent event
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                user_id=user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            error_code = getattr(e, "error_code", "unknown_error")
+            
+            # Log failed event
+            await self._log_email_event(
+                email_type=email_type,
+                status="failed",
+                to_email=to_email,
+                user_id=user_id,
+                latency_ms=latency_ms,
+                error_code=str(error_code),
+                error_message=str(e)[:500],
+                idempotency_key=idempotency_key,
+            )
+            raise
 
     async def send_welcome_email(
-        self, to_email: str, full_name: str, credits_assigned: int
+        self, to_email: str, full_name: str, credits_assigned: int,
+        user_id: Optional[int] = None,
     ) -> None:
-        """Envía email de bienvenida."""
+        """Envía email de bienvenida con instrumentación."""
+        email_type = "welcome"
+        # For welcome emails, use user_id as unique context (no token)
+        idempotency_key = self._generate_idempotency_key(
+            email_type, to_email, str(user_id or "no_user_id")
+        )
+        
         html, text, used_template = self._build_welcome_body(full_name, credits_assigned)
 
         logger.info(
@@ -411,7 +632,46 @@ class MailerSendEmailSender:
             "loaded" if used_template else "fallback",
         )
 
-        await self._send_email(to_email, "Bienvenido a DoxAI", html, text)
+        # Log pending event
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        
+        start_time = time.perf_counter()
+        try:
+            message_id = await self._send_email(to_email, "Bienvenido a DoxAI", html, text)
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            # Log sent event
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                user_id=user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            error_code = getattr(e, "error_code", "unknown_error")
+            
+            # Log failed event
+            await self._log_email_event(
+                email_type=email_type,
+                status="failed",
+                to_email=to_email,
+                user_id=user_id,
+                latency_ms=latency_ms,
+                error_code=str(error_code),
+                error_message=str(e)[:500],
+                idempotency_key=idempotency_key,
+            )
+            raise
 
     def _build_admin_activation_notice_body(
         self,
@@ -561,6 +821,7 @@ class MailerSendEmailSender:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         reset_datetime_utc: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> None:
         """
         Envía notificación al usuario cuando su contraseña fue restablecida.
@@ -571,7 +832,20 @@ class MailerSendEmailSender:
             ip_address: IP desde donde se hizo el reset (opcional)
             user_agent: User agent del navegador (opcional)
             reset_datetime_utc: Fecha/hora del reset (opcional, default=now)
+            user_id: ID del usuario (opcional, para métricas)
         """
+        from datetime import datetime, timezone as tz
+        
+        email_type = "password_reset_success"
+        
+        # Stabilize reset_datetime_utc at the start for consistent idempotency_key
+        if not reset_datetime_utc:
+            reset_datetime_utc = datetime.now(tz.utc).strftime("%Y-%m-%d %H:%M:%S")
+        
+        idempotency_key = self._generate_idempotency_key(
+            email_type, to_email, reset_datetime_utc
+        )
+        
         html, text, used_template = self._build_password_reset_success_body(
             full_name=full_name,
             ip_address=ip_address,
@@ -585,12 +859,51 @@ class MailerSendEmailSender:
             "loaded" if used_template else "fallback",
         )
 
-        await self._send_email(
-            to_email,
-            "Su contraseña fue restablecida - DoxAI",
-            html,
-            text,
+        # Log pending event
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
         )
+        
+        start_time = time.perf_counter()
+        try:
+            message_id = await self._send_email(
+                to_email,
+                "Su contraseña fue restablecida - DoxAI",
+                html,
+                text,
+            )
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            # Log sent event
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                user_id=user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            error_code = getattr(e, "error_code", "unknown_error")
+            
+            # Log failed event
+            await self._log_email_event(
+                email_type=email_type,
+                status="failed",
+                to_email=to_email,
+                user_id=user_id,
+                latency_ms=latency_ms,
+                error_code=str(error_code),
+                error_message=str(e)[:500],
+                idempotency_key=idempotency_key,
+            )
+            raise
 
 
 # Fin del archivo backend/app/shared/integrations/mailersend_email_sender.py

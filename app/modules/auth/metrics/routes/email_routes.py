@@ -5,14 +5,17 @@ backend/app/modules/auth/metrics/routes/email_routes.py
 Rutas para métricas de correos del módulo Auth.
 
 Endpoints:
-- GET /_internal/auth/metrics/emails: métricas agregadas
+- GET /_internal/auth/metrics/emails: métricas agregadas (global)
+- GET /_internal/auth/metrics/emails/by-type: métricas por tipo de email
 - GET /_internal/auth/emails/backlog: lista de pendientes/fallidos
 - POST /_internal/auth/emails/{type}/{user_id}/retry: reintentar envío (stub)
 
 Autor: Sistema
 Fecha: 2025-12-26
+Actualizado: 2026-01-02 - Agregado endpoint by-type con soporte de periodo
 """
 import logging
+from datetime import date, timedelta
 from typing import Optional, Literal, List, Any
 from fastapi import APIRouter, Depends, Query, Path, HTTPException
 from pydantic import BaseModel, Field
@@ -20,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
 from app.modules.auth.metrics.aggregators.email_aggregators import EmailAggregators
+from app.modules.auth.metrics.aggregators.email_by_type_aggregators import EmailByTypeAggregators
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +76,38 @@ class RetryResponse(BaseModel):
     email_type: str = Field(..., description="Tipo de correo")
 
 
+class EmailTypeMetrics(BaseModel):
+    """Métricas para un tipo de email específico."""
+    email_type: str = Field(..., description="Tipo de email")
+    sent_total: int = Field(..., description="Emails enviados")
+    failed_total: int = Field(..., description="Emails fallidos")
+    pending_total: int = Field(..., description="Emails pendientes")
+    failure_rate: float = Field(..., description="Tasa de fallo (fallidos / total intentos)")
+    latency_avg_ms: Optional[float] = Field(None, description="Latencia promedio en ms")
+    latency_p95_ms: Optional[float] = Field(None, description="Latencia p95 en ms")
+    latency_count: int = Field(0, description="Muestra de latencia")
+
+
+class EmailTotals(BaseModel):
+    """Totales agregados de todos los tipos."""
+    sent_total: int
+    failed_total: int
+    pending_total: int
+    failure_rate: float
+    latency_avg_ms: Optional[float] = None
+    latency_p95_ms: Optional[float] = None
+    latency_count: int = 0
+
+
+class EmailMetricsByTypeResponse(BaseModel):
+    """Respuesta de métricas por tipo de email."""
+    period_from: str = Field(..., description="Fecha inicio del periodo (YYYY-MM-DD)")
+    period_to: str = Field(..., description="Fecha fin del periodo (YYYY-MM-DD)")
+    generated_at: str = Field(..., description="Timestamp de generación (ISO 8601)")
+    items: List[EmailTypeMetrics] = Field(..., description="Métricas por tipo")
+    totals: EmailTotals = Field(..., description="Totales agregados")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Router
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +151,93 @@ async def get_email_metrics(db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.get("/_internal/auth/emails/backlog", response_model=BacklogResponse)
+@router.get("/_internal/admin/auth/email-metrics/by-type", response_model=EmailMetricsByTypeResponse)
+async def get_email_metrics_by_type(
+    from_date: Optional[str] = Query(
+        None, 
+        alias="from",
+        description="Fecha inicio (YYYY-MM-DD). Default: 30 días atrás"
+    ),
+    to_date: Optional[str] = Query(
+        None,
+        alias="to", 
+        description="Fecha fin (YYYY-MM-DD). Default: hoy"
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Obtiene métricas de correos desglosadas por tipo.
+    
+    Soporta filtro por periodo (from/to, ambos inclusive).
+    Si no se especifica, usa los últimos 30 días.
+    
+    Returns:
+        EmailMetricsByTypeResponse con items por tipo y totales.
+    """
+    # Parse dates
+    today = date.today()
+    
+    if to_date:
+        try:
+            to_dt = date.fromisoformat(to_date)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de fecha 'to' inválido: {to_date}. Usar YYYY-MM-DD"
+            )
+    else:
+        to_dt = today
+    
+    if from_date:
+        try:
+            from_dt = date.fromisoformat(from_date)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de fecha 'from' inválido: {from_date}. Usar YYYY-MM-DD"
+            )
+    else:
+        from_dt = to_dt - timedelta(days=30)
+    
+    # Validate range
+    if from_dt > to_dt:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'from' ({from_dt}) debe ser <= 'to' ({to_dt})"
+        )
+    
+    max_range_days = 365
+    if (to_dt - from_dt).days > max_range_days:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rango máximo permitido: {max_range_days} días"
+        )
+    
+    logger.info(
+        "email_metrics_by_type_request: from=%s to=%s",
+        from_dt.isoformat(),
+        to_dt.isoformat(),
+    )
+    
+    agg = EmailByTypeAggregators(db)
+    result = await agg.get_metrics_by_type(from_dt, to_dt)
+    
+    logger.info(
+        "email_metrics_by_type_completed: items=%d total_sent=%d total_failed=%d",
+        len(result["items"]),
+        result["totals"]["sent_total"],
+        result["totals"]["failed_total"],
+    )
+    
+    return EmailMetricsByTypeResponse(
+        period_from=result["period_from"],
+        period_to=result["period_to"],
+        generated_at=result["generated_at"],
+        items=[EmailTypeMetrics(**item) for item in result["items"]],
+        totals=EmailTotals(**result["totals"]),
+    )
+
+
 async def get_email_backlog(
     type: Literal["activation", "welcome", "all"] = Query("all", description="Tipo de correo"),
     status: Literal["pending", "failed"] = Query("pending", description="Estado del correo"),
