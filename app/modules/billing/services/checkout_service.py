@@ -6,11 +6,13 @@ Servicio para aplicar créditos tras checkout exitoso.
 
 Autor: DoxAI
 Fecha: 2025-12-29 (refactored 2025-12-30)
+Actualizado: 2026-01-01 (completed_at idempotente)
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +50,7 @@ class CheckoutService:
         Marca un checkout intent como completado y acredita al ledger.
         
         Idempotente: si ya está completed, retorna sin cambios.
+        completed_at se setea una sola vez (primera transición a completed).
         """
         # 1) Obtener intent
         intent = await self.intent_repo.get_by_id(session, intent_id)
@@ -62,10 +65,15 @@ class CheckoutService:
         # 3) Actualizar estado del intent a completed
         intent.status = CheckoutIntentStatus.COMPLETED.value
         
+        # 4) Setear completed_at UNA SOLA VEZ (idempotente)
+        #    Solo se setea si es None (primera transición a completed)
+        if intent.completed_at is None:
+            intent.completed_at = datetime.now(timezone.utc)
+        
         if stripe_session_id and not intent.provider_session_id:
             intent.provider_session_id = stripe_session_id
         
-        # 4) Acreditar al ledger real
+        # 5) Acreditar al ledger real
         await self.wallet_service.add_credits(
             session,
             intent.user_id,
@@ -83,8 +91,8 @@ class CheckoutService:
         await session.flush()
         
         logger.info(
-            "Checkout completed: intent=%s, user=%s, credits=%d",
-            intent_id, intent.user_id, intent.credits_amount,
+            "Checkout completed: intent=%s, user=%s, credits=%d, completed_at=%s",
+            intent_id, intent.user_id, intent.credits_amount, intent.completed_at,
         )
         
         return intent, True

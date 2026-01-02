@@ -9,6 +9,7 @@ Responsabilidades:
 - Construir contexto de email
 - Enviar email via EmailSender
 - Marcar invoice como email_sent (idempotencia)
+- Loguear eventos operativos (billing.email.sent / billing.email.failed)
 
 Autor: DoxAI
 Fecha: 2026-01-01
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models_invoice import BillingInvoice
 from ..models import CheckoutIntent
 from ..credit_packages import get_package_by_id
+from ..admin.operation.event_logger import BillingOperationEventLogger
 
 if TYPE_CHECKING:
     from app.shared.integrations.email_sender import IEmailSender
@@ -199,6 +201,32 @@ def build_email_context(
     }
 
 
+def _classify_email_error(error: Exception) -> str:
+    """
+    Clasifica el error de email en un código estandarizado.
+    
+    Args:
+        error: Excepción capturada
+        
+    Returns:
+        Código de error estandarizado
+    """
+    error_str = str(error).lower()
+    
+    if "template" in error_str:
+        return "template_missing"
+    elif "smtp" in error_str or "connection" in error_str:
+        return "provider_error"
+    elif "timeout" in error_str:
+        return "provider_timeout"
+    elif "rate" in error_str or "limit" in error_str:
+        return "rate_limited"
+    elif "invalid" in error_str and "email" in error_str:
+        return "invalid_email"
+    else:
+        return "email_send_failed"
+
+
 async def send_purchase_confirmation_email(
     session: AsyncSession,
     invoice: BillingInvoice,
@@ -212,6 +240,7 @@ async def send_purchase_confirmation_email(
     
     Idempotente: no reenvía si ya se envió (purchase_email_sent_at).
     Best-effort: errores de email se loguean pero no se propagan.
+    Loguea eventos operativos (billing.email.sent / billing.email.failed).
     
     Args:
         session: Sesión de base de datos
@@ -224,6 +253,8 @@ async def send_purchase_confirmation_email(
     Returns:
         True si se envió, False si ya estaba enviado o falló
     """
+    event_logger = BillingOperationEventLogger(session)
+    
     # Idempotencia: verificar si ya se envió
     if invoice.purchase_email_sent_at:
         logger.info(
@@ -266,6 +297,13 @@ async def send_purchase_confirmation_email(
         
         # Marcar como enviado
         invoice.purchase_email_sent_at = datetime.now(timezone.utc)
+        
+        # Log evento operativo (fire-and-forget, en la misma transacción)
+        await event_logger.log_email_sent(
+            invoice_id=invoice.id,
+            intent_id=intent.id,
+        )
+        
         await session.commit()
         
         logger.info(
@@ -278,12 +316,28 @@ async def send_purchase_confirmation_email(
         return True
         
     except Exception as e:
+        # Clasificar error
+        error_code = _classify_email_error(e)
+        
+        # Log evento operativo (fire-and-forget)
+        try:
+            await event_logger.log_email_failed(
+                invoice_id=invoice.id,
+                intent_id=intent.id,
+                error_code=error_code,
+            )
+            await session.commit()
+        except Exception:
+            # Si falla el log, no propagar
+            pass
+        
         # Best-effort: loguear error pero no propagar
         logger.error(
-            "purchase_confirmation_email_failed: invoice=%s to=%s error=%s",
+            "purchase_confirmation_email_failed: invoice=%s to=%s error=%s error_code=%s",
             invoice.invoice_number,
             user_email[:3] + "***" if user_email else "unknown",
             str(e),
+            error_code,
         )
         return False
 

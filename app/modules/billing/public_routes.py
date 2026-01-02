@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from fastapi import Depends
 from app.shared.database.database import get_async_session
 from .models_invoice import BillingInvoice
 from .models import CheckoutIntent
+from .admin.operation.event_logger import BillingOperationEventLogger
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,22 @@ def _sanitize_dict_for_public(
     return {k: v for k, v in data.items() if k in allowed_keys}
 
 
+def _get_request_id(request: Request) -> Optional[str]:
+    """Extrae request_id del header o genera None."""
+    return request.headers.get("x-request-id")
+
+
+def _get_user_agent(request: Request) -> Optional[str]:
+    """Extrae user-agent truncado del request."""
+    ua = request.headers.get("user-agent")
+    return ua[:255] if ua else None
+
+
 async def _get_invoice_by_public_token(
     session: AsyncSession,
     token: str,
+    event_logger: BillingOperationEventLogger,
+    request_id: Optional[str] = None,
 ) -> BillingInvoice:
     """
     Obtiene invoice por token público, validando expiración.
@@ -73,6 +88,8 @@ async def _get_invoice_by_public_token(
     Args:
         session: Sesión de base de datos
         token: Token público (sin extensión)
+        event_logger: Logger de eventos operativos
+        request_id: ID de request para correlación
         
     Returns:
         BillingInvoice válido
@@ -95,6 +112,11 @@ async def _get_invoice_by_public_token(
     if not invoice:
         # Log distinguishes reason, but response is generic
         logger.warning("Public receipt token not found: token=%s...", token[:8] if token else "")
+        
+        # Log evento operativo y commit ANTES del raise para persistir métrica
+        await event_logger.log_token_not_found(request_id=request_id)
+        await session.commit()
+        
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=_PUBLIC_NOT_FOUND,
@@ -109,6 +131,14 @@ async def _get_invoice_by_public_token(
             invoice.invoice_number,
             invoice.public_token_expires_at,
         )
+        
+        # Log evento operativo y commit ANTES del raise para persistir métrica
+        await event_logger.log_token_expired(
+            invoice_id=invoice.id,
+            request_id=request_id,
+        )
+        await session.commit()
+        
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=_PUBLIC_NOT_FOUND,
@@ -136,6 +166,7 @@ async def _get_invoice_by_public_token(
 )
 async def get_public_receipt_pdf(
     token: str,
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ) -> Response:
     """
@@ -143,6 +174,7 @@ async def get_public_receipt_pdf(
     
     Args:
         token: Token público del invoice (sin .pdf)
+        request: FastAPI Request object
         session: Sesión de base de datos
         
     Returns:
@@ -151,7 +183,13 @@ async def get_public_receipt_pdf(
     Raises:
         404: Token no encontrado o expirado
     """
-    invoice = await _get_invoice_by_public_token(session, token)
+    request_id = _get_request_id(request)
+    user_agent = _get_user_agent(request)
+    event_logger = BillingOperationEventLogger(session)
+    
+    invoice = await _get_invoice_by_public_token(
+        session, token, event_logger, request_id
+    )
     
     # Obtener checkout intent para datos adicionales
     intent_result = await session.execute(
@@ -239,6 +277,16 @@ async def get_public_receipt_pdf(
         token[:8],
     )
     
+    # Log evento operativo (fire-and-forget)
+    await event_logger.log_public_pdf_access(
+        invoice_id=invoice.id,
+        request_id=request_id,
+        user_agent=user_agent,
+    )
+    
+    # Commit para persistir el evento de log
+    await session.commit()
+    
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -267,6 +315,7 @@ async def get_public_receipt_pdf(
 )
 async def get_public_receipt_json(
     token: str,
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ) -> JSONResponse:
     """
@@ -274,6 +323,7 @@ async def get_public_receipt_json(
     
     Args:
         token: Token público del invoice (sin .json)
+        request: FastAPI Request object
         session: Sesión de base de datos
         
     Returns:
@@ -282,7 +332,13 @@ async def get_public_receipt_json(
     Raises:
         404: Token no encontrado o expirado
     """
-    invoice = await _get_invoice_by_public_token(session, token)
+    request_id = _get_request_id(request)
+    user_agent = _get_user_agent(request)
+    event_logger = BillingOperationEventLogger(session)
+    
+    invoice = await _get_invoice_by_public_token(
+        session, token, event_logger, request_id
+    )
     
     snap = invoice.snapshot_json or {}
     totals = snap.get("totals", {})
@@ -317,6 +373,16 @@ async def get_public_receipt_json(
         invoice.invoice_number,
         token[:8],
     )
+    
+    # Log evento operativo (fire-and-forget)
+    await event_logger.log_public_json_access(
+        invoice_id=invoice.id,
+        request_id=request_id,
+        user_agent=user_agent,
+    )
+    
+    # Commit para persistir el evento de log
+    await session.commit()
     
     return JSONResponse(content=response_data)
 

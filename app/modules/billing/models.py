@@ -135,6 +135,14 @@ class CheckoutIntent(Base):
         onupdate=func.now(),
     )
     
+    # Timestamp de confirmación de pago (solo se setea una vez)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+        doc="Timestamp de confirmación de pago. Se setea una vez al completar (idempotente).",
+    )
+    
     __table_args__ = (
         # Un usuario no puede tener dos intents con el mismo idempotency_key
         UniqueConstraint(
