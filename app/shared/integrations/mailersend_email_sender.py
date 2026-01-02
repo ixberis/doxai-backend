@@ -63,6 +63,7 @@ class MailerSendEmailSender:
         from_name: str = "DoxAI",
         timeout: int = 30,
         frontend_url: Optional[str] = None,
+        support_email: Optional[str] = None,
     ):
         if not api_key:
             raise ValueError("MAILERSEND_API_KEY es requerido")
@@ -74,6 +75,7 @@ class MailerSendEmailSender:
         self.from_name = from_name
         self.timeout = timeout
         self.frontend_url = _normalize_base_url(frontend_url)
+        self.support_email = support_email or "soporte@doxai.site"
 
     @classmethod
     def from_settings(cls, settings: BaseAppSettings) -> "MailerSendEmailSender":
@@ -113,10 +115,13 @@ class MailerSendEmailSender:
                 "Configúrelo en Railway/Vercel."
             )
 
+        support_email = getattr(settings, "support_email", None) or "soporte@doxai.site"
+
         logger.info(
-            "[MailerSend] config: from=%s (%s) timeout=%ss",
+            "[MailerSend] config: from=%s (%s) reply_to=%s timeout=%ss",
             from_email,
             from_name,
+            support_email,
             timeout,
         )
 
@@ -126,6 +131,7 @@ class MailerSendEmailSender:
             from_name=from_name,
             timeout=timeout,
             frontend_url=frontend_url,
+            support_email=support_email,
         )
 
     @classmethod
@@ -264,6 +270,10 @@ class MailerSendEmailSender:
             "from": {
                 "email": self.from_email,
                 "name": self.from_name,
+            },
+            "reply_to": {
+                "email": self.support_email,
+                "name": "Soporte DoxAI",
             },
             "to": [
                 {"email": to_email}
@@ -465,7 +475,7 @@ class MailerSendEmailSender:
         Envía notificación al admin cuando un usuario activa su cuenta.
         
         Args:
-            to_email: Email del admin (normalmente doxai@juvare.mx)
+            to_email: Email del admin (normalmente doxai@doxai.site)
             user_email: Email del usuario que activó
             user_name: Nombre del usuario
             user_id: ID del usuario
@@ -522,6 +532,7 @@ class MailerSendEmailSender:
             "user_agent": user_agent or "No disponible",
             "login_url": login_url,
             "frontend_url": self.frontend_url or "",
+            "support_email": self.support_email,
         }
 
         html, text, used_template = render_email("password_reset_success_email", context)
@@ -534,7 +545,7 @@ class MailerSendEmailSender:
                 f"Su contraseña ha sido restablecida exitosamente.\n\n"
                 f"Fecha/Hora: {reset_datetime_utc} UTC\n"
                 f"IP: {ip_address or 'No disponible'}\n\n"
-                f"Si usted no realizó este cambio, contacte soporte: doxai@juvare.mx\n"
+                f"Si usted no realizó este cambio, contacte soporte: {self.support_email}\n"
             )
 
         if not html:

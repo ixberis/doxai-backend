@@ -96,6 +96,7 @@ class SMTPEmailSender:
         templates_dir: Optional[str] = None,  # Deprecated, ignorado
         frontend_url: Optional[str] = None,
         tls_verify: bool = True,
+        support_email: Optional[str] = None,
     ):
         self.server = server
         self.port = port
@@ -108,6 +109,7 @@ class SMTPEmailSender:
         self.timeout = timeout
         self.frontend_url = _normalize_base_url(frontend_url)
         self.tls_verify = tls_verify
+        self.support_email = support_email or "soporte@doxai.site"
 
     @classmethod
     def from_settings(cls, settings) -> "SMTPEmailSender":
@@ -135,6 +137,7 @@ class SMTPEmailSender:
         use_tls = not use_ssl  # Si no es SSL, usa TLS
         timeout = settings.email_timeout_sec or 30
         tls_verify = getattr(settings, "email_tls_verify", True)
+        support_email = getattr(settings, "support_email", None) or "soporte@doxai.site"
         # Fallback: FRONTEND_BASE_URL tiene prioridad sobre FRONTEND_URL
         frontend_url = _normalize_base_url(
             getattr(settings, "frontend_base_url", None) or settings.frontend_url
@@ -146,12 +149,13 @@ class SMTPEmailSender:
             )
 
         logger.info(
-            "[SMTP] config: server=%s port=%s ssl=%s tls=%s tls_verify=%s timeout=%ss",
+            "[SMTP] config: server=%s port=%s ssl=%s tls=%s tls_verify=%s reply_to=%s timeout=%ss",
             server,
             port,
             use_ssl,
             use_tls,
             tls_verify,
+            support_email,
             timeout,
         )
 
@@ -167,6 +171,7 @@ class SMTPEmailSender:
             timeout=timeout,
             frontend_url=frontend_url,
             tls_verify=tls_verify,
+            support_email=support_email,
         )
 
     @classmethod
@@ -265,6 +270,7 @@ class SMTPEmailSender:
         msg["To"] = to_email
         msg["Subject"] = subject
         msg["Date"] = formatdate(localtime=True)
+        msg["Reply-To"] = self.support_email
 
         domain = (
             self.from_email.split("@")[-1] if "@" in self.from_email else "doxai.local"
@@ -457,7 +463,7 @@ class SMTPEmailSender:
         Envía notificación al admin cuando un usuario activa su cuenta.
         
         Args:
-            to_email: Email del admin (normalmente doxai@juvare.mx)
+            to_email: Email del admin (normalmente doxai@doxai.site)
             user_email: Email del usuario que activó
             user_name: Nombre del usuario
             user_id: ID del usuario
@@ -515,6 +521,7 @@ class SMTPEmailSender:
             "user_agent": user_agent or "No disponible",
             "login_url": login_url,
             "frontend_url": self.frontend_url or "",
+            "support_email": self.support_email,
         }
 
         html, text, used_template = render_email("password_reset_success_email", context)
@@ -527,7 +534,7 @@ class SMTPEmailSender:
                 f"Su contraseña ha sido restablecida exitosamente.\n\n"
                 f"Fecha/Hora: {reset_datetime_utc} UTC\n"
                 f"IP: {ip_address or 'No disponible'}\n\n"
-                f"Si usted no realizó este cambio, contacte soporte: doxai@juvare.mx\n"
+                f"Si usted no realizó este cambio, contacte soporte: {self.support_email}\n"
             )
 
         if not html:

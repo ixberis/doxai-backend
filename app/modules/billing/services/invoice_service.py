@@ -43,7 +43,7 @@ ISSUER_INFO = {
 RECEIPT_FROM = {
     "name": "JUVARE",
     "country": "México",
-    "email": "doxai@juvare.mx",
+    "email": "doxai@doxai.site",
 }
 
 

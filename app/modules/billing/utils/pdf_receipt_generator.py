@@ -328,7 +328,7 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     from_info = snapshot.receipt_from if snapshot.receipt_from else {
         "name": "JUVARE",
         "country": "México",
-        "email": "doxai@juvare.mx",
+        "email": "doxai@doxai.site",
     }
     
     c.setFont(font_bold, 9)
@@ -348,7 +348,7 @@ def generate_invoice_pdf(snapshot: InvoiceSnapshot) -> bytes:
     section_y_left -= 14
     
     # Email
-    c.drawString(col1_x, section_y_left, from_info.get("email", "doxai@juvare.mx"))
+    c.drawString(col1_x, section_y_left, from_info.get("email", "doxai@doxai.site"))
     section_y_left -= 14
     
     # TO (Bill to)
@@ -544,7 +544,7 @@ def generate_checkout_receipt_pdf(data: ReceiptData) -> bytes:
     RECEIPT_FROM = {
         "name": "JUVARE",
         "country": "México",
-        "email": "doxai@juvare.mx",
+        "email": "doxai@doxai.site",
     }
     
     # Construir snapshot básico

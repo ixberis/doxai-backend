@@ -256,7 +256,7 @@ EMAIL_PORT=465
 EMAIL_USE_SSL=true
 EMAIL_USERNAME=<smtp user>
 EMAIL_PASSWORD=<smtp password>
-EMAIL_FROM=doxai@juvare.mx
+EMAIL_FROM=doxai@doxai.site
 EMAIL_TIMEOUT_SEC=8
 ```
 

@@ -174,7 +174,7 @@ class ActivationFlowService:
                 )
 
                 # Enviar notificación al admin (best-effort, no bloquea activación)
-                admin_email = getattr(self.settings, "admin_notification_email", None) or "doxai@juvare.mx"
+                admin_email = getattr(self.settings, "admin_notification_email", None) or "doxai@doxai.site"
                 
                 try:
                     admin_email_sent = await send_admin_activation_notice_safely(
