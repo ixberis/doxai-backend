@@ -52,7 +52,7 @@ async def create_http_client() -> bool:
 
             # Headers identificables (User-Agent) + cabeceras extra opcionales
             headers = {
-                "User-Agent": f"{settings.app_name}/{settings.app_version} (+https://doxai.juvare.mx)",
+                "User-Agent": f"{settings.app_name}/{settings.app_version} (+https://app.doxai.site)",
                 **(settings.http_extra_headers or {})
             }
 
