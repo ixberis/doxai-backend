@@ -356,8 +356,8 @@ class AuthAggregators:
             q = text("""
                 SELECT COUNT(*) 
                 FROM public.app_users 
-                WHERE user_created_at >= :from_date::date 
-                  AND user_created_at < (:to_date::date + interval '1 day')
+                WHERE user_created_at >= CAST(:from_date AS date) 
+                  AND user_created_at < (CAST(:to_date AS date) + interval '1 day')
             """)
             res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
             row = res.first()
@@ -371,15 +371,16 @@ class AuthAggregators:
             logger.warning("get_auth_summary users_created failed: %s", e)
         
         # Query usuarios activados en el rango
-        # Fuente: public.account_activations.consumed_at (cuando status='used')
+        # Fuente primaria: public.account_activations.consumed_at (status='used')
+        # Fallback: public.app_users.user_activated_at
         try:
             q = text("""
-                SELECT COUNT(DISTINCT user_id) 
-                FROM public.account_activations 
+                SELECT COUNT(DISTINCT user_id)
+                FROM public.account_activations
                 WHERE status = 'used'
                   AND consumed_at IS NOT NULL
-                  AND consumed_at >= :from_date::date 
-                  AND consumed_at < (:to_date::date + interval '1 day')
+                  AND consumed_at >= CAST(:from_date AS date)
+                  AND consumed_at < (CAST(:to_date AS date) + interval '1 day')
             """)
             res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
             row = res.first()
@@ -391,18 +392,38 @@ class AuthAggregators:
                     users_activated, activated_source
                 )
         except Exception as e:
-            logger.warning("get_auth_summary users_activated failed: %s", e)
+            logger.debug("get_auth_summary account_activations query failed, trying fallback: %s", e)
+            # Fallback: usar app_users.user_activated_at
+            try:
+                q_fallback = text("""
+                    SELECT COUNT(*) 
+                    FROM public.app_users 
+                    WHERE user_activated_at IS NOT NULL
+                      AND user_activated_at >= CAST(:from_date AS date)
+                      AND user_activated_at < (CAST(:to_date AS date) + interval '1 day')
+                """)
+                res = await self.db.execute(q_fallback, {"from_date": from_date, "to_date": to_date})
+                row = res.first()
+                if row and row[0] is not None:
+                    users_activated = int(row[0])
+                    activated_source = "app_users.user_activated_at"
+                    logger.debug(
+                        "get_auth_summary users_activated=%d source=%s (fallback)",
+                        users_activated, activated_source
+                    )
+            except Exception as e2:
+                logger.warning("get_auth_summary users_activated fallback failed: %s", e2)
         
         # Query usuarios con pago en el rango
         # Fuente: public.checkout_intents.completed_at (status='completed')
         try:
             q = text("""
-                SELECT COUNT(DISTINCT user_id) 
-                FROM public.checkout_intents 
+                SELECT COUNT(DISTINCT user_id)
+                FROM public.checkout_intents
                 WHERE status = 'completed'
                   AND completed_at IS NOT NULL
-                  AND completed_at >= :from_date::date 
-                  AND completed_at < (:to_date::date + interval '1 day')
+                  AND completed_at >= CAST(:from_date AS date)
+                  AND completed_at < (CAST(:to_date AS date) + interval '1 day')
             """)
             res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
             row = res.first()
