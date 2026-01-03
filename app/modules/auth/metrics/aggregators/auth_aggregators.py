@@ -351,62 +351,56 @@ class AuthAggregators:
         paying_source = "none"
         
         # Query usuarios creados en el rango (half-open: >= from, < to+1day)
+        # Fuente: public.app_users.user_created_at
         try:
             q = text("""
                 SELECT COUNT(*) 
                 FROM public.app_users 
-                WHERE created_at >= :from_date::date 
-                  AND created_at < (:to_date::date + interval '1 day')
+                WHERE user_created_at >= :from_date::date 
+                  AND user_created_at < (:to_date::date + interval '1 day')
             """)
             res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
             row = res.first()
             if row and row[0] is not None:
                 users_created = int(row[0])
+                logger.debug(
+                    "get_auth_summary users_created=%d source=app_users.user_created_at",
+                    users_created
+                )
         except Exception as e:
             logger.warning("get_auth_summary users_created failed: %s", e)
         
         # Query usuarios activados en el rango
-        # Primary: app_users.activated_at (with IS NOT NULL check)
+        # Fuente: public.account_activations.consumed_at (cuando status='used')
         try:
             q = text("""
-                SELECT COUNT(*) 
-                FROM public.app_users 
-                WHERE user_is_activated = true
-                  AND activated_at IS NOT NULL
-                  AND activated_at >= :from_date::date 
-                  AND activated_at < (:to_date::date + interval '1 day')
+                SELECT COUNT(DISTINCT user_id) 
+                FROM public.account_activations 
+                WHERE status = 'used'
+                  AND consumed_at IS NOT NULL
+                  AND consumed_at >= :from_date::date 
+                  AND consumed_at < (:to_date::date + interval '1 day')
             """)
             res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
             row = res.first()
             if row and row[0] is not None:
                 users_activated = int(row[0])
-                activated_source = "app_users_activated_at"
+                activated_source = "account_activations.consumed_at"
+                logger.debug(
+                    "get_auth_summary users_activated=%d source=%s",
+                    users_activated, activated_source
+                )
         except Exception as e:
-            logger.debug("get_auth_summary users_activated (activated_at) failed: %s", e)
-            # Fallback: account_activations table
-            try:
-                q = text("""
-                    SELECT COUNT(DISTINCT user_id) 
-                    FROM public.account_activations 
-                    WHERE status = 'used'
-                      AND used_at >= :from_date::date 
-                      AND used_at < (:to_date::date + interval '1 day')
-                """)
-                res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
-                row = res.first()
-                if row and row[0] is not None:
-                    users_activated = int(row[0])
-                    activated_source = "account_activations_used_at"
-            except Exception as e2:
-                logger.warning("get_auth_summary users_activated fallback failed: %s", e2)
+            logger.warning("get_auth_summary users_activated failed: %s", e)
         
         # Query usuarios con pago en el rango
-        # Primary: billing.checkout_intents.completed_at
+        # Fuente: public.checkout_intents.completed_at (status='completed')
         try:
             q = text("""
                 SELECT COUNT(DISTINCT user_id) 
-                FROM billing.checkout_intents 
+                FROM public.checkout_intents 
                 WHERE status = 'completed'
+                  AND completed_at IS NOT NULL
                   AND completed_at >= :from_date::date 
                   AND completed_at < (:to_date::date + interval '1 day')
             """)
@@ -414,25 +408,13 @@ class AuthAggregators:
             row = res.first()
             if row and row[0] is not None:
                 users_paying = int(row[0])
-                paying_source = "checkout_intents_completed_at"
+                paying_source = "checkout_intents.completed_at"
+                logger.debug(
+                    "get_auth_summary users_paying=%d source=%s",
+                    users_paying, paying_source
+                )
         except Exception as e:
-            logger.debug("get_auth_summary users_paying (checkout_intents) failed: %s", e)
-            # Fallback: credit_transactions
-            try:
-                q = text("""
-                    SELECT COUNT(DISTINCT user_id) 
-                    FROM public.credit_transactions 
-                    WHERE operation_code = 'CHECKOUT'
-                      AND created_at >= :from_date::date 
-                      AND created_at < (:to_date::date + interval '1 day')
-                """)
-                res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
-                row = res.first()
-                if row and row[0] is not None:
-                    users_paying = int(row[0])
-                    paying_source = "credit_transactions_created_at"
-            except Exception as e2:
-                logger.warning("get_auth_summary users_paying fallback failed: %s", e2)
+            logger.warning("get_auth_summary users_paying failed: %s", e)
         
         # Calcular ratios (None si denominador = 0)
         creation_to_activation_ratio = (
