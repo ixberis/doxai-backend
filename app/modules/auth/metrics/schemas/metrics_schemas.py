@@ -111,4 +111,70 @@ class AuthMetricsSnapshot(BaseModel):
     )
 
 
+class AuthSummaryRange(BaseModel):
+    """Date range for summary query."""
+    from_date: str = Field(..., alias="from", description="Start date ISO (YYYY-MM-DD)")
+    to_date: str = Field(..., alias="to", description="End date ISO (YYYY-MM-DD)")
+    
+    model_config = {
+        "populate_by_name": True,
+        "by_alias": True,  # Serialize using aliases (from, to)
+    }
+
+
+class AuthSummaryMetrics(BaseModel):
+    """
+    Summary metrics for Auth Funcional → Resumen (with date range).
+    
+    Returns counts within the specified date range and conversion ratios.
+    """
+    # ─────────────────────────────────────────────────────────────
+    # Range metadata
+    # ─────────────────────────────────────────────────────────────
+    range: AuthSummaryRange = Field(
+        ..., 
+        description="Date range used for this summary"
+    )
+    
+    # ─────────────────────────────────────────────────────────────
+    # Counts within range
+    # ─────────────────────────────────────────────────────────────
+    users_created: int = Field(
+        0, 
+        description="Usuarios registrados dentro del rango"
+    )
+    users_activated: int = Field(
+        0, 
+        description="Usuarios que activaron su cuenta dentro del rango"
+    )
+    users_paying: int = Field(
+        0, 
+        description="Usuarios con ≥1 pago exitoso dentro del rango"
+    )
+    
+    # ─────────────────────────────────────────────────────────────
+    # Conversion ratios (null if denominator is 0)
+    # ─────────────────────────────────────────────────────────────
+    creation_to_activation_ratio: Optional[float] = Field(
+        None, 
+        description="users_activated / users_created (null if denom=0)"
+    )
+    activation_to_payment_ratio: Optional[float] = Field(
+        None, 
+        description="users_paying / users_activated (null if denom=0)"
+    )
+    creation_to_payment_ratio: Optional[float] = Field(
+        None, 
+        description="users_paying / users_created (null if denom=0)"
+    )
+    
+    # ─────────────────────────────────────────────────────────────
+    # Meta
+    # ─────────────────────────────────────────────────────────────
+    generated_at: str = Field(
+        ..., 
+        description="ISO timestamp de generación"
+    )
+
+
 # Fin del archivo backend/app/modules/auth/metrics/schemas/metrics_schemas.py

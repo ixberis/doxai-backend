@@ -21,6 +21,7 @@ Actualizado: 2025-12-28 - DB-first con vista v2
 """
 from __future__ import annotations
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,25 @@ from sqlalchemy import text
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AuthSummaryData:
+    """
+    Dataclass para resumen con rango de fechas.
+    
+    NOTA TZ: Las fechas (from_date, to_date) se interpretan en UTC.
+    Los rangos usan comparación half-open: [from_date 00:00 UTC, to_date+1 00:00 UTC).
+    """
+    users_created: int
+    users_activated: int
+    users_paying: int
+    creation_to_activation_ratio: Optional[float]
+    activation_to_payment_ratio: Optional[float]
+    creation_to_payment_ratio: Optional[float]
+    from_date: str
+    to_date: str
+    generated_at: str
 
 
 @dataclass
@@ -308,6 +328,152 @@ class AuthAggregators:
         except Exception as e:
             logger.debug("get_latest_activation_conversion_ratio function failed: %s", e)
         return await self.get_activation_conversion_ratio()
+
+    # ─────────────────────────────────────────────────────────────
+    # NUEVO: Summary con rango de fechas
+    # ─────────────────────────────────────────────────────────────
+
+    async def get_auth_summary(self, from_date: str, to_date: str) -> AuthSummaryData:
+        """
+        Obtiene resumen de métricas Auth dentro de un rango de fechas.
+        
+        Args:
+            from_date: Fecha inicio (YYYY-MM-DD) - inclusive
+            to_date: Fecha fin (YYYY-MM-DD) - inclusive
+            
+        Returns:
+            AuthSummaryData con counts y ratios para el rango.
+        """
+        users_created = 0
+        users_activated = 0
+        users_paying = 0
+        activated_source = "none"
+        paying_source = "none"
+        
+        # Query usuarios creados en el rango (half-open: >= from, < to+1day)
+        try:
+            q = text("""
+                SELECT COUNT(*) 
+                FROM public.app_users 
+                WHERE created_at >= :from_date::date 
+                  AND created_at < (:to_date::date + interval '1 day')
+            """)
+            res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+            row = res.first()
+            if row and row[0] is not None:
+                users_created = int(row[0])
+        except Exception as e:
+            logger.warning("get_auth_summary users_created failed: %s", e)
+        
+        # Query usuarios activados en el rango
+        # Primary: app_users.activated_at (with IS NOT NULL check)
+        try:
+            q = text("""
+                SELECT COUNT(*) 
+                FROM public.app_users 
+                WHERE user_is_activated = true
+                  AND activated_at IS NOT NULL
+                  AND activated_at >= :from_date::date 
+                  AND activated_at < (:to_date::date + interval '1 day')
+            """)
+            res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+            row = res.first()
+            if row and row[0] is not None:
+                users_activated = int(row[0])
+                activated_source = "app_users_activated_at"
+        except Exception as e:
+            logger.debug("get_auth_summary users_activated (activated_at) failed: %s", e)
+            # Fallback: account_activations table
+            try:
+                q = text("""
+                    SELECT COUNT(DISTINCT user_id) 
+                    FROM public.account_activations 
+                    WHERE status = 'used'
+                      AND used_at >= :from_date::date 
+                      AND used_at < (:to_date::date + interval '1 day')
+                """)
+                res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+                row = res.first()
+                if row and row[0] is not None:
+                    users_activated = int(row[0])
+                    activated_source = "account_activations_used_at"
+            except Exception as e2:
+                logger.warning("get_auth_summary users_activated fallback failed: %s", e2)
+        
+        # Query usuarios con pago en el rango
+        # Primary: billing.checkout_intents.completed_at
+        try:
+            q = text("""
+                SELECT COUNT(DISTINCT user_id) 
+                FROM billing.checkout_intents 
+                WHERE status = 'completed'
+                  AND completed_at >= :from_date::date 
+                  AND completed_at < (:to_date::date + interval '1 day')
+            """)
+            res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+            row = res.first()
+            if row and row[0] is not None:
+                users_paying = int(row[0])
+                paying_source = "checkout_intents_completed_at"
+        except Exception as e:
+            logger.debug("get_auth_summary users_paying (checkout_intents) failed: %s", e)
+            # Fallback: credit_transactions
+            try:
+                q = text("""
+                    SELECT COUNT(DISTINCT user_id) 
+                    FROM public.credit_transactions 
+                    WHERE operation_code = 'CHECKOUT'
+                      AND created_at >= :from_date::date 
+                      AND created_at < (:to_date::date + interval '1 day')
+                """)
+                res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+                row = res.first()
+                if row and row[0] is not None:
+                    users_paying = int(row[0])
+                    paying_source = "credit_transactions_created_at"
+            except Exception as e2:
+                logger.warning("get_auth_summary users_paying fallback failed: %s", e2)
+        
+        # Calcular ratios (None si denominador = 0)
+        creation_to_activation_ratio = (
+            round(users_activated / users_created, 4) if users_created > 0 else None
+        )
+        activation_to_payment_ratio = (
+            round(users_paying / users_activated, 4) if users_activated > 0 else None
+        )
+        creation_to_payment_ratio = (
+            round(users_paying / users_created, 4) if users_created > 0 else None
+        )
+        
+        generated_at = datetime.now(timezone.utc).isoformat()
+        
+        # Helper para loguear None como "null" (no convertir a 0)
+        def _ratio_str(v: Optional[float]) -> str:
+            return f"{v:.4f}" if v is not None else "null"
+        
+        logger.info(
+            "[auth_metrics_summary] from=%s to=%s users_created=%d users_activated=%d "
+            "users_paying=%d source_activated=%s source_paying=%s "
+            "ratios=(%s, %s, %s) generated_at=%s",
+            from_date, to_date, users_created, users_activated, users_paying,
+            activated_source, paying_source,
+            _ratio_str(creation_to_activation_ratio),
+            _ratio_str(activation_to_payment_ratio),
+            _ratio_str(creation_to_payment_ratio),
+            generated_at
+        )
+        
+        return AuthSummaryData(
+            users_created=users_created,
+            users_activated=users_activated,
+            users_paying=users_paying,
+            creation_to_activation_ratio=creation_to_activation_ratio,
+            activation_to_payment_ratio=activation_to_payment_ratio,
+            creation_to_payment_ratio=creation_to_payment_ratio,
+            from_date=from_date,
+            to_date=to_date,
+            generated_at=generated_at,
+        )
 
     # ─────────────────────────────────────────────────────────────
     # Helpers legacy

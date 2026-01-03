@@ -6,7 +6,8 @@ backend/app/modules/auth/metrics/routes/metrics_routes.py
 Ruteador interno de métricas del módulo Auth v2 (DB-first).
 
 Expone endpoints JSON de monitoreo interno:
-- /_internal/auth/metrics/snapshot: 1 query a vista + sesiones
+- /_internal/auth/metrics/snapshot: 1 query a vista + sesiones (global)
+- /_internal/auth/metrics/summary: métricas con rango de fechas (nuevo)
 
 Estrategia:
 - Intenta usar vista v_auth_metrics_snapshot_v2 (1 query)
@@ -16,15 +17,20 @@ Estrategia:
 Autor: Ixchel Beristain
 Fecha: 2025-11-07
 Actualizado: 2025-12-28 - DB-first con vista v2
+Actualizado: 2026-01-02 - Nuevo endpoint summary con rango
 """
 import logging
 import uuid
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone, date
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
-from app.modules.auth.metrics.schemas.metrics_schemas import AuthMetricsSnapshot
+from app.modules.auth.metrics.schemas.metrics_schemas import (
+    AuthMetricsSnapshot,
+    AuthSummaryMetrics,
+    AuthSummaryRange,
+)
 from app.modules.auth.metrics.aggregators.auth_aggregators import AuthAggregators
 
 logger = logging.getLogger(__name__)
@@ -171,4 +177,93 @@ async def get_auth_metrics_snapshot(db: AsyncSession = Depends(get_db)):
             detail="Error interno al calcular métricas de autenticación",
         )
 
+
+def _parse_date(date_str: str, param_name: str) -> date:
+    """Parse and validate date string (YYYY-MM-DD)."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Parámetro '{param_name}' inválido. Formato esperado: YYYY-MM-DD"
+        )
+
+
+@router.get("/summary", response_model=AuthSummaryMetrics)
+async def get_auth_metrics_summary(
+    from_date: str = Query(..., alias="from", description="Fecha inicio (YYYY-MM-DD)"),
+    to_date: str = Query(..., alias="to", description="Fecha fin (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retorna métricas de Auth Funcional para un rango de fechas.
+    
+    Query params:
+    - from: Fecha inicio (YYYY-MM-DD) - inclusive
+    - to: Fecha fin (YYYY-MM-DD) - inclusive
+    
+    Returns:
+    - users_created: usuarios registrados en el rango
+    - users_activated: usuarios que activaron cuenta en el rango
+    - users_paying: usuarios con ≥1 pago exitoso en el rango
+    - creation_to_activation_ratio: users_activated / users_created
+    - activation_to_payment_ratio: users_paying / users_activated
+    - creation_to_payment_ratio: users_paying / users_created (NUEVO)
+    - range: {from, to} 
+    - generated_at: timestamp de generación
+    """
+    request_id = str(uuid.uuid4())[:8]
+    logger.info(f"[auth_metrics_summary:{request_id}] from={from_date} to={to_date}")
+    
+    # Validar formato de fechas
+    parsed_from = _parse_date(from_date, "from")
+    parsed_to = _parse_date(to_date, "to")
+    
+    # Validar from <= to
+    if parsed_from > parsed_to:
+        raise HTTPException(
+            status_code=400,
+            detail="El parámetro 'from' debe ser anterior o igual a 'to'"
+        )
+    
+    # Validar rango máximo (365 días)
+    if (parsed_to - parsed_from).days > 365:
+        raise HTTPException(
+            status_code=400,
+            detail="El rango máximo permitido es 365 días"
+        )
+    
+    try:
+        agg = AuthAggregators(db)
+        summary = await agg.get_auth_summary(from_date, to_date)
+        
+        logger.info(
+            f"[auth_metrics_summary:{request_id}] completed "
+            f"users_created={summary.users_created} "
+            f"users_activated={summary.users_activated} "
+            f"users_paying={summary.users_paying}"
+        )
+        
+        return AuthSummaryMetrics(
+            range=AuthSummaryRange(
+                from_date=summary.from_date,
+                to_date=summary.to_date,
+            ),
+            users_created=summary.users_created,
+            users_activated=summary.users_activated,
+            users_paying=summary.users_paying,
+            creation_to_activation_ratio=summary.creation_to_activation_ratio,
+            activation_to_payment_ratio=summary.activation_to_payment_ratio,
+            creation_to_payment_ratio=summary.creation_to_payment_ratio,
+            generated_at=summary.generated_at,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[auth_metrics_summary:{request_id}] fatal: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno al calcular resumen de métricas",
+        )
 
