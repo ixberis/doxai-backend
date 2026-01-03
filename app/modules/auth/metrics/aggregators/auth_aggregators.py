@@ -333,6 +333,9 @@ class AuthAggregators:
     # NUEVO: Summary con rango de fechas
     # ─────────────────────────────────────────────────────────────
 
+    # Version marker for production debugging
+    AUTH_SUMMARY_VERSION = "from_ts_to_ts_v1"
+
     async def get_auth_summary(self, from_date: str, to_date: str) -> AuthSummaryData:
         """
         Obtiene resumen de métricas Auth dentro de un rango de fechas.
@@ -354,6 +357,16 @@ class AuthAggregators:
         # Half-open range: [from_ts, to_ts) donde to_ts = to_dt + 1 day a las 00:00 UTC
         from_ts = datetime.combine(from_dt, time.min, tzinfo=timezone.utc)
         to_ts = datetime.combine(to_dt + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        
+        # Log version and types for production debugging
+        logger.info(
+            "get_auth_summary AUTH_SUMMARY_VERSION=%s from_date=%s to_date=%s "
+            "from_ts=%s (type=%s, tzinfo=%s) to_ts=%s (type=%s, tzinfo=%s)",
+            self.AUTH_SUMMARY_VERSION,
+            from_date, to_date,
+            from_ts, type(from_ts).__name__, from_ts.tzinfo,
+            to_ts, type(to_ts).__name__, to_ts.tzinfo
+        )
         
         users_created = 0
         users_activated = 0
