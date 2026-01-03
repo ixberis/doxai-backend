@@ -344,6 +344,11 @@ class AuthAggregators:
         Returns:
             AuthSummaryData con counts y ratios para el rango.
         """
+        # Parsear strings a date de Python para evitar error asyncpg:
+        # "invalid input for query argument: 'str' object has no attribute 'toordinal'"
+        from_dt = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_dt = datetime.strptime(to_date, "%Y-%m-%d").date()
+        
         users_created = 0
         users_activated = 0
         users_paying = 0
@@ -352,14 +357,15 @@ class AuthAggregators:
         
         # Query usuarios creados en el rango (half-open: >= from, < to+1day)
         # Fuente: public.app_users.user_created_at
+        # Ahora pasamos date objects, no necesitamos CAST en SQL
         try:
             q = text("""
                 SELECT COUNT(*) 
                 FROM public.app_users 
-                WHERE user_created_at >= CAST(:from_date AS date) 
-                  AND user_created_at < (CAST(:to_date AS date) + interval '1 day')
+                WHERE user_created_at >= :from_date 
+                  AND user_created_at < (:to_date + interval '1 day')
             """)
-            res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
             row = res.first()
             if row and row[0] is not None:
                 users_created = int(row[0])
@@ -379,10 +385,10 @@ class AuthAggregators:
                 FROM public.account_activations
                 WHERE status = 'used'
                   AND consumed_at IS NOT NULL
-                  AND consumed_at >= CAST(:from_date AS date)
-                  AND consumed_at < (CAST(:to_date AS date) + interval '1 day')
+                  AND consumed_at >= :from_date
+                  AND consumed_at < (:to_date + interval '1 day')
             """)
-            res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
             row = res.first()
             if row and row[0] is not None:
                 users_activated = int(row[0])
@@ -399,10 +405,10 @@ class AuthAggregators:
                     SELECT COUNT(*) 
                     FROM public.app_users 
                     WHERE user_activated_at IS NOT NULL
-                      AND user_activated_at >= CAST(:from_date AS date)
-                      AND user_activated_at < (CAST(:to_date AS date) + interval '1 day')
+                      AND user_activated_at >= :from_date
+                      AND user_activated_at < (:to_date + interval '1 day')
                 """)
-                res = await self.db.execute(q_fallback, {"from_date": from_date, "to_date": to_date})
+                res = await self.db.execute(q_fallback, {"from_date": from_dt, "to_date": to_dt})
                 row = res.first()
                 if row and row[0] is not None:
                     users_activated = int(row[0])
@@ -422,10 +428,10 @@ class AuthAggregators:
                 FROM public.checkout_intents
                 WHERE status = 'completed'
                   AND completed_at IS NOT NULL
-                  AND completed_at >= CAST(:from_date AS date)
-                  AND completed_at < (CAST(:to_date AS date) + interval '1 day')
+                  AND completed_at >= :from_date
+                  AND completed_at < (:to_date + interval '1 day')
             """)
-            res = await self.db.execute(q, {"from_date": from_date, "to_date": to_date})
+            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
             row = res.first()
             if row and row[0] is not None:
                 users_paying = int(row[0])
