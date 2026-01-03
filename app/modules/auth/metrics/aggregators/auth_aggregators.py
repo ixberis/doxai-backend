@@ -21,7 +21,7 @@ Actualizado: 2025-12-28 - DB-first con vista v2
 """
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time, timedelta
 from typing import Optional
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -344,10 +344,16 @@ class AuthAggregators:
         Returns:
             AuthSummaryData con counts y ratios para el rango.
         """
-        # Parsear strings a date de Python para evitar error asyncpg:
-        # "invalid input for query argument: 'str' object has no attribute 'toordinal'"
+        # Parsear strings a datetime UTC para evitar errores asyncpg:
+        # 1. "invalid input for query argument: 'str' object has no attribute 'toordinal'"
+        # 2. "operator does not exist: timestamp with time zone < interval"
+        # Construimos datetime tz-aware directamente, sin depender de interval en SQL.
         from_dt = datetime.strptime(from_date, "%Y-%m-%d").date()
         to_dt = datetime.strptime(to_date, "%Y-%m-%d").date()
+        
+        # Half-open range: [from_ts, to_ts) donde to_ts = to_dt + 1 day a las 00:00 UTC
+        from_ts = datetime.combine(from_dt, time.min, tzinfo=timezone.utc)
+        to_ts = datetime.combine(to_dt + timedelta(days=1), time.min, tzinfo=timezone.utc)
         
         users_created = 0
         users_activated = 0
@@ -355,17 +361,16 @@ class AuthAggregators:
         activated_source = "none"
         paying_source = "none"
         
-        # Query usuarios creados en el rango (half-open: >= from, < to+1day)
+        # Query usuarios creados en el rango (half-open: >= from_ts, < to_ts)
         # Fuente: public.app_users.user_created_at
-        # Ahora pasamos date objects, no necesitamos CAST en SQL
         try:
             q = text("""
                 SELECT COUNT(*) 
                 FROM public.app_users 
-                WHERE user_created_at >= :from_date 
-                  AND user_created_at < (:to_date + interval '1 day')
+                WHERE user_created_at >= :from_ts 
+                  AND user_created_at < :to_ts
             """)
-            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
+            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
             row = res.first()
             if row and row[0] is not None:
                 users_created = int(row[0])
@@ -385,10 +390,10 @@ class AuthAggregators:
                 FROM public.account_activations
                 WHERE status = 'used'
                   AND consumed_at IS NOT NULL
-                  AND consumed_at >= :from_date
-                  AND consumed_at < (:to_date + interval '1 day')
+                  AND consumed_at >= :from_ts
+                  AND consumed_at < :to_ts
             """)
-            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
+            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
             row = res.first()
             if row and row[0] is not None:
                 users_activated = int(row[0])
@@ -405,10 +410,10 @@ class AuthAggregators:
                     SELECT COUNT(*) 
                     FROM public.app_users 
                     WHERE user_activated_at IS NOT NULL
-                      AND user_activated_at >= :from_date
-                      AND user_activated_at < (:to_date + interval '1 day')
+                      AND user_activated_at >= :from_ts
+                      AND user_activated_at < :to_ts
                 """)
-                res = await self.db.execute(q_fallback, {"from_date": from_dt, "to_date": to_dt})
+                res = await self.db.execute(q_fallback, {"from_ts": from_ts, "to_ts": to_ts})
                 row = res.first()
                 if row and row[0] is not None:
                     users_activated = int(row[0])
@@ -428,10 +433,10 @@ class AuthAggregators:
                 FROM public.checkout_intents
                 WHERE status = 'completed'
                   AND completed_at IS NOT NULL
-                  AND completed_at >= :from_date
-                  AND completed_at < (:to_date + interval '1 day')
+                  AND completed_at >= :from_ts
+                  AND completed_at < :to_ts
             """)
-            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
+            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
             row = res.first()
             if row and row[0] is not None:
                 users_paying = int(row[0])
