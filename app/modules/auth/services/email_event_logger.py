@@ -17,13 +17,22 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional, Literal
+from typing import Optional, Literal, TYPE_CHECKING
 from dataclasses import dataclass
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
 logger = logging.getLogger(__name__)
+
+# Flag to log factory validation warning only once per process
+_factory_warning_logged = False
+
+# Canonical import path for SessionLocal (source of truth)
+_SESSIONLOCAL_IMPORT_PATH = "app.shared.database.database"
 
 # Tipos de email soportados
 EmailType = Literal[
@@ -58,8 +67,8 @@ class EmailEventLogger:
     """
     Registra eventos de envío de email para métricas.
     
-    IMPORTANTE: Usa sesión separada para commits. No interfiere con la
-    transacción del request principal.
+    IMPORTANTE: Usa sesión separada (vía async_sessionmaker) para commits.
+    No interfiere con la transacción del request principal.
     
     Uso típico:
     1. Antes de enviar: log_event(status='pending')
@@ -70,13 +79,59 @@ class EmailEventLogger:
     - log_event(status='sent', latency_ms=...) directamente después de envío exitoso
     """
     
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession = None,
+        event_session_factory: Optional["async_sessionmaker[AsyncSession]"] = None,
+    ):
         """
         Args:
-            db: Sesión de referencia para obtener el bind.
-                NO se usa directamente para commits.
+            db: Sesión de referencia (legacy, se ignora).
+            event_session_factory: async_sessionmaker para crear sesiones de logging.
+                Si no se provee, usa SessionLocal de database.py.
         """
-        self.db = db
+        self.db = db  # Kept for backwards compatibility
+        self._event_session_factory = event_session_factory
+    
+    def _get_event_session_factory(self) -> Optional["async_sessionmaker[AsyncSession]"]:
+        """
+        Get the session factory for event logging with validation.
+        
+        Priority:
+        1. Injected event_session_factory (validated)
+        2. SessionLocal from canonical database module
+        3. None (logging disabled with clear warning)
+        
+        Returns:
+            Valid async_sessionmaker or None if unavailable/invalid.
+        """
+        global _factory_warning_logged
+        
+        # 1. Check injected factory
+        if self._event_session_factory is not None:
+            # Validate it's callable
+            if not callable(self._event_session_factory):
+                if not _factory_warning_logged:
+                    logger.warning(
+                        "email_event_log_skipped_invalid_factory: "
+                        "event_session_factory is not callable"
+                    )
+                    _factory_warning_logged = True
+                return None
+            return self._event_session_factory
+        
+        # 2. Fallback to canonical SessionLocal import
+        try:
+            from app.shared.database.database import SessionLocal
+            return SessionLocal
+        except ImportError as e:
+            if not _factory_warning_logged:
+                logger.warning(
+                    "email_event_log_skipped_no_sessionlocal_import: %s",
+                    str(e)
+                )
+                _factory_warning_logged = True
+            return None
     
     @staticmethod
     def extract_domain(email: str) -> Optional[str]:
@@ -122,8 +177,9 @@ class EmailEventLogger:
         """
         Registra un nuevo evento de email usando sesión SEPARADA.
         
-        Usa una sesión independiente para que rollback en el flujo principal
-        NO pierda los logs de email. Esto es crítico para métricas.
+        Usa SessionLocal (async_sessionmaker) para crear una sesión independiente
+        para que rollback en el flujo principal NO pierda los logs de email.
+        Esto es crítico para métricas.
         
         Args:
             event: Datos del evento
@@ -131,12 +187,14 @@ class EmailEventLogger:
         Returns:
             event_id (UUID) del evento creado, o None si falla
         """
+        session_factory = self._get_event_session_factory()
+        if session_factory is None:
+            logger.warning("email_event_log_skipped: no session factory available")
+            return None
+        
         try:
-            # Obtener bind de la sesión de referencia
-            bind = self.db.get_bind()
-            
-            # Crear sesión separada para logging (aislada del request)
-            async with AsyncSession(bind, expire_on_commit=False) as log_session:
+            # Usar SessionLocal (async_sessionmaker) para sesión separada
+            async with session_factory() as log_session:
                 q = text("""
                     INSERT INTO public.auth_email_events (
                         email_type,

@@ -33,9 +33,12 @@ from app.shared.integrations.email_templates import (
 
 if TYPE_CHECKING:
     from app.shared.config.settings_base import BaseAppSettings
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
+
+# Flag to log factory validation warning only once per process
+_factory_warning_logged = False
 
 # MailerSend API endpoint
 MAILERSEND_API_URL = "https://api.mailersend.com/v1/email"
@@ -70,6 +73,7 @@ class MailerSendEmailSender:
         frontend_url: Optional[str] = None,
         support_email: Optional[str] = None,
         db_session: Optional["AsyncSession"] = None,
+        event_session_factory: Optional["async_sessionmaker[AsyncSession]"] = None,
     ):
         if not api_key:
             raise ValueError("MAILERSEND_API_KEY es requerido")
@@ -82,7 +86,8 @@ class MailerSendEmailSender:
         self.timeout = timeout
         self.frontend_url = _normalize_base_url(frontend_url)
         self.support_email = support_email or "soporte@doxai.site"
-        self._db_session = db_session  # Optional: for event logging
+        self._db_session = db_session  # Legacy, kept for backwards compatibility
+        self._event_session_factory = event_session_factory  # async_sessionmaker for event logging
 
     # ─────────────────────────────────────────────────────────────────────────
     # Event Logging Helpers (for auth_email_events metrics)
@@ -114,6 +119,46 @@ class MailerSendEmailSender:
         except (IndexError, AttributeError):
             return None
     
+    def _get_event_session_factory(self) -> Optional["async_sessionmaker[AsyncSession]"]:
+        """
+        Get the session factory for event logging with validation.
+        
+        Priority:
+        1. Injected event_session_factory (validated)
+        2. SessionLocal from canonical database module
+        3. None (logging disabled with clear warning)
+        
+        Returns:
+            Valid async_sessionmaker or None if unavailable/invalid.
+        """
+        global _factory_warning_logged
+        
+        # 1. Check injected factory
+        if self._event_session_factory is not None:
+            # Validate it's callable
+            if not callable(self._event_session_factory):
+                if not _factory_warning_logged:
+                    logger.warning(
+                        "email_event_log_skipped_invalid_factory: "
+                        "event_session_factory is not callable"
+                    )
+                    _factory_warning_logged = True
+                return None
+            return self._event_session_factory
+        
+        # 2. Fallback to canonical SessionLocal import
+        try:
+            from app.shared.database.database import SessionLocal
+            return SessionLocal
+        except ImportError as e:
+            if not _factory_warning_logged:
+                logger.warning(
+                    "email_event_log_skipped_no_sessionlocal_import: %s",
+                    str(e)
+                )
+                _factory_warning_logged = True
+            return None
+
     async def _log_email_event(
         self,
         *,
@@ -130,24 +175,22 @@ class MailerSendEmailSender:
         """
         Log email event to auth_email_events table using a SEPARATE session.
         
-        Uses an independent session so that rollback in the main flow
-        does NOT lose the email event logs. This is critical for metrics.
+        Uses SessionLocal (async_sessionmaker) to create an independent session
+        so that rollback in the main flow does NOT lose email event logs.
+        This is critical for metrics.
         
-        Silently fails if no db session or on error (doesn't block email sending).
+        Silently fails if no session factory or on error (doesn't block email sending).
         """
-        if not self._db_session:
+        session_factory = self._get_event_session_factory()
+        if session_factory is None:
+            # Warning already logged by _get_event_session_factory (once per process)
             return
         
         try:
             from sqlalchemy import text
-            from sqlalchemy.ext.asyncio import AsyncSession
             
-            # Get the engine from the existing session to create an independent session
-            bind = self._db_session.get_bind()
-            
-            # Use a completely separate session for event logging
-            # This ensures rollback in the main flow doesn't affect logs
-            async with AsyncSession(bind, expire_on_commit=False) as log_session:
+            # Use SessionLocal (async_sessionmaker) to create independent session
+            async with session_factory() as log_session:
                 q = text("""
                     INSERT INTO public.auth_email_events (
                         email_type,
@@ -215,13 +258,16 @@ class MailerSendEmailSender:
         cls,
         settings: "BaseAppSettings",
         db_session: Optional["AsyncSession"] = None,
+        event_session_factory: Optional["async_sessionmaker[AsyncSession]"] = None,
     ) -> "MailerSendEmailSender":
         """
         Crea instancia desde settings (fuente de verdad).
         
         Args:
             settings: Configuración de la aplicación
-            db_session: Sesión de base de datos para instrumentación de eventos
+            db_session: Sesión de base de datos (legacy, para compatibilidad)
+            event_session_factory: async_sessionmaker para logging de eventos.
+                Si no se provee, usa SessionLocal de database.py.
             
         Returns:
             MailerSendEmailSender configurado
@@ -256,12 +302,12 @@ class MailerSendEmailSender:
         support_email = getattr(settings, "support_email", None) or "soporte@doxai.site"
 
         logger.info(
-            "[MailerSend] config: from=%s (%s) reply_to=%s timeout=%ss db_session=%s",
+            "[MailerSend] config: from=%s (%s) reply_to=%s timeout=%ss event_logging=%s",
             from_email,
             from_name,
             support_email,
             timeout,
-            "yes" if db_session else "no",
+            "factory" if event_session_factory else ("db_session" if db_session else "auto"),
         )
 
         return cls(
@@ -272,6 +318,7 @@ class MailerSendEmailSender:
             frontend_url=frontend_url,
             support_email=support_email,
             db_session=db_session,
+            event_session_factory=event_session_factory,
         )
 
     @classmethod
