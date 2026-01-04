@@ -128,7 +128,10 @@ class MailerSendEmailSender:
         idempotency_key: Optional[str] = None,
     ) -> None:
         """
-        Log email event to auth_email_events table.
+        Log email event to auth_email_events table using a SEPARATE session.
+        
+        Uses an independent session so that rollback in the main flow
+        does NOT lose the email event logs. This is critical for metrics.
         
         Silently fails if no db session or on error (doesn't block email sending).
         """
@@ -137,58 +140,64 @@ class MailerSendEmailSender:
         
         try:
             from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import AsyncSession
             
-            q = text("""
-                INSERT INTO public.auth_email_events (
-                    email_type,
-                    status,
-                    recipient_domain,
-                    user_id,
-                    provider,
-                    provider_message_id,
-                    latency_ms,
-                    error_code,
-                    error_message,
-                    idempotency_key,
-                    updated_at
-                ) VALUES (
-                    :email_type::public.auth_email_type,
-                    :status::public.auth_email_event_status,
-                    :recipient_domain,
-                    :user_id,
-                    'mailersend',
-                    :provider_message_id,
-                    :latency_ms,
-                    :error_code,
-                    :error_message,
-                    :idempotency_key,
-                    CASE WHEN :status != 'pending' THEN now() ELSE NULL END
-                )
-                ON CONFLICT (idempotency_key)
-                DO UPDATE SET
-                    status = EXCLUDED.status,
-                    provider_message_id = COALESCE(EXCLUDED.provider_message_id, auth_email_events.provider_message_id),
-                    latency_ms = COALESCE(EXCLUDED.latency_ms, auth_email_events.latency_ms),
-                    error_code = COALESCE(EXCLUDED.error_code, auth_email_events.error_code),
-                    error_message = COALESCE(EXCLUDED.error_message, auth_email_events.error_message),
-                    updated_at = now()
-            """)
+            # Get the engine from the existing session to create an independent session
+            bind = self._db_session.get_bind()
             
-            await self._db_session.execute(q, {
-                "email_type": email_type,
-                "status": status,
-                "recipient_domain": self._extract_domain(to_email),
-                "user_id": user_id,
-                "provider_message_id": provider_message_id,
-                "latency_ms": latency_ms,
-                "error_code": error_code,
-                "error_message": (error_message or "")[:500] if error_message else None,
-                "idempotency_key": idempotency_key,
-            })
-            
-            # flush() to ensure event is visible within transaction,
-            # but let the request transaction handle commit
-            await self._db_session.flush()
+            # Use a completely separate session for event logging
+            # This ensures rollback in the main flow doesn't affect logs
+            async with AsyncSession(bind, expire_on_commit=False) as log_session:
+                q = text("""
+                    INSERT INTO public.auth_email_events (
+                        email_type,
+                        status,
+                        recipient_domain,
+                        user_id,
+                        provider,
+                        provider_message_id,
+                        latency_ms,
+                        error_code,
+                        error_message,
+                        idempotency_key,
+                        updated_at
+                    ) VALUES (
+                        :email_type::public.auth_email_type,
+                        :status::public.auth_email_event_status,
+                        :recipient_domain,
+                        :user_id,
+                        'mailersend',
+                        :provider_message_id,
+                        :latency_ms,
+                        :error_code,
+                        :error_message,
+                        :idempotency_key,
+                        CASE WHEN :status != 'pending' THEN now() ELSE NULL END
+                    )
+                    ON CONFLICT (idempotency_key)
+                    DO UPDATE SET
+                        status = EXCLUDED.status,
+                        provider_message_id = COALESCE(EXCLUDED.provider_message_id, auth_email_events.provider_message_id),
+                        latency_ms = COALESCE(EXCLUDED.latency_ms, auth_email_events.latency_ms),
+                        error_code = COALESCE(EXCLUDED.error_code, auth_email_events.error_code),
+                        error_message = COALESCE(EXCLUDED.error_message, auth_email_events.error_message),
+                        updated_at = now()
+                """)
+                
+                await log_session.execute(q, {
+                    "email_type": email_type,
+                    "status": status,
+                    "recipient_domain": self._extract_domain(to_email),
+                    "user_id": user_id,
+                    "provider_message_id": provider_message_id,
+                    "latency_ms": latency_ms,
+                    "error_code": error_code,
+                    "error_message": (error_message or "")[:500] if error_message else None,
+                    "idempotency_key": idempotency_key,
+                })
+                
+                # Commit in the separate session - isolated from main transaction
+                await log_session.commit()
             
             logger.debug(
                 "email_event_logged: type=%s status=%s latency_ms=%s",

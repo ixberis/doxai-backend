@@ -228,6 +228,11 @@ class RegistrationFlowService:
         )
         try:
             created = await self.user_service.add(user)
+            # IMPORTANTE: Capturar user_id inmediatamente después del add()
+            # para evitar lazy-load en contexto async después de que la sesión expire
+            created_user_id = created.user_id
+            created_user_email = created.user_email
+            created_user_full_name = created.user_full_name
         except IntegrityError as e:
             # Race condition: email insertado entre get_by_email y add
             # ANTI-ENUMERACIÓN: respuesta genérica (no 409)
@@ -250,25 +255,25 @@ class RegistrationFlowService:
 
         logger.info("REGISTRATION: crear token de activación y enviar correo")
         token = await self.activation_service.issue_activation_token(
-            user_id=created.user_id,
+            user_id=created_user_id,
         )
         
         # Best-effort: intentar enviar email, pero no fallar el registro
         email_sent = await self._send_activation_email_best_effort(
-            email=created.user_email,
-            full_name=created.user_full_name,
+            email=created_user_email,
+            full_name=created_user_full_name,
             token=token,
-            user_id=created.user_id,
+            user_id=created_user_id,
             ip_address=ip_address,
         )
 
         access_token = self.token_issuer.create_access_token(
-            sub=str(created.user_id),
+            sub=str(created_user_id),
         )
 
         self.audit_service.log_register_success(
-            user_id=str(created.user_id),
-            email=created.user_email,
+            user_id=str(created_user_id),
+            email=created_user_email,
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -282,7 +287,7 @@ class RegistrationFlowService:
 
         return RegistrationResult(
             payload={
-                "user_id": created.user_id,
+                "user_id": created_user_id,
                 "access_token": access_token,
                 "message": message,
                 "activation_email_sent": email_sent,
@@ -324,6 +329,7 @@ class RegistrationFlowService:
                 to_email=email,
                 full_name=full_name or "",
                 activation_token=token,
+                user_id=user_id,  # Crítico para métricas en auth_email_events
             )
             
             # Persistir éxito: status='sent', attempts++, sent_at=now, last_error=null
