@@ -106,6 +106,8 @@ class EmailMetricsByTypeResponse(BaseModel):
     generated_at: str = Field(..., description="Timestamp de generación (ISO 8601)")
     items: List[EmailTypeMetrics] = Field(..., description="Métricas por tipo")
     totals: EmailTotals = Field(..., description="Totales agregados")
+    has_data: bool = Field(True, description="True si hay datos reales en el periodo")
+    note: Optional[str] = Field(None, description="Nota explicativa cuando has_data=False")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -222,11 +224,17 @@ async def get_email_metrics_by_type(
     agg = EmailByTypeAggregators(db)
     result = await agg.get_metrics_by_type(from_dt, to_dt)
     
+    # Check if we have any real data
+    total_events = result["totals"]["sent_total"] + result["totals"]["failed_total"] + result["totals"]["pending_total"]
+    has_data = total_events > 0
+    note = None if has_data else "Sin datos en el periodo seleccionado. La instrumentación de eventos puede no estar activa."
+    
     logger.info(
-        "email_metrics_by_type_completed: items=%d total_sent=%d total_failed=%d",
+        "email_metrics_by_type_completed: items=%d total_sent=%d total_failed=%d has_data=%s",
         len(result["items"]),
         result["totals"]["sent_total"],
         result["totals"]["failed_total"],
+        has_data,
     )
     
     return EmailMetricsByTypeResponse(
@@ -235,6 +243,8 @@ async def get_email_metrics_by_type(
         generated_at=result["generated_at"],
         items=[EmailTypeMetrics(**item) for item in result["items"]],
         totals=EmailTotals(**result["totals"]),
+        has_data=has_data,
+        note=note,
     )
 
 
