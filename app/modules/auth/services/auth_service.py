@@ -59,8 +59,8 @@ class AuthService:
     ) -> None:
         self.db = db
         self.settings = get_settings()
-        # IMPORTANTE: usar la API real de EmailSender (from_env), no from_settings
-        self.email_sender = email_sender or EmailSender.from_env()
+        # IMPORTANTE: pasar db_session para instrumentación de auth_email_events
+        self.email_sender = email_sender or EmailSender.from_env(db_session=db)
         self.recaptcha_verifier = recaptcha_verifier
         self.token_issuer = token_issuer or TokenIssuerService()
         # Inyección de función de verificación de reCAPTCHA (con default si no se provee)

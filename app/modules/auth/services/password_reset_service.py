@@ -61,8 +61,8 @@ class PasswordResetService:
         self.settings = get_settings()
         self.reset_repo = PasswordResetRepository(db)
         self.user_service = UserService.with_session(db)
-        # IMPORTANTE: usar la API real de EmailSender (from_env)
-        self.email_sender = email_sender or EmailSender.from_env()
+        # IMPORTANTE: pasar db para instrumentación de auth_email_events
+        self.email_sender = email_sender or EmailSender.from_env(db_session=db)
         self._token_factory = token_factory
 
     # --------------------- inicio de proceso ---------------------

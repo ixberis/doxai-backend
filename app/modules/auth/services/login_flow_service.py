@@ -8,19 +8,20 @@ Flujo de login y refresh de tokens:
 - Verifica activación de cuenta.
 - Emite tokens de acceso/refresh.
 - Registra sesión en user_sessions para métricas.
+- Registra intentos en login_attempts para métricas operativas.
 - Refresca tokens.
 - Progressive backoff for failed attempts.
 
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
-Updated: 28/12/2025 - Session registration in user_sessions
+Updated: 03/01/2026 - Instrumentación de login_attempts
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,8 @@ from app.modules.auth.services.activation_service import ActivationService
 from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.services.token_issuer_service import TokenIssuerService
 from app.modules.auth.services.session_service import SessionService
+from app.modules.auth.repositories.login_attempt_repository import LoginAttemptRepository
+from app.modules.auth.enums import LoginFailureReason
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.shared.utils.security import verify_password
 from app.shared.utils.jwt_utils import verify_token_type
@@ -72,7 +75,44 @@ class LoginFlowService:
         self.activation_service = ActivationService(db)
         self.token_issuer = token_issuer or TokenIssuerService()
         self.session_service = SessionService(db)
+        self.login_attempt_repo = LoginAttemptRepository(db)
         self._rate_limiter = get_rate_limiter()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Login attempt recording (best-effort, won't block login flow)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    async def _record_login_attempt(
+        self,
+        *,
+        user_id: Optional[int],
+        success: bool,
+        reason: Optional[LoginFailureReason],
+        ip_address: Optional[str],
+        user_agent: Optional[str],
+    ) -> None:
+        """
+        Records login attempt to login_attempts table (best-effort).
+        
+        If the insert fails, logs the error but doesn't block the login flow.
+        """
+        try:
+            await self.login_attempt_repo.record_attempt(
+                user_id=user_id,
+                success=success,
+                reason=reason,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            logger.debug(
+                "login_attempt_recorded: user_id=%s success=%s reason=%s",
+                user_id, success, reason,
+            )
+        except Exception as e:
+            logger.warning(
+                "login_attempts_insert_failed: user_id=%s success=%s error=%s",
+                user_id, success, str(e),
+            )
 
     async def _apply_backoff(self, ip_address: str, email: str) -> None:
         """Apply progressive backoff delay based on failed attempt count."""
@@ -131,7 +171,14 @@ class LoginFlowService:
         # Buscar usuario
         user = await self.user_service.get_by_email(email)
         if not user:
-            # Already consumed one attempt above, just audit
+            # Record failed attempt (user not found) - best effort
+            await self._record_login_attempt(
+                user_id=None,
+                success=False,
+                reason=LoginFailureReason.user_not_found,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
@@ -169,7 +216,14 @@ class LoginFlowService:
 
         # Verificar contraseña
         if not verify_password(password, password_hash):
-            # Already consumed one attempt above, just audit
+            # Record failed attempt (invalid credentials) - best effort
+            await self._record_login_attempt(
+                user_id=user.user_id,
+                success=False,
+                reason=LoginFailureReason.invalid_credentials,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
@@ -184,6 +238,14 @@ class LoginFlowService:
 
         # Verificar activación
         if not await self.activation_service.is_active(user):
+            # Record failed attempt (account not activated) - best effort
+            await self._record_login_attempt(
+                user_id=user.user_id,
+                success=False,
+                reason=LoginFailureReason.account_not_activated,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
@@ -197,6 +259,15 @@ class LoginFlowService:
 
         # Login exitoso - reset rate limit counters
         self._reset_rate_limit_counters(ip_address, email)
+        
+        # Record successful login attempt - best effort
+        await self._record_login_attempt(
+            user_id=user.user_id,
+            success=True,
+            reason=None,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
         
         AuditService.log_login_success(
             user_id=str(user.user_id),

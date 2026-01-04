@@ -9,7 +9,7 @@ Soporta tres modos:
 - api: envío via API (MailerSend, etc.)
 
 Autor: Ixchel Beristain
-Actualizado: 2025-12-20
+Actualizado: 2026-01-03 - Soporte para db_session (instrumentación de eventos)
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Protocol, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.shared.config.settings_base import BaseAppSettings
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +126,16 @@ class EmailSender:
     """
 
     @staticmethod
-    def from_settings(settings: BaseAppSettings) -> IEmailSender:
+    def from_settings(
+        settings: "BaseAppSettings",
+        db_session: Optional["AsyncSession"] = None,
+    ) -> IEmailSender:
         """
         Crea el email sender apropiado según settings (fuente de verdad).
         
         Args:
             settings: Configuración de la aplicación
+            db_session: Sesión de base de datos para instrumentación de eventos
             
         Returns:
             IEmailSender: implementación según configuración
@@ -173,8 +178,8 @@ class EmailSender:
             # MailerSend es el proveedor por defecto para modo API
             if provider in ("mailersend", ""):
                 from app.shared.integrations.mailersend_email_sender import MailerSendEmailSender
-                logger.info("[EmailSender] Usando MailerSendEmailSender")
-                return MailerSendEmailSender.from_settings(settings)
+                logger.info("[EmailSender] Usando MailerSendEmailSender (db_session=%s)", "yes" if db_session else "no")
+                return MailerSendEmailSender.from_settings(settings, db_session=db_session)
 
             # Proveedor no reconocido en modo API
             logger.error(
@@ -206,18 +211,21 @@ class EmailSender:
         return StubEmailSender()
 
     @staticmethod
-    def from_env() -> IEmailSender:
+    def from_env(db_session: Optional["AsyncSession"] = None) -> IEmailSender:
         """
         Wrapper de compatibilidad: carga settings y delega a from_settings().
         Preferir from_settings() para mejor testabilidad.
+        
+        Args:
+            db_session: Sesión de base de datos para instrumentación de eventos
         """
         from app.shared.config import settings
-        return EmailSender.from_settings(settings)
+        return EmailSender.from_settings(settings, db_session=db_session)
 
 
-def get_email_sender() -> IEmailSender:
+def get_email_sender(db_session: Optional["AsyncSession"] = None) -> IEmailSender:
     """Alias de EmailSender.from_env() para consistencia."""
-    return EmailSender.from_env()
+    return EmailSender.from_env(db_session=db_session)
 
 
 # Fin del archivo backend/app/shared/integrations/email_sender.py

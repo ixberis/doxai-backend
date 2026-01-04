@@ -33,10 +33,10 @@ class LoginAttempt(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # FK a AppUser.user_id
-    user_id: Mapped[int] = mapped_column(
+    # FK a AppUser.user_id (nullable para intentos donde el usuario no existe)
+    user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 

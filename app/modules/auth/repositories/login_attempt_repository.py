@@ -41,7 +41,7 @@ class LoginAttemptRepository:
     async def record_attempt(
         self,
         *,
-        user_id: int,
+        user_id: Optional[int] = None,
         success: bool,
         reason: Optional[LoginFailureReason] = None,
         ip_address: Optional[str] = None,

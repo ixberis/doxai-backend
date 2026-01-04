@@ -202,12 +202,17 @@ class MailerSendEmailSender:
             logger.warning("email_event_log_failed: %s", str(e))
 
     @classmethod
-    def from_settings(cls, settings: BaseAppSettings) -> "MailerSendEmailSender":
+    def from_settings(
+        cls,
+        settings: "BaseAppSettings",
+        db_session: Optional["AsyncSession"] = None,
+    ) -> "MailerSendEmailSender":
         """
         Crea instancia desde settings (fuente de verdad).
         
         Args:
             settings: Configuración de la aplicación
+            db_session: Sesión de base de datos para instrumentación de eventos
             
         Returns:
             MailerSendEmailSender configurado
@@ -242,11 +247,12 @@ class MailerSendEmailSender:
         support_email = getattr(settings, "support_email", None) or "soporte@doxai.site"
 
         logger.info(
-            "[MailerSend] config: from=%s (%s) reply_to=%s timeout=%ss",
+            "[MailerSend] config: from=%s (%s) reply_to=%s timeout=%ss db_session=%s",
             from_email,
             from_name,
             support_email,
             timeout,
+            "yes" if db_session else "no",
         )
 
         return cls(
@@ -256,6 +262,7 @@ class MailerSendEmailSender:
             timeout=timeout,
             frontend_url=frontend_url,
             support_email=support_email,
+            db_session=db_session,
         )
 
     @classmethod

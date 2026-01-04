@@ -55,9 +55,9 @@ router = APIRouter(
 # Dependency Factories (para DI y testing)
 # -----------------------------------------------------------------------------
 
-def get_email_sender() -> IEmailSender:
-    """Factory para obtener EmailSender. Override en tests."""
-    return EmailSender.from_env()
+async def get_email_sender(db: AsyncSession = Depends(get_db)) -> IEmailSender:
+    """Factory para obtener EmailSender con db_session. Override en tests."""
+    return EmailSender.from_env(db_session=db)
 
 
 async def get_welcome_email_retry_service(
