@@ -207,6 +207,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Error en warm-up: {e}")
 
+    # HTTP Metrics Store startup
+    _http_metrics_store = None
+    try:
+        from app.shared.observability import get_http_metrics_store, HTTPMetricsMiddleware
+        from app.shared.database import SessionLocal
+        
+        _http_metrics_store = get_http_metrics_store()
+        _http_metrics_store.set_session_factory(SessionLocal)
+        await _http_metrics_store.start()
+        
+        # Store reference in app state for shutdown
+        app.state.http_metrics_store = _http_metrics_store
+        logger.info("📊 HTTP Metrics Store iniciado")
+    except Exception as e:
+        logger.warning(f"⚠️ HTTP Metrics Store no disponible: {e}")
+
     # DB identity diagnostics (Railway/Supabase mismatch debugging)
     try:
         from app.shared.database import init_db_diagnostics
@@ -256,6 +272,14 @@ async def lifespan(app: FastAPI):
                     logger.info("⏰ Scheduler detenido")
                 except Exception as e:
                     logger.warning(f"⚠️ Error deteniendo scheduler: {e}")
+                
+                # HTTP Metrics Store shutdown
+                try:
+                    if hasattr(app.state, "http_metrics_store") and app.state.http_metrics_store:
+                        await app.state.http_metrics_store.stop()
+                        logger.info("📊 HTTP Metrics Store detenido")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error deteniendo HTTP Metrics Store: {e}")
 
                 logger.info("🚫 Cancelling active analysis jobs...")
                 await job_registry.cancel_all_tasks(timeout=30.0)

@@ -100,118 +100,131 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
-# ── Parámetros (valores desde settings) normalizados a str
-DB_USER = _to_str_setting(getattr(settings, "db_user", None))
-DB_PASSWORD = _to_str_setting(getattr(settings, "db_password", None))
-DB_HOST = _to_str_setting(getattr(settings, "db_host", None))          # aws-0-us-east-2.pooler.supabase.com
-DB_PORT = _to_str_setting(getattr(settings, "db_port", None))          # 6543 (PgBouncer)
-DB_NAME = _to_str_setting(getattr(settings, "db_name", None))
+# ── Check if DB is disabled for tests (avoid blocking connections)
+SKIP_DB_INIT = _env_bool("SKIP_DB_INIT", False)
 
-DB_ECHO_SQL = bool(getattr(settings, "db_echo_sql", False))
+# Default timeout (used when DB is initialized, or as fallback)
+DB_SESSION_STATEMENT_TIMEOUT_MS: int = 5000
 
-# TLS habilitado por defecto, y verificable por flag
-DB_TLS_ENABLED = bool(getattr(settings, "db_tls", True))
+if SKIP_DB_INIT:
+    logger.warning("[DB] SKIP_DB_INIT=1: Database disabled (test mode)")
+    engine = None  # type: ignore
+    SessionLocal = None  # type: ignore
+else:
+    # ── Parámetros (valores desde settings) normalizados a str
+    DB_USER = _to_str_setting(getattr(settings, "db_user", None))
+    DB_PASSWORD = _to_str_setting(getattr(settings, "db_password", None))
+    DB_HOST = _to_str_setting(getattr(settings, "db_host", None))          # aws-0-us-east-2.pooler.supabase.com
+    DB_PORT = _to_str_setting(getattr(settings, "db_port", None))          # 6543 (PgBouncer)
+    DB_NAME = _to_str_setting(getattr(settings, "db_name", None))
 
-# ✅ NUEVO: permitir controlar verificación TLS por env o settings (Railway friendly)
-# - settings.db_tls_verify si existe
-# - env DB_TLS_VERIFY si está definido
-_db_tls_verify_default = bool(getattr(settings, "db_tls_verify", True))
-DB_TLS_VERIFY = _env_bool("DB_TLS_VERIFY", _db_tls_verify_default)
+    DB_ECHO_SQL = bool(getattr(settings, "db_echo_sql", False))
 
-# Timeouts configurables (segundos / milisegundos)
-DB_CONNECT_TIMEOUT_S: float = float(getattr(settings, "db_connect_timeout_s", 5.0))
-DB_COMMAND_TIMEOUT_S: float = float(getattr(settings, "db_command_timeout_s", 5.0))
-DB_SESSION_STATEMENT_TIMEOUT_MS: int = int(getattr(settings, "db_session_statement_timeout_ms", 5000))
+    # TLS habilitado por defecto, y verificable por flag
+    DB_TLS_ENABLED = bool(getattr(settings, "db_tls", True))
 
-# DSN asyncpg para PgBouncer/Supabase (puerto 6543)
-ASYNC_DSN = (
-    f"postgresql+asyncpg://"
-    f"{quote_plus(DB_USER)}:"
-    f"{quote_plus(DB_PASSWORD)}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
+    # ✅ NUEVO: permitir controlar verificación TLS por env o settings (Railway friendly)
+    # - settings.db_tls_verify si existe
+    # - env DB_TLS_VERIFY si está definido
+    _db_tls_verify_default = bool(getattr(settings, "db_tls_verify", True))
+    DB_TLS_VERIFY = _env_bool("DB_TLS_VERIFY", _db_tls_verify_default)
 
-log_level = logger.debug if DB_ECHO_SQL else logger.info
-log_level(
-    f"[DB] Conectando a PgBouncer → {DB_HOST}:{DB_PORT}/{DB_NAME} "
-    f"(asyncpg, echo={DB_ECHO_SQL}, tls={DB_TLS_ENABLED}, tls_verify={DB_TLS_VERIFY})"
-)
+    # Timeouts configurables (segundos / milisegundos)
+    DB_CONNECT_TIMEOUT_S: float = float(getattr(settings, "db_connect_timeout_s", 5.0))
+    DB_COMMAND_TIMEOUT_S: float = float(getattr(settings, "db_command_timeout_s", 5.0))
+    DB_SESSION_STATEMENT_TIMEOUT_MS = int(getattr(settings, "db_session_statement_timeout_ms", 5000))
+
+    # DSN asyncpg para PgBouncer/Supabase (puerto 6543)
+    ASYNC_DSN = (
+        f"postgresql+asyncpg://"
+        f"{quote_plus(DB_USER)}:"
+        f"{quote_plus(DB_PASSWORD)}"
+        f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    )
+
+    log_level = logger.debug if DB_ECHO_SQL else logger.info
+    log_level(
+        f"[DB] Conectando a PgBouncer → {DB_HOST}:{DB_PORT}/{DB_NAME} "
+        f"(asyncpg, echo={DB_ECHO_SQL}, tls={DB_TLS_ENABLED}, tls_verify={DB_TLS_VERIFY})"
+    )
 
 
-def build_ssl_context() -> ssl.SSLContext:
-    """
-    Crea un SSLContext para conexiones TLS a Postgres.
+    def build_ssl_context() -> ssl.SSLContext:
+        """
+        Crea un SSLContext para conexiones TLS a Postgres.
 
-    Reglas:
-      - Si DB_TLS_VERIFY = False:
-          * usa contexto no verificado (CERT_NONE), sin hostname checks
-          * útil para entornos donde el chain aparece como self-signed (PgBouncer/mitm/inspección)
-      - Si DB_TLS_VERIFY = True:
-          * verificación estricta con CA bundle estable (certifi si está disponible)
-          * fallback a truststore si existe; o create_default_context si no
-    """
-    if not DB_TLS_VERIFY:
-        ctx = ssl._create_unverified_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        Reglas:
+          - Si DB_TLS_VERIFY = False:
+              * usa contexto no verificado (CERT_NONE), sin hostname checks
+              * útil para entornos donde el chain aparece como self-signed (PgBouncer/mitm/inspección)
+          - Si DB_TLS_VERIFY = True:
+              * verificación estricta con CA bundle estable (certifi si está disponible)
+              * fallback a truststore si existe; o create_default_context si no
+        """
+        if not DB_TLS_VERIFY:
+            ctx = ssl._create_unverified_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+        # Verificación estricta
+        if certifi is not None:
+            ctx = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=certifi.where())
+        elif truststore is not None:
+            ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)  # type: ignore[arg-type]
+        else:
+            ctx = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
         return ctx
 
-    # Verificación estricta
-    if certifi is not None:
-        ctx = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=certifi.where())
-    elif truststore is not None:
-        ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)  # type: ignore[arg-type]
-    else:
-        ctx = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
 
-    ctx.check_hostname = True
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    return ctx
+    # Construir ssl_context solo si TLS está habilitado
+    ssl_context = build_ssl_context() if DB_TLS_ENABLED else None
 
 
-# Construir ssl_context solo si TLS está habilitado
-ssl_context = build_ssl_context() if DB_TLS_ENABLED else None
+    # ── Engine (sin pool app-side; PgBouncer se encarga del pooling)
+    def _prepared_statement_name_func() -> str:
+        return f"__asyncpg_{uuid4().hex[:8]}__"
 
 
-# ── Engine (sin pool app-side; PgBouncer se encarga del pooling)
-def _prepared_statement_name_func() -> str:
-    return f"__asyncpg_{uuid4().hex[:8]}__"
+    connect_args = {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+        "prepared_statement_name_func": _prepared_statement_name_func,
+        "server_settings": {"search_path": "public"},
+        "timeout": DB_CONNECT_TIMEOUT_S,
+        "command_timeout": DB_COMMAND_TIMEOUT_S,
+    }
 
+    if DB_TLS_ENABLED and ssl_context is not None:
+        connect_args["ssl"] = ssl_context
 
-connect_args = {
-    "statement_cache_size": 0,
-    "prepared_statement_cache_size": 0,
-    "prepared_statement_name_func": _prepared_statement_name_func,
-    "server_settings": {"search_path": "public"},
-    "timeout": DB_CONNECT_TIMEOUT_S,
-    "command_timeout": DB_COMMAND_TIMEOUT_S,
-}
+    engine = create_async_engine(
+        ASYNC_DSN,
+        poolclass=NullPool,
+        pool_pre_ping=False,
+        echo=DB_ECHO_SQL,
+        execution_options={"prepared_statement_cache_size": 0},
+        connect_args=connect_args,
+    )
 
-if DB_TLS_ENABLED and ssl_context is not None:
-    connect_args["ssl"] = ssl_context
-
-engine = create_async_engine(
-    ASYNC_DSN,
-    poolclass=NullPool,
-    pool_pre_ping=False,
-    echo=DB_ECHO_SQL,
-    execution_options={"prepared_statement_cache_size": 0},
-    connect_args=connect_args,
-)
-
-SessionLocal = async_sessionmaker(
-    bind=engine,
-    expire_on_commit=False,
-    class_=AsyncSession,
-    autoflush=False,
-)
+    SessionLocal = async_sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+        autoflush=False,
+    )
 
 
 async def _configure_session(session: AsyncSession) -> None:
     """
     Aplica configuraciones por sesión:
-    - SET SESSION statement_timeout para limitar consultas “largas” en esta sesión.
+    - SET SESSION statement_timeout para limitar consultas "largas" en esta sesión.
     """
+    if SKIP_DB_INIT:
+        return
     try:
         await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
     except Exception as e:
@@ -219,6 +232,8 @@ async def _configure_session(session: AsyncSession) -> None:
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    if SessionLocal is None:
+        raise RuntimeError("Database not initialized (SKIP_DB_INIT=1)")
     async with SessionLocal() as session:
         await _configure_session(session)
         try:
@@ -238,6 +253,8 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    if SessionLocal is None:
+        raise RuntimeError("Database not initialized (SKIP_DB_INIT=1)")
     async with SessionLocal() as session:
         await _configure_session(session)
         try:
@@ -252,6 +269,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @asynccontextmanager
 async def session_scope(configure: bool = True) -> AsyncGenerator[AsyncSession, None]:
+    if SessionLocal is None:
+        raise RuntimeError("Database not initialized (SKIP_DB_INIT=1)")
     async with SessionLocal() as session:
         if configure:
             await _configure_session(session)
@@ -273,6 +292,8 @@ async def check_database_health(timeout_s: float = 3.0, sql: str = "SELECT 1") -
     """
     Verifica conectividad a la base de datos.
     """
+    if engine is None:
+        return False
     try:
         async with asyncio.timeout(timeout_s):
             async with engine.connect() as conn:
@@ -328,6 +349,9 @@ async def log_db_identity() -> None:
     if not _env_bool("DB_IDENTITY_DIAGNOSTICS", False):
         return
 
+    if engine is None:
+        logger.debug("[DB-IDENTITY] Database disabled (SKIP_DB_INIT=1), skipping diagnostics")
+        return
 
     # Normalizar env para logging informativo
     env = os.getenv("ENVIRONMENT") or os.getenv("PYTHON_ENV") or "development"

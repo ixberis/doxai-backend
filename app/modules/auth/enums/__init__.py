@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/enums/__init__.py
@@ -11,11 +10,14 @@ Punto de importación estable para todos los enums del módulo Auth:
 - ActivationStatus: estados de activación de cuenta (sent, used, expired, revoked)
 - LoginFailureReason: razones de falla en login (invalid_credentials, user_not_found, etc.)
 - TokenType: tipos de token JWT (access, activation, refresh, password_reset)
+- AuthEmailType: tipos de email de autenticación (account_activation, welcome, etc.)
+- AuthEmailEventStatus: estados de eventos de email (sent, delivered, bounced, etc.)
 
 Todos los enums están mapeados 1:1 con tipos PostgreSQL ENUM que se crearán en la BD mediante Alembic.
 
 Autor: Ixchel Beristain
 Fecha: 23/10/2025
+Actualizado: 2026-01-06 - Agregados enums de email types y event status
 """
 
 # ===== AUTH =====
@@ -23,7 +25,16 @@ from .role_enum import UserRole, as_pg_enum as user_role_pg_enum
 from .activation_status_enum import ActivationStatus, as_pg_enum as activation_status_pg_enum
 from .user_status_enum import UserStatus, as_pg_enum as user_status_pg_enum
 from .login_failure_reason_enum import LoginFailureReason, as_pg_enum as login_failure_reason_pg_enum
-from .token_type_enum import TokenType, as_pg_enum as token_type_pg_enum  # ← ver cambio de nombre del archivo
+from .token_type_enum import TokenType, as_pg_enum as token_type_pg_enum
+
+# ===== EMAIL =====
+from .email_types_enum import AuthEmailType, AUTH_EMAIL_TYPES
+from .email_event_status_enum import (
+    AuthEmailEventStatus,
+    EMAIL_OPERATIONAL_STATUSES,
+    EMAIL_DELIVERABILITY_STATUSES,
+    ALL_EMAIL_EVENT_STATUSES,
+)
 
 # ===== REGISTRY PARA ACCESO CENTRALIZADO =====
 PG_ENUM_REGISTRY = {
@@ -64,6 +75,14 @@ __all__ = [
     "UserStatus",
     "LoginFailureReason",
     "TokenType",
+    
+    # Email Enums
+    "AuthEmailType",
+    "AUTH_EMAIL_TYPES",
+    "AuthEmailEventStatus",
+    "EMAIL_OPERATIONAL_STATUSES",
+    "EMAIL_DELIVERABILITY_STATUSES",
+    "ALL_EMAIL_EVENT_STATUSES",
 
     # PG Enum Functions
     "user_role_pg_enum",

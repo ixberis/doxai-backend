@@ -14,7 +14,7 @@ Fecha: 2026-01-04
 """
 import logging
 from datetime import date, timedelta
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
@@ -44,6 +44,9 @@ class ActivationMetricsResponse(BaseModel):
     from_date: str = Field(..., description="Fecha inicio (YYYY-MM-DD)")
     to_date: str = Field(..., description="Fecha fin (YYYY-MM-DD)")
     generated_at: str = Field(..., description="Timestamp de generación")
+    # Campos de trazabilidad
+    email_events_source: str = Field("none", description="Fuente de datos: instrumented | fallback | none")
+    email_events_partial: bool = Field(False, description="True si los datos de emails son estimados (fallback)")
 
 
 class PasswordResetMetricsResponse(BaseModel):
@@ -60,28 +63,31 @@ class PasswordResetMetricsResponse(BaseModel):
     generated_at: str = Field(..., description="Timestamp de generación")
 
 
-class UserListItem(BaseModel):
-    """Usuario en la lista."""
-    user_id: str
-    email_masked: str = Field(..., description="Email parcialmente enmascarado")
-    full_name: Optional[str] = None
-    status: str = Field(..., description="active | suspended | deleted")
-    is_activated: bool
-    created_at: str
-    activated_at: Optional[str] = None
-    last_login_at: Optional[str] = None
-
-
-class UsersMetricsResponse(BaseModel):
-    """Respuesta de usuarios con paginación."""
-    users: List[UserListItem]
-    total: int = Field(..., description="Total de usuarios en el periodo")
-    page: int
-    page_size: int
-    # Totals for period
+class UsersAnalyticsResponse(BaseModel):
+    """Respuesta de métricas analíticas de usuarios."""
+    # Periodo
     created_in_period: int = Field(..., description="Usuarios creados en el periodo")
     activated_in_period: int = Field(..., description="Usuarios activados en el periodo")
     deleted_in_period: int = Field(..., description="Usuarios eliminados en el periodo")
+    # Stock (estado actual)
+    activated_stock: int = Field(0, description="Usuarios actualmente activados")
+    active_stock: int = Field(0, description="Usuarios activos")
+    suspended_stock: int = Field(0, description="Usuarios suspendidos")
+    deleted_stock: int = Field(0, description="Usuarios eliminados")
+    # Calidad de activación
+    not_activated_24h: int = Field(0, description="Usuarios no activados tras 24h")
+    activation_time_p95_hours: Optional[float] = Field(None, description="P95 tiempo de activación (horas)")
+    activation_retries: int = Field(0, description="Usuarios con reintentos de activación")
+    activation_retries_instrumented: bool = Field(False, description="True si activation_retries tiene datos instrumentados")
+    # Conversión
+    activation_rate: Optional[float] = Field(None, description="Tasa de activación (activados/creados)")
+    activated_no_session: int = Field(0, description="Activados sin sesión (stock)")
+    activated_no_session_in_period: int = Field(0, description="Activados en periodo sin sesión aún")
+    # Estados críticos
+    suspended_created_in_period: int = Field(0, description="Suspendidos creados en periodo")
+    deleted_not_activated: int = Field(0, description="Eliminados sin activar (histórico)")
+    deleted_not_activated_in_period: int = Field(0, description="Eliminados en periodo sin activar")
+    # Metadata
     from_date: str
     to_date: str
     generated_at: str
@@ -154,6 +160,8 @@ async def get_activation_metrics(
             from_date=metrics.from_date,
             to_date=metrics.to_date,
             generated_at=metrics.generated_at,
+            email_events_source=metrics.email_events_source,
+            email_events_partial=metrics.email_events_partial,
         )
     except HTTPException:
         raise
@@ -202,47 +210,46 @@ async def get_password_reset_metrics(
         raise HTTPException(status_code=500, detail="Error al obtener métricas de password reset")
 
 
-@router.get("/users", response_model=UsersMetricsResponse)
-async def get_users_in_period(
+@router.get("/users", response_model=UsersAnalyticsResponse)
+async def get_users_analytics(
     from_date: Optional[str] = Query(None, alias="from", description="Fecha inicio (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, alias="to", description="Fecha fin (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Página"),
-    page_size: int = Query(50, ge=1, le=100, description="Usuarios por página"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Obtiene lista paginada de usuarios creados en el periodo.
+    Obtiene métricas analíticas de usuarios por rango de fechas.
     
-    Si no se especifican fechas, usa los últimos 30 días.
-    Los emails se muestran parcialmente enmascarados por privacidad.
+    Incluye métricas de calidad de activación, conversión y estados críticos.
+    No devuelve lista individual de usuarios (ver Admin -> Users para eso).
     """
     to_dt = _parse_date(to_date, "to", default_offset_days=0)
     from_dt = _parse_date(from_date, "from", default_offset_days=30) if from_date else (to_dt - timedelta(days=30))
     _validate_range(from_dt, to_dt)
     
-    logger.info("users_in_period_request from=%s to=%s page=%d", from_dt, to_dt, page)
+    logger.info("users_analytics_request from=%s to=%s", from_dt, to_dt)
     
     try:
         agg = FunctionalAggregators(db)
-        metrics = await agg.get_users_in_period(from_dt, to_dt, page, page_size)
+        metrics = await agg.get_users_analytics(from_dt, to_dt)
         
-        return UsersMetricsResponse(
-            users=[UserListItem(
-                user_id=u.user_id,
-                email_masked=u.email_masked,
-                full_name=u.full_name,
-                status=u.status,
-                is_activated=u.is_activated,
-                created_at=u.created_at,
-                activated_at=u.activated_at,
-                last_login_at=u.last_login_at,
-            ) for u in metrics.users],
-            total=metrics.total,
-            page=metrics.page,
-            page_size=metrics.page_size,
+        return UsersAnalyticsResponse(
             created_in_period=metrics.created_in_period,
             activated_in_period=metrics.activated_in_period,
             deleted_in_period=metrics.deleted_in_period,
+            activated_stock=metrics.activated_stock,
+            active_stock=metrics.active_stock,
+            suspended_stock=metrics.suspended_stock,
+            deleted_stock=metrics.deleted_stock,
+            not_activated_24h=metrics.not_activated_24h,
+            activation_time_p95_hours=metrics.activation_time_p95_hours,
+            activation_retries=metrics.activation_retries,
+            activation_retries_instrumented=metrics.activation_retries_instrumented,
+            activation_rate=metrics.activation_rate,
+            activated_no_session=metrics.activated_no_session,
+            activated_no_session_in_period=metrics.activated_no_session_in_period,
+            suspended_created_in_period=metrics.suspended_created_in_period,
+            deleted_not_activated=metrics.deleted_not_activated,
+            deleted_not_activated_in_period=metrics.deleted_not_activated_in_period,
             from_date=metrics.from_date,
             to_date=metrics.to_date,
             generated_at=metrics.generated_at,
@@ -250,8 +257,8 @@ async def get_users_in_period(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("users_in_period_request failed: %s", e)
-        raise HTTPException(status_code=500, detail="Error al obtener usuarios")
+        logger.exception("users_analytics_request failed: %s", e)
+        raise HTTPException(status_code=500, detail="Error al obtener métricas de usuarios")
 
 
 # Fin del archivo

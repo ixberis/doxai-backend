@@ -79,6 +79,16 @@ class BaseAppSettings(BaseSettings):
     redis_url: Optional[str] = Field(default=None, validation_alias="REDIS_URL")
 
     # =========================
+    # HTTP Metrics (observabilidad)
+    # =========================
+    http_metrics_enabled: bool = Field(default=True, validation_alias="HTTP_METRICS_ENABLED")
+    http_metrics_single_instance_warning: bool = Field(
+        default=True, 
+        validation_alias="HTTP_METRICS_SINGLE_INSTANCE_WARNING",
+        description="Log warning on startup if HTTP metrics are enabled without Redis (best-effort mode)"
+    )
+
+    # =========================
     # Supabase
     # =========================
     supabase_url: Optional[HttpUrl] = Field(default=None, validation_alias="SUPABASE_URL")

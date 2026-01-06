@@ -108,20 +108,31 @@ def _fallback_settings_factory():
 # Seleccionar la fábrica
 _factory = _factory or _fallback_settings_factory
 
-# Objeto base de settings (pydantic u otro)
-_settings_base = _factory()
+# Lazy-load settings: no instanciar al importar (evita validaciones prematuras en tests)
+_settings_base: object | None = None
+
+
+def _get_settings_base() -> object:
+    """Lazy-load settings instance (singleton)."""
+    global _settings_base
+    if _settings_base is None:
+        _settings_base = _factory()
+    return _settings_base
 
 
 # Proxy que entrega defaults cuando el atributo no existe en _settings_base
 class _SettingsProxy:
-    __slots__ = ("_base", "_defaults")
+    __slots__ = ("_base_getter", "_defaults")
 
-    def __init__(self, base: object, defaults: Mapping[str, Any]) -> None:
-        object.__setattr__(self, "_base", base)
+    def __init__(self, base_getter: Callable[[], object], defaults: Mapping[str, Any]) -> None:
+        object.__setattr__(self, "_base_getter", base_getter)
         object.__setattr__(self, "_defaults", dict(defaults))
 
+    def _get_base(self) -> object:
+        return object.__getattribute__(self, "_base_getter")()
+
     def __getattr__(self, name: str) -> Any:
-        base = object.__getattribute__(self, "_base")
+        base = self._get_base()
         if hasattr(base, name):
             return getattr(base, name)
         defaults = object.__getattribute__(self, "_defaults")
@@ -133,7 +144,7 @@ class _SettingsProxy:
     # Si alguno de tus módulos asigna atributos dinámicamente sobre `settings`,
     # permitimos set sólo si existe en el base; si no, se guarda en el proxy.
     def __setattr__(self, name: str, value: Any) -> None:
-        base = object.__getattribute__(self, "_base")
+        base = self._get_base()
         if hasattr(base, name):
             setattr(base, name, value)  # respeta validaciones si el base lo permite
         else:
@@ -154,8 +165,8 @@ _DEFAULTS = {
     "PAYMENTS_ALLOW_INSECURE_WEBHOOKS": True,
 }
 
-# Singleton accesible como `settings`
-settings = _SettingsProxy(_settings_base, _DEFAULTS)
+# Singleton accesible como `settings` (lazy-load via getter)
+settings = _SettingsProxy(_get_settings_base, _DEFAULTS)
 
 __all__ = ["settings"]
 # Fin del archivo
