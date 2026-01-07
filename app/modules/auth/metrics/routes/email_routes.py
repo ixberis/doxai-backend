@@ -15,6 +15,7 @@ Fecha: 2025-12-26
 Actualizado: 2026-01-07 - Renombrar sent_total a outbound_total (semántica correcta)
 """
 import logging
+import uuid
 from datetime import date, timedelta
 from typing import Optional, Literal, List, Any
 from fastapi import APIRouter, Depends, Query, Path, HTTPException
@@ -220,37 +221,53 @@ async def get_email_metrics_by_type(
             detail=f"Rango máximo permitido: {max_range_days} días"
         )
     
+    request_id = str(uuid.uuid4())[:8]
+    
     logger.info(
-        "email_metrics_by_type_request: from=%s to=%s",
+        "email_metrics_by_type_request: request_id=%s from=%s to=%s",
+        request_id,
         from_dt.isoformat(),
         to_dt.isoformat(),
     )
     
-    agg = EmailByTypeAggregators(db)
-    result = await agg.get_metrics_by_type(from_dt, to_dt)
-    
-    # Check if we have any real data
-    total_events = result["totals"]["outbound_total"] + result["totals"]["failed_total"] + result["totals"]["pending_total"]
-    has_data = total_events > 0
-    note = None if has_data else "No se registraron eventos de correo en el periodo seleccionado."
-    
-    logger.info(
-        "email_metrics_by_type_completed: items=%d total_outbound=%d total_failed=%d has_data=%s",
-        len(result["items"]),
-        result["totals"]["outbound_total"],
-        result["totals"]["failed_total"],
-        has_data,
-    )
-    
-    return EmailMetricsByTypeResponse(
-        period_from=result["period_from"],
-        period_to=result["period_to"],
-        generated_at=result["generated_at"],
-        items=[EmailTypeMetrics(**item) for item in result["items"]],
-        totals=EmailTotals(**result["totals"]),
-        has_data=has_data,
-        note=note,
-    )
+    try:
+        agg = EmailByTypeAggregators(db)
+        result = await agg.get_metrics_by_type(from_dt, to_dt)
+        
+        # Check if we have any real data
+        total_events = result["totals"]["outbound_total"] + result["totals"]["failed_total"] + result["totals"]["pending_total"]
+        has_data = total_events > 0
+        note = None if has_data else "No se registraron eventos de correo en el periodo seleccionado."
+        
+        logger.info(
+            "email_metrics_by_type_completed: request_id=%s items=%d outbound=%d failed=%d pending=%d has_data=%s",
+            request_id,
+            len(result["items"]),
+            result["totals"]["outbound_total"],
+            result["totals"]["failed_total"],
+            result["totals"]["pending_total"],
+            has_data,
+        )
+        
+        return EmailMetricsByTypeResponse(
+            period_from=result["period_from"],
+            period_to=result["period_to"],
+            generated_at=result["generated_at"],
+            items=[EmailTypeMetrics(**item) for item in result["items"]],
+            totals=EmailTotals(**result["totals"]),
+            has_data=has_data,
+            note=note,
+        )
+    except Exception:
+        logger.exception("email_metrics_by_type_error: request_id=%s", request_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Error al obtener métricas de correo por tipo",
+                "request_id": request_id,
+            }
+        )
 
 
 async def get_email_backlog(

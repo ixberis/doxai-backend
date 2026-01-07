@@ -96,12 +96,15 @@ class EmailByTypeAggregators:
         # (bounced/complained son correos que SÍ se enviaron pero tuvieron problema después)
         # Latencia: solo considerar eventos con latency_ms IS NOT NULL (independiente del status final)
         # Esto evita perder latencias cuando el status cambia de sent a delivered
+        #
+        # FIX: asyncpg requiere tuple() (no list()) para ANY() con text().
+        # Usamos CAST(:param AS text[]) para bind explícito como array de texto.
         q = text("""
             SELECT
                 email_type::text AS email_type,
-                COUNT(*) FILTER (WHERE status = ANY(:sent_like_statuses)) AS outbound_total,
-                COUNT(*) FILTER (WHERE status = 'failed') AS failed_total,
-                COUNT(*) FILTER (WHERE status = 'pending') AS pending_total,
+                COUNT(*) FILTER (WHERE status::text = ANY(CAST(:sent_like_statuses AS text[]))) AS outbound_total,
+                COUNT(*) FILTER (WHERE status::text = 'failed') AS failed_total,
+                COUNT(*) FILTER (WHERE status::text = 'pending') AS pending_total,
                 AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS latency_avg_ms,
                 PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) 
                     FILTER (WHERE latency_ms IS NOT NULL) AS latency_p95_ms,
@@ -115,7 +118,7 @@ class EmailByTypeAggregators:
         result = await self.db.execute(q, {
             "from_dt": from_dt,
             "to_dt": to_dt,
-            "sent_like_statuses": list(EMAIL_SENT_LIKE_STATUSES),
+            "sent_like_statuses": tuple(EMAIL_SENT_LIKE_STATUSES),
         })
         
         rows = result.fetchall()

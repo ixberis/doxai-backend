@@ -207,6 +207,8 @@ class DeliverabilityOperationalAggregator:
         has_deliverability_events = False  # True si hay eventos delivered/bounced/complained
         
         try:
+            # FIX: asyncpg requiere tuple() (no list()) para ANY() con text().
+            # Usamos CAST(:param AS text[]) para bind explícito como array de texto.
             q = text("""
                 SELECT 
                     status,
@@ -214,13 +216,13 @@ class DeliverabilityOperationalAggregator:
                 FROM public.auth_email_events
                 WHERE created_at >= :from_ts
                   AND created_at < :to_ts
-                  AND email_type = ANY(:email_types)
+                  AND email_type::text = ANY(CAST(:email_types AS text[]))
                 GROUP BY status
             """)
             res = await self.db.execute(q, {
                 "from_ts": from_ts, 
                 "to_ts": to_ts,
-                "email_types": list(AUTH_EMAIL_TYPES),
+                "email_types": tuple(AUTH_EMAIL_TYPES),
             })
             rows = res.fetchall()
             
@@ -277,6 +279,7 @@ class DeliverabilityOperationalAggregator:
         
         if has_deliverability_events:
             try:
+                # FIX: asyncpg requiere tuple() (no list()) para ANY() con text().
                 q = text("""
                     SELECT COUNT(*)
                     FROM (
@@ -285,7 +288,7 @@ class DeliverabilityOperationalAggregator:
                         WHERE status = 'bounced'
                           AND created_at >= :from_ts
                           AND created_at < :to_ts
-                          AND email_type = ANY(:email_types)
+                          AND email_type::text = ANY(CAST(:email_types AS text[]))
                           AND user_id IS NOT NULL
                         GROUP BY user_id
                         HAVING COUNT(*) > 1
@@ -294,7 +297,7 @@ class DeliverabilityOperationalAggregator:
                 res = await self.db.execute(q, {
                     "from_ts": from_ts, 
                     "to_ts": to_ts,
-                    "email_types": list(AUTH_EMAIL_TYPES),
+                    "email_types": tuple(AUTH_EMAIL_TYPES),
                 })
                 row = res.first()
                 if row and row[0]:
