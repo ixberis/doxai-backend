@@ -210,8 +210,8 @@ class EmailEventLogger:
                         correlation_id,
                         updated_at
                     ) VALUES (
-                        :email_type::public.auth_email_type,
-                        :status::public.auth_email_event_status,
+                        CAST(:email_type AS public.auth_email_type),
+                        CAST(:status AS public.auth_email_event_status),
                         :recipient_domain,
                         :user_id,
                         :provider,
@@ -221,7 +221,7 @@ class EmailEventLogger:
                         :error_message,
                         :idempotency_key,
                         :correlation_id,
-                        CASE WHEN :status != 'pending' THEN now() ELSE NULL END
+                        CASE WHEN :status_check != 'pending' THEN now() ELSE NULL END
                     )
                     ON CONFLICT (idempotency_key)
                     DO UPDATE SET
@@ -231,12 +231,13 @@ class EmailEventLogger:
                         error_code = COALESCE(EXCLUDED.error_code, auth_email_events.error_code),
                         error_message = COALESCE(EXCLUDED.error_message, auth_email_events.error_message),
                         updated_at = now()
-                    RETURNING event_id::text
+                    RETURNING event_id
                 """)
                 
                 result = await log_session.execute(q, {
                     "email_type": event.email_type,
                     "status": event.status,
+                    "status_check": event.status,  # Separate param for CASE statement
                     "recipient_domain": event.recipient_domain,
                     "user_id": event.user_id,
                     "provider": event.provider,

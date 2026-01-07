@@ -135,7 +135,7 @@ class EmailSender:
         
         Args:
             settings: Configuración de la aplicación
-            db_session: Sesión de base de datos para instrumentación de eventos
+            db_session: Sesión de base de datos (legacy, para compatibilidad)
             
         Returns:
             IEmailSender: implementación según configuración
@@ -178,8 +178,51 @@ class EmailSender:
             # MailerSend es el proveedor por defecto para modo API
             if provider in ("mailersend", ""):
                 from app.shared.integrations.mailersend_email_sender import MailerSendEmailSender
-                logger.info("[EmailSender] Usando MailerSendEmailSender (db_session=%s)", "yes" if db_session else "no")
-                return MailerSendEmailSender.from_settings(settings, db_session=db_session)
+                
+                # CRÍTICO: Pasar SessionLocal explícitamente para instrumentación de eventos
+                # Guard estructural: verificar que factory() retorna async context manager
+                event_session_factory = None
+                disable_reason = None
+                
+                try:
+                    from app.shared.database.database import SessionLocal
+                    
+                    if SessionLocal is None:
+                        disable_reason = "SessionLocal=None (SKIP_DB_INIT?)"
+                    elif not callable(SessionLocal):
+                        disable_reason = f"SessionLocal not callable ({type(SessionLocal).__name__})"
+                    else:
+                        # Guard estructural: verificar que factory() retorna async context manager
+                        try:
+                            test_cm = SessionLocal()
+                            if not hasattr(test_cm, "__aenter__") or not hasattr(test_cm, "__aexit__"):
+                                disable_reason = "factory() lacks __aenter__/__aexit__"
+                            else:
+                                # Válido: es async context manager
+                                event_session_factory = SessionLocal
+                        except Exception as factory_err:
+                            disable_reason = f"factory() raised: {factory_err}"
+                            
+                except ImportError as e:
+                    disable_reason = f"ImportError: {e}"
+                
+                # Log único explícito de modo de logging (clave para operación)
+                if event_session_factory:
+                    logger.info(
+                        "email_event_logging_mode=factory SessionLocal_type=%s",
+                        type(event_session_factory).__name__,
+                    )
+                else:
+                    logger.warning(
+                        "email_event_logging_mode=disabled reason=%s",
+                        disable_reason,
+                    )
+                
+                return MailerSendEmailSender.from_settings(
+                    settings, 
+                    db_session=db_session, 
+                    event_session_factory=event_session_factory
+                )
 
             # Proveedor no reconocido en modo API
             logger.error(

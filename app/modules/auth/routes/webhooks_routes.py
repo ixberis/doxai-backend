@@ -303,7 +303,7 @@ async def _store_raw_event(
             INSERT INTO public.mailersend_webhook_events 
                 (event_type, message_id, payload, signature, process_status)
             VALUES 
-                (:event_type, :message_id, :payload::jsonb, :signature, 'received')
+                (:event_type, :message_id, CAST(:payload AS jsonb), :signature, 'received')
             ON CONFLICT (message_id, event_type) DO NOTHING
             RETURNING id
         """)
@@ -426,7 +426,7 @@ async def _process_webhook_event(
         # Perform update
         update_q = text("""
             UPDATE public.auth_email_events
-            SET status = :new_status::public.auth_email_event_status,
+            SET status = CAST(:new_status AS public.auth_email_event_status),
                 updated_at = now()
             WHERE event_id = :event_id
             RETURNING event_id

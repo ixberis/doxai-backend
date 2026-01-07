@@ -254,7 +254,10 @@ class LoginFlowService:
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="La cuenta aún no ha sido activada.",
+                detail={
+                    "message": "La cuenta aún no ha sido activada.",
+                    "error_code": "ACCOUNT_NOT_ACTIVATED",
+                },
             )
 
         # Login exitoso - reset rate limit counters

@@ -8,30 +8,37 @@ Proporciona métodos para registrar eventos estructurados
 en billing_operation_events.
 
 IMPORTANTE:
-- Los eventos se insertan dentro de la transacción existente del request.
-- NO hace commit por evento (el commit lo hace el caller o el middleware).
+- Los eventos se insertan en una SESIÓN INDEPENDIENTE para no contaminar
+  la transacción principal del request.
 - Fire-and-forget: errores se loguean pero no propagan.
+- Si falla el logging, el request principal continúa sin afectarse.
 
 Uso:
-    event_logger = BillingOperationEventLogger(session)
+    event_logger = BillingOperationEventLogger()
     await event_logger.log_public_pdf_access(invoice_id=123)
     await event_logger.log_token_expired(invoice_id=123)
     await event_logger.log_email_sent(invoice_id=123, intent_id=456)
 
 Autor: DoxAI
 Fecha: 2026-01-02
+Updated: 2026-01-07 - Sesión independiente para no romper transacciones principales
 """
 from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 logger = logging.getLogger(__name__)
+
+# Flag to log factory warning only once per process
+_factory_warning_logged = False
 
 
 class BillingOperationEventName(str, Enum):
@@ -70,6 +77,27 @@ class BillingOperationEventCategory(str, Enum):
     ERROR = "error"
 
 
+def _get_session_factory() -> Optional["async_sessionmaker[AsyncSession]"]:
+    """
+    Get SessionLocal from canonical database module.
+    
+    Returns None if unavailable (with warning logged once).
+    """
+    global _factory_warning_logged
+    
+    try:
+        from app.shared.database.database import SessionLocal
+        return SessionLocal
+    except ImportError as e:
+        if not _factory_warning_logged:
+            logger.warning(
+                "billing_operation_event_log_disabled: SessionLocal import failed: %s",
+                str(e)
+            )
+            _factory_warning_logged = True
+        return None
+
+
 class BillingOperationEventLogger:
     """
     Logger de eventos operativos para billing_operation_events.
@@ -77,13 +105,20 @@ class BillingOperationEventLogger:
     Todos los métodos son fire-and-forget con manejo de errores interno.
     No propagan excepciones para evitar afectar el flujo principal.
     
-    IMPORTANTE: No hace commit por evento. El evento se incluye en la
-    transacción del request actual. Si se necesita commit inmediato,
-    el caller debe hacerlo explícitamente después del log.
+    IMPORTANTE: Usa sesión INDEPENDIENTE para no contaminar la transacción
+    del request principal. Esto evita PendingRollbackError en webhooks.
     """
     
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    def __init__(self, session: Optional["AsyncSession"] = None):
+        """
+        Initialize logger.
+        
+        Args:
+            session: Legacy parameter, ignored. Uses SessionLocal internally
+                     for isolated transactions.
+        """
+        # session parameter kept for backwards compatibility but ignored
+        pass
     
     async def _log_event(
         self,
@@ -97,38 +132,44 @@ class BillingOperationEventLogger:
         user_agent: Optional[str] = None,
     ) -> None:
         """
-        Inserta un evento en billing_operation_events.
+        Inserta un evento en billing_operation_events usando sesión independiente.
         
         Fire-and-forget: errores se loguean pero no se propagan.
-        NO hace commit: el evento vive en la transacción del request.
+        Usa sesión aislada para no contaminar la transacción del request.
         """
+        session_factory = _get_session_factory()
+        if session_factory is None:
+            # Warning already logged once
+            return
+        
         try:
-            # Cast explícito a los tipos ENUM de PostgreSQL
-            query = text("""
-                INSERT INTO public.billing_operation_events (
-                    event_name, event_category, success, error_code,
-                    invoice_id, intent_id, request_id, user_agent
-                ) VALUES (
-                    :event_name::public.billing_operation_event_name_enum,
-                    :event_category::public.billing_operation_event_category_enum,
-                    :success, :error_code,
-                    :invoice_id, :intent_id, :request_id, :user_agent
-                )
-            """)
-            
-            await self.session.execute(query, {
-                "event_name": event_name.value,
-                "event_category": event_category.value,
-                "success": success,
-                "error_code": error_code,
-                "invoice_id": invoice_id,
-                "intent_id": intent_id,
-                "request_id": request_id,
-                "user_agent": user_agent[:255] if user_agent else None,
-            })
-            
-            # NO hacemos commit aquí - el evento vive en la transacción del request
-            # await self.session.commit()  <-- REMOVIDO
+            async with session_factory() as log_session:
+                # Use CAST() instead of :: to avoid asyncpg placeholder issues
+                query = text("""
+                    INSERT INTO public.billing_operation_events (
+                        event_name, event_category, success, error_code,
+                        invoice_id, intent_id, request_id, user_agent
+                    ) VALUES (
+                        CAST(:event_name AS public.billing_operation_event_name_enum),
+                        CAST(:event_category AS public.billing_operation_event_category_enum),
+                        :success, :error_code,
+                        :invoice_id, :intent_id, :request_id, :user_agent
+                    )
+                """)
+                
+                await log_session.execute(query, {
+                    "event_name": event_name.value,
+                    "event_category": event_category.value,
+                    "success": success,
+                    "error_code": error_code,
+                    "invoice_id": invoice_id,
+                    "intent_id": intent_id,
+                    "request_id": request_id,
+                    "user_agent": user_agent[:255] if user_agent else None,
+                })
+                
+                # Commit in the isolated session
+                await log_session.commit()
             
             logger.debug(
                 "billing_operation_event_logged: %s success=%s",
@@ -136,8 +177,8 @@ class BillingOperationEventLogger:
             )
             
         except Exception as e:
-            # Fire-and-forget: no propagar
-            logger.warning(
+            # Fire-and-forget: no propagar, pero loguear con stacktrace completo
+            logger.exception(
                 "billing_operation_event_log_failed: %s error=%s",
                 event_name.value if hasattr(event_name, 'value') else event_name,
                 str(e)

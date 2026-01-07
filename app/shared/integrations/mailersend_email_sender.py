@@ -184,7 +184,21 @@ class MailerSendEmailSender:
         session_factory = self._get_event_session_factory()
         if session_factory is None:
             # Warning already logged by _get_event_session_factory (once per process)
+            logger.warning(
+                "auth_email_event_insert_skipped: no session_factory type=%s status=%s",
+                email_type,
+                status,
+            )
             return
+        
+        # Log intent to insert (for debugging in Railway)
+        logger.info(
+            "auth_email_event_insert_started: type=%s status=%s user_id=%s domain=%s",
+            email_type,
+            status,
+            user_id,
+            self._extract_domain(to_email),
+        )
         
         try:
             from sqlalchemy import text
@@ -205,8 +219,8 @@ class MailerSendEmailSender:
                         idempotency_key,
                         updated_at
                     ) VALUES (
-                        :email_type::public.auth_email_type,
-                        :status::public.auth_email_event_status,
+                        CAST(:email_type AS public.auth_email_type),
+                        CAST(:status AS public.auth_email_event_status),
                         :recipient_domain,
                         :user_id,
                         'mailersend',
@@ -215,7 +229,7 @@ class MailerSendEmailSender:
                         :error_code,
                         :error_message,
                         :idempotency_key,
-                        CASE WHEN :status != 'pending' THEN now() ELSE NULL END
+                        CASE WHEN :status_check != 'pending' THEN now() ELSE NULL END
                     )
                     ON CONFLICT (idempotency_key)
                     DO UPDATE SET
@@ -225,11 +239,13 @@ class MailerSendEmailSender:
                         error_code = COALESCE(EXCLUDED.error_code, auth_email_events.error_code),
                         error_message = COALESCE(EXCLUDED.error_message, auth_email_events.error_message),
                         updated_at = now()
+                    RETURNING event_id
                 """)
                 
-                await log_session.execute(q, {
+                result = await log_session.execute(q, {
                     "email_type": email_type,
                     "status": status,
+                    "status_check": status,  # Separate param for CASE statement
                     "recipient_domain": self._extract_domain(to_email),
                     "user_id": user_id,
                     "provider_message_id": provider_message_id,
@@ -239,19 +255,28 @@ class MailerSendEmailSender:
                     "idempotency_key": idempotency_key,
                 })
                 
+                row = result.first()
+                event_id = row[0] if row else None
+                
                 # Commit in the separate session - isolated from main transaction
                 await log_session.commit()
             
-            logger.debug(
-                "email_event_logged: type=%s status=%s latency_ms=%s",
+            logger.info(
+                "auth_email_event_insert_success: event_id=%s type=%s status=%s latency_ms=%s",
+                event_id,
                 email_type,
                 status,
                 latency_ms,
             )
             
         except Exception as e:
-            # Don't fail email sending due to logging errors
-            logger.warning("email_event_log_failed: %s", str(e))
+            # Don't fail email sending due to logging errors - but log the failure
+            logger.exception(
+                "auth_email_event_insert_failed: type=%s status=%s error=%s",
+                email_type,
+                status,
+                str(e),
+            )
 
     @classmethod
     def from_settings(
