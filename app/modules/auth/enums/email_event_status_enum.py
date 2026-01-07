@@ -32,12 +32,17 @@ EMAIL_OPERATIONAL_STATUSES: Tuple[str, ...] = ("sent", "failed")
 EMAIL_DELIVERABILITY_STATUSES: Tuple[str, ...] = ("delivered", "bounced", "complained")
 ALL_EMAIL_EVENT_STATUSES: Tuple[str, ...] = tuple(e.value for e in AuthEmailEventStatus)
 
+# Estados que implican que el correo fue enviado al proveedor (para conteos de "enviados")
+# Incluye delivered/bounced/complained porque son estados monotónicos que suceden DESPUÉS de sent
+EMAIL_SENT_LIKE_STATUSES: Tuple[str, ...] = ("sent", "delivered", "bounced", "complained")
+
 
 __all__ = [
     "AuthEmailEventStatus",
     "EMAIL_OPERATIONAL_STATUSES",
     "EMAIL_DELIVERABILITY_STATUSES",
     "ALL_EMAIL_EVENT_STATUSES",
+    "EMAIL_SENT_LIKE_STATUSES",
 ]
 
 # Fin del archivo

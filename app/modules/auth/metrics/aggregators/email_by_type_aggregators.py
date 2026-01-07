@@ -7,6 +7,7 @@ Consulta tabla auth_email_events para obtener counts/latencias por email_type.
 
 Autor: Sistema
 Fecha: 2026-01-02
+Actualizado: 2026-01-07 - Usar EMAIL_SENT_LIKE_STATUSES centralizado
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.auth.enums.email_event_status_enum import EMAIL_SENT_LIKE_STATUSES
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +28,11 @@ class EmailByTypeAggregators:
     Agregadores para métricas de emails desglosadas por tipo.
     
     Consulta auth_email_events con filtro de periodo.
+    
+    Terminología:
+    - outbound_total: Correos que llegaron al proveedor (sent/delivered/bounced/complained)
+    - failed_total: Correos que fallaron antes de llegar al proveedor
+    - pending_total: Correos en cola (transitorio)
     """
     
     # Tipos de email conocidos (para incluir aunque tengan 0 eventos)
@@ -59,7 +67,7 @@ class EmailByTypeAggregators:
                 "items": [
                     {
                         "email_type": "account_activation",
-                        "sent_total": 10,
+                        "outbound_total": 10,  # sent + delivered + bounced + complained
                         "failed_total": 1,
                         "pending_total": 0,
                         "failure_rate": 0.0909,
@@ -70,7 +78,7 @@ class EmailByTypeAggregators:
                     ...
                 ],
                 "totals": {
-                    "sent_total": 40,
+                    "outbound_total": 40,
                     "failed_total": 2,
                     "pending_total": 0,
                     "failure_rate": 0.05,
@@ -84,16 +92,20 @@ class EmailByTypeAggregators:
         to_dt = datetime.combine(to_date + timedelta(days=1), datetime.min.time())
         
         # Query agregada por tipo
+        # Estados "sent-like": sent, delivered, bounced, complained
+        # (bounced/complained son correos que SÍ se enviaron pero tuvieron problema después)
+        # Latencia: solo considerar eventos con latency_ms IS NOT NULL (independiente del status final)
+        # Esto evita perder latencias cuando el status cambia de sent a delivered
         q = text("""
             SELECT
                 email_type::text AS email_type,
-                COUNT(*) FILTER (WHERE status = 'sent') AS sent_total,
+                COUNT(*) FILTER (WHERE status = ANY(:sent_like_statuses)) AS outbound_total,
                 COUNT(*) FILTER (WHERE status = 'failed') AS failed_total,
                 COUNT(*) FILTER (WHERE status = 'pending') AS pending_total,
-                AVG(latency_ms) FILTER (WHERE status = 'sent' AND latency_ms IS NOT NULL) AS latency_avg_ms,
+                AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS latency_avg_ms,
                 PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) 
-                    FILTER (WHERE status = 'sent' AND latency_ms IS NOT NULL) AS latency_p95_ms,
-                COUNT(*) FILTER (WHERE status = 'sent' AND latency_ms IS NOT NULL) AS latency_count
+                    FILTER (WHERE latency_ms IS NOT NULL) AS latency_p95_ms,
+                COUNT(*) FILTER (WHERE latency_ms IS NOT NULL) AS latency_count
             FROM public.auth_email_events
             WHERE created_at >= :from_dt
               AND created_at < :to_dt
@@ -103,6 +115,7 @@ class EmailByTypeAggregators:
         result = await self.db.execute(q, {
             "from_dt": from_dt,
             "to_dt": to_dt,
+            "sent_like_statuses": list(EMAIL_SENT_LIKE_STATUSES),
         })
         
         rows = result.fetchall()
@@ -110,13 +123,13 @@ class EmailByTypeAggregators:
         # Convertir a diccionario por tipo
         metrics_by_type: Dict[str, Dict[str, Any]] = {}
         for row in rows:
-            sent = int(row.sent_total or 0)
+            outbound = int(row.outbound_total or 0)
             failed = int(row.failed_total or 0)
-            total_attempts = sent + failed
+            total_attempts = outbound + failed
             
             metrics_by_type[row.email_type] = {
                 "email_type": row.email_type,
-                "sent_total": sent,
+                "outbound_total": outbound,
                 "failed_total": failed,
                 "pending_total": int(row.pending_total or 0),
                 "failure_rate": round(failed / total_attempts, 4) if total_attempts > 0 else 0.0,
@@ -134,7 +147,7 @@ class EmailByTypeAggregators:
                 # Tipo sin eventos en el periodo
                 items.append({
                     "email_type": email_type,
-                    "sent_total": 0,
+                    "outbound_total": 0,
                     "failed_total": 0,
                     "pending_total": 0,
                     "failure_rate": 0.0,
@@ -144,12 +157,12 @@ class EmailByTypeAggregators:
                 })
         
         # Calcular totales
-        total_sent = sum(item["sent_total"] for item in items)
+        total_outbound = sum(item["outbound_total"] for item in items)
         total_failed = sum(item["failed_total"] for item in items)
         total_pending = sum(item["pending_total"] for item in items)
-        total_attempts = total_sent + total_failed
+        total_attempts = total_outbound + total_failed
         
-        # Latencia global
+        # Latencia global (usa latency_ms IS NOT NULL, no filtra por status)
         latency_global = await self._get_global_latency(from_dt, to_dt)
         
         return {
@@ -158,7 +171,7 @@ class EmailByTypeAggregators:
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "items": items,
             "totals": {
-                "sent_total": total_sent,
+                "outbound_total": total_outbound,
                 "failed_total": total_failed,
                 "pending_total": total_pending,
                 "failure_rate": round(total_failed / total_attempts, 4) if total_attempts > 0 else 0.0,
@@ -173,7 +186,13 @@ class EmailByTypeAggregators:
         from_dt: datetime,
         to_dt: datetime,
     ) -> Dict[str, Any]:
-        """Calcula latencia global del periodo."""
+        """
+        Calcula latencia global del periodo.
+        
+        IMPORTANTE: No filtra por status, solo por latency_ms IS NOT NULL.
+        Esto evita perder datos de latencia cuando el status cambia
+        de 'sent' a 'delivered' (transición monotónica).
+        """
         q = text("""
             SELECT
                 AVG(latency_ms) AS avg_ms,
@@ -182,7 +201,6 @@ class EmailByTypeAggregators:
             FROM public.auth_email_events
             WHERE created_at >= :from_dt
               AND created_at < :to_dt
-              AND status = 'sent'
               AND latency_ms IS NOT NULL
         """)
         

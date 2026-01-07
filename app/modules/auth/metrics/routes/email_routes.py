@@ -12,7 +12,7 @@ Endpoints:
 
 Autor: Sistema
 Fecha: 2025-12-26
-Actualizado: 2026-01-02 - Agregado endpoint by-type con soporte de periodo
+Actualizado: 2026-01-07 - Renombrar sent_total a outbound_total (semántica correcta)
 """
 import logging
 from datetime import date, timedelta
@@ -79,8 +79,8 @@ class RetryResponse(BaseModel):
 class EmailTypeMetrics(BaseModel):
     """Métricas para un tipo de email específico."""
     email_type: str = Field(..., description="Tipo de email")
-    sent_total: int = Field(..., description="Emails enviados")
-    failed_total: int = Field(..., description="Emails fallidos")
+    outbound_total: int = Field(..., description="Emails enviados al proveedor (sent/delivered/bounced/complained)")
+    failed_total: int = Field(..., description="Emails fallidos antes de envío")
     pending_total: int = Field(..., description="Emails pendientes")
     failure_rate: float = Field(..., description="Tasa de fallo (fallidos / total intentos)")
     latency_avg_ms: Optional[float] = Field(None, description="Latencia promedio en ms")
@@ -90,7 +90,7 @@ class EmailTypeMetrics(BaseModel):
 
 class EmailTotals(BaseModel):
     """Totales agregados de todos los tipos."""
-    sent_total: int
+    outbound_total: int
     failed_total: int
     pending_total: int
     failure_rate: float
@@ -175,6 +175,11 @@ async def get_email_metrics_by_type(
     
     Returns:
         EmailMetricsByTypeResponse con items por tipo y totales.
+        
+    Nota sobre outbound_total:
+        Cuenta correos en estado sent, delivered, bounced, o complained.
+        Esto refleja todos los correos que llegaron al proveedor (MailerSend),
+        independiente del resultado final de entrega.
     """
     # Parse dates
     today = date.today()
@@ -225,14 +230,14 @@ async def get_email_metrics_by_type(
     result = await agg.get_metrics_by_type(from_dt, to_dt)
     
     # Check if we have any real data
-    total_events = result["totals"]["sent_total"] + result["totals"]["failed_total"] + result["totals"]["pending_total"]
+    total_events = result["totals"]["outbound_total"] + result["totals"]["failed_total"] + result["totals"]["pending_total"]
     has_data = total_events > 0
-    note = None if has_data else "Sin datos en el periodo seleccionado. La instrumentación de eventos puede no estar activa."
+    note = None if has_data else "No se registraron eventos de correo en el periodo seleccionado."
     
     logger.info(
-        "email_metrics_by_type_completed: items=%d total_sent=%d total_failed=%d has_data=%s",
+        "email_metrics_by_type_completed: items=%d total_outbound=%d total_failed=%d has_data=%s",
         len(result["items"]),
-        result["totals"]["sent_total"],
+        result["totals"]["outbound_total"],
         result["totals"]["failed_total"],
         has_data,
     )
