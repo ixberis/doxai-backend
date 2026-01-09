@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/services/activation_service.py
@@ -51,8 +50,10 @@ class ActivationService:
         self.db = db
         self.activation_repo = ActivationRepository(db)
         self.user_repo = UserRepository(db)
-        # Servicio de créditos (trabaja con user_id entero/BIGINT)
+
+        # Servicio de créditos (DB 2.0 SSOT: auth_user_id UUID)
         self.credit_service = CreditService(db)
+
         # Créditos de bienvenida (configurable, por defecto 5)
         self.welcome_credits = welcome_credits
 
@@ -68,24 +69,12 @@ class ActivationService:
     ) -> str:
         """
         Emite un token de activación nuevo para el usuario.
-        
+
         BD 2.0: Requiere auth_user_id (UUID SSOT) para persistir en account_activations.
         Si no se proporciona, intenta obtenerlo del usuario en DB.
-        
-        Args:
-            user_id: ID interno del usuario (int o str convertible a int).
-            auth_user_id: UUID SSOT del usuario. Si None, se busca en DB.
-            ttl_minutes: Tiempo de vida del token en minutos (default 24h).
-            token_factory: Callable para generar el token (default: secrets.token_urlsafe).
-            
-        Returns:
-            Token de activación generado.
-            
-        Raises:
-            ValueError: Si user_id es inválido o no se puede obtener auth_user_id.
         """
         from uuid import UUID as UUIDType
-        
+
         # Normalizar user_id a entero
         try:
             uid_int = int(user_id)
@@ -100,7 +89,7 @@ class ActivationService:
             auth_user_id = getattr(user, "auth_user_id", None)
             if auth_user_id is None:
                 raise ValueError(f"Usuario {uid_int} no tiene auth_user_id (SSOT requerido)")
-        
+
         # Asegurar que auth_user_id es UUID
         if isinstance(auth_user_id, str):
             auth_user_id = UUIDType(auth_user_id)
@@ -110,7 +99,6 @@ class ActivationService:
 
         if token_factory is None:
             import secrets
-
             token_factory = lambda: secrets.token_urlsafe(32)  # pragma: no cover
 
         token = token_factory()
@@ -206,32 +194,44 @@ class ActivationService:
         await self.activation_repo.mark_as_used(activation)
 
         # ---------------------------------------------------------
-        # 2) Asignar créditos de bienvenida (idempotente)
+        # 2) Asignar créditos de bienvenida (idempotente, SSOT)
         # ---------------------------------------------------------
         credits_assigned = 0
         warnings = []
 
-        # Capturamos user_id en una variable local para evitar accesos perezosos
-        # al ORM dentro del bloque de excepción (previene MissingGreenlet).
+        # Exponer user_id (INT) para flujos legacy de notificación, si aplica
         try:
-            user_id = int(user.user_id)
+            user_id_int = int(user.user_id)
         except Exception:
-            user_id = getattr(user, "user_id", None)
+            user_id_int = getattr(user, "user_id", None)
+
+        # SSOT requerido para créditos
+        auth_user_id: Optional[UUID] = getattr(user, "auth_user_id", None)
 
         try:
-            if self.welcome_credits > 0 and user_id is not None:
+            if self.welcome_credits > 0 and auth_user_id is not None:
                 created = await self.credit_service.ensure_welcome_credits(
-                    user_id=user_id,
+                    auth_user_id=auth_user_id,
                     welcome_credits=self.welcome_credits,
                 )
                 if created:
                     credits_assigned = self.welcome_credits
+            elif self.welcome_credits > 0 and auth_user_id is None:
+                logger.warning(
+                    "welcome_credits_skipped_missing_auth_user_id: user_id=%s",
+                    user_id_int,
+                )
         except Exception as e:
-            # No rompemos la activación si hay un problema con créditos
-            # pero sí reportamos el warning a la UI
+            # No rompemos la activación si hay un problema con créditos,
+            # pero debemos evitar dejar la transacción abortada.
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+
             logger.error(
-                "Error asignando créditos de bienvenida al usuario %s: %s",
-                user_id,
+                "Error asignando créditos de bienvenida (SSOT) al usuario %s: %s",
+                str(auth_user_id)[:8] + "..." if auth_user_id else user_id_int,
                 e,
                 exc_info=True,
             )
@@ -241,12 +241,12 @@ class ActivationService:
             "code": "ACCOUNT_ACTIVATED",
             "message": "La cuenta se activó exitosamente.",
             "credits_assigned": credits_assigned,
-            "user_id": user_id,  # Exponer user_id para que el flow service pueda enviar email
+            "user_id": user_id_int,  # útil para otros flows (admin notice, etc.)
         }
-        
+
         if warnings:
             result["warnings"] = warnings
-        
+
         return result
 
     # ------------------------ helpers internos ------------------------
@@ -255,11 +255,9 @@ class ActivationService:
         """
         Helper simple para obtener al usuario sin acoplar a rutas.
         """
-        # Usamos UserRepository para mantener la capa de acceso a datos
         try:
             return await self.user_repo.get_by_id(user_id)
         except Exception:
-            # Fallback directo si algo sale mal con el repo
             res = await self.db.execute(select(User).where(User.user_id == user_id))
             return res.scalar_one_or_none()
 
@@ -275,7 +273,6 @@ class ActivationService:
 
         status = getattr(user, "user_status", None)
         if status is None:
-            # Fallback conservador: si no hay campo, consideramos activo
             return True
 
         try:
@@ -287,4 +284,5 @@ class ActivationService:
 __all__ = ["ActivationService"]
 
 # Fin del script backend/app/modules/auth/services/activation_service.py
+
 

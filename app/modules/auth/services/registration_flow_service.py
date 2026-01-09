@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/services/registration_flow_service.py
@@ -27,7 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional
 
 from fastapi import status
 from sqlalchemy import update, func
@@ -76,14 +75,6 @@ class RegistrationFlowService:
     ) -> None:
         """
         Constructor flexible para integrarse con AuthService.
-
-        AuthService hoy solo pasa:
-            db, email_sender, token_issuer
-
-        Por eso aquí:
-            - Si no se recibe user_service, se crea con `db`.
-            - Si no se recibe activation_service, se crea con `db`.
-            - Si no se recibe audit_service, se usa la clase AuditService como singleton.
         """
         self.db = db
         self.email_sender = email_sender
@@ -92,45 +83,26 @@ class RegistrationFlowService:
         # Servicios dependientes (con defaults razonables)
         self.user_service = user_service or UserService.with_session(db)
         self.activation_service = activation_service or ActivationService(db)
-        # AuditService es básicamente estático; usamos la clase directamente si no se inyecta otra cosa
         self.audit_service = audit_service or AuditService
 
     async def register_user(self, data: Mapping[str, Any] | Any) -> RegistrationResult:
         """
         Registra un usuario nuevo o maneja caso de email existente.
-
-        ANTI-ENUMERACIÓN ESTRICTA:
-        - Email existente (activo o no) → respuesta genérica sin user_id/access_token
-        - Email nuevo → respuesta con user_id y access_token
-
-        data esperado:
-            - email
-            - password
-            - full_name (opcional)
-            - ip_address (opcional)
-            - user_agent (opcional)
-
-        Returns:
-            RegistrationResult con:
-                - payload: Dict (message, y opcionalmente user_id/access_token)
-                - created: bool (True solo si se creó usuario nuevo)
         """
         payload = as_dict(data)
 
         email = (payload.get("email") or "").strip().lower()
         password = payload.get("password") or ""
         full_name = (payload.get("full_name") or "").strip() or None
-        # Soportar aliases: phone, user_phone, phone_number
         phone = (
-            payload.get("phone") 
-            or payload.get("user_phone") 
-            or payload.get("phone_number") 
+            payload.get("phone")
+            or payload.get("user_phone")
+            or payload.get("phone_number")
             or ""
         ).strip() or None
         ip_address = payload.get("ip_address", "unknown")
         user_agent = payload.get("user_agent")
 
-        # DEBUG: Log payload keys y presencia de phone (sin PII)
         logger.info(
             "REGISTRATION_PAYLOAD: payload_keys=%s has_phone=%s phone_len=%d email_prefix=%s",
             list(payload.keys()),
@@ -146,24 +118,17 @@ class RegistrationFlowService:
                 error_message="missing_email_or_password",
                 user_agent=user_agent,
             )
-            raise BadRequestException(
-                detail="Email y contraseña son obligatorios.",
-            )
+            raise BadRequestException(detail="Email y contraseña son obligatorios.")
 
         # ------------------------------------------------------------------
-        # 1) Usuario ya existe (ANTI-ENUMERACIÓN: mismo tratamiento activo/inactivo)
+        # 1) Usuario ya existe (ANTI-ENUMERACIÓN)
         # ------------------------------------------------------------------
         existing = await self.user_service.get_by_email(email)
         if existing:
             is_active = await self.activation_service.is_active(existing)
-            
+
             if is_active:
-                # Usuario activo: log como intento duplicado, respuesta genérica
-                logger.info(
-                    "register_duplicate_active email=%s ip=%s",
-                    email[:3] + "***",
-                    ip_address,
-                )
+                logger.info("register_duplicate_active email=%s ip=%s", email[:3] + "***", ip_address)
                 self.audit_service.log_register_failed(
                     email=email,
                     ip_address=ip_address,
@@ -181,17 +146,12 @@ class RegistrationFlowService:
                     email=existing.user_email,
                     full_name=existing.user_full_name,
                     token=token,
-                    user_id=existing.user_id,
+                    user_id=existing.user_id,                 # legacy tracking en account_activations
+                    auth_user_id=existing.auth_user_id,       # SSOT para auth_email_events
                     ip_address=ip_address,
                 )
-                logger.info(
-                    "register_duplicate_inactive email=%s ip=%s",
-                    email[:3] + "***",
-                    ip_address,
-                )
+                logger.info("register_duplicate_inactive email=%s ip=%s", email[:3] + "***", ip_address)
 
-            # ANTI-ENUMERACIÓN: misma respuesta para activo e inactivo
-            # NO incluye user_id ni access_token
             return RegistrationResult(
                 payload={"message": GENERIC_REGISTER_MESSAGE},
                 created=False,
@@ -213,12 +173,9 @@ class RegistrationFlowService:
                 detail=f"La contraseña es demasiado larga (máximo {MAX_PASSWORD_LENGTH} caracteres)."
             )
 
-        # SSOT: Generar auth_user_id explícitamente (no default en DB)
-        # Esto permite que en el futuro, si se integra Supabase Auth,
-        # se use auth.users.id en lugar de generar uno nuevo.
         from uuid import uuid4
         generated_auth_user_id = uuid4()
-        
+
         user = AppUser(
             user_email=email,
             user_full_name=full_name or "",
@@ -227,7 +184,6 @@ class RegistrationFlowService:
             auth_user_id=generated_auth_user_id,  # SSOT: UUID explícito
         )
 
-        # DEBUG logging (no PII) - confirma que teléfono se recibe
         logger.info(
             "REGISTRATION: crear usuario nuevo email=%s has_phone=%s auth_user_id=%s",
             email[:3] + "***",
@@ -236,15 +192,11 @@ class RegistrationFlowService:
         )
         try:
             created = await self.user_service.add(user)
-            # IMPORTANTE: Capturar atributos inmediatamente después del add()
-            # para evitar lazy-load en contexto async después de que la sesión expire
-            created_user_id = created.user_id       # INT - internal PK
-            created_auth_user_id = created.auth_user_id  # UUID - SSOT para ownership
+            created_user_id = created.user_id
+            created_auth_user_id = created.auth_user_id
             created_user_email = created.user_email
             created_user_full_name = created.user_full_name
         except IntegrityError as e:
-            # Race condition: email insertado entre get_by_email y add
-            # ANTI-ENUMERACIÓN: respuesta genérica (no 409)
             logger.warning(
                 "register_integrity_error email=%s ip=%s error=%s",
                 email[:3] + "***",
@@ -267,20 +219,17 @@ class RegistrationFlowService:
             user_id=created_user_id,
             auth_user_id=created_auth_user_id,  # BD 2.0 SSOT
         )
-        
-        # Best-effort: intentar enviar email, pero no fallar el registro
+
         email_sent = await self._send_activation_email_best_effort(
             email=created_user_email,
             full_name=created_user_full_name,
             token=token,
-            user_id=created_user_id,
+            user_id=created_user_id,               # legacy tracking en account_activations
+            auth_user_id=created_auth_user_id,     # SSOT para auth_email_events
             ip_address=ip_address,
         )
 
-        # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT)
-        access_token = self.token_issuer.create_access_token(
-            sub=str(created_auth_user_id),
-        )
+        access_token = self.token_issuer.create_access_token(sub=str(created_auth_user_id))
 
         self.audit_service.log_register_success(
             user_id=str(created_user_id),
@@ -289,7 +238,6 @@ class RegistrationFlowService:
             user_agent=user_agent,
         )
 
-        # Mensaje depende de si se envió el email
         message = (
             "Usuario registrado. Revise su correo para activar la cuenta."
             if email_sent
@@ -306,7 +254,6 @@ class RegistrationFlowService:
             created=True,
         )
 
-
     async def _send_activation_email_best_effort(
         self,
         *,
@@ -314,50 +261,40 @@ class RegistrationFlowService:
         full_name: str,
         token: str,
         user_id: int,
+        auth_user_id,  # UUID SSOT (no tipado explícito para evitar imports extra)
         ip_address: str,
     ) -> bool:
         """
         Envía email de activación de forma best-effort y persiste tracking en DB.
-        
-        No propaga excepciones. Loguea resultado.
-        Actualiza activation_email_status/attempts/sent_at/last_error en account_activations.
-        
-        IMPORTANTE: Usa commit() explícito porque create_activation ya hizo commit previo.
-        El flush() solo sincroniza sin persistir, causando pérdida de datos.
-        
-        Usa WHERE user_id + token para máxima seguridad (aunque token es UNIQUE).
-        Usa func.coalesce para el incremento de attempts (robusto ante NULL).
-        
-        Returns:
-            True si se envió correctamente, False si falló.
+
+        DB 2.0:
+        - auth_email_events se registra por SSOT auth_user_id (NO user_id legacy).
+        - account_activations tracking interno puede seguir usando token/user_id.
         """
         email_masked = email[:3] + "***" if email else "unknown"
         token_preview = token[:12] + "..." if token else "none"
         now_utc = datetime.now(timezone.utc)
-        
+
         try:
             await self.email_sender.send_activation_email(
                 to_email=email,
                 full_name=full_name or "",
                 activation_token=token,
-                user_id=user_id,  # Crítico para métricas en auth_email_events
+                auth_user_id=auth_user_id,  # ✅ SSOT para auth_email_events
+                user_id=user_id,            # legacy opcional (no persist en auth_email_events)
             )
-            
-            # Persistir éxito: status='sent', attempts++, sent_at=now, last_error=null
-            # WHERE solo por token (es UNIQUE, suficiente para identificar)
+
             result = await self.db.execute(
                 update(AccountActivation)
                 .where(AccountActivation.token == token)
                 .values(
                     activation_email_status='sent',
-                    activation_email_attempts=func.coalesce(
-                        AccountActivation.activation_email_attempts, 0
-                    ) + 1,
+                    activation_email_attempts=func.coalesce(AccountActivation.activation_email_attempts, 0) + 1,
                     activation_email_sent_at=now_utc,
                     activation_email_last_error=None,
                 )
             )
-            
+
             try:
                 await self.db.commit()
             except Exception as commit_error:
@@ -368,7 +305,6 @@ class RegistrationFlowService:
                     token_preview,
                     str(commit_error)[:100],
                 )
-                # Email se envió OK, pero tracking falló - aún retornamos True
                 logger.info(
                     "activation_email_sent to=%s user_id=%s ip=%s (tracking_failed)",
                     email_masked,
@@ -376,8 +312,7 @@ class RegistrationFlowService:
                     ip_address,
                 )
                 return True
-            
-            # Verificar rowcount
+
             if result.rowcount != 1:
                 logger.warning(
                     "activation_email_tracking_update_missed user_id=%s token_preview=%s rowcount=%s expected=1",
@@ -386,40 +321,27 @@ class RegistrationFlowService:
                     result.rowcount,
                 )
             else:
-                logger.info(
-                    "activation_email_tracking_persisted user_id=%s status=sent",
-                    user_id,
-                )
-            
-            logger.info(
-                "activation_email_sent to=%s user_id=%s ip=%s",
-                email_masked,
-                user_id,
-                ip_address,
-            )
+                logger.info("activation_email_tracking_persisted user_id=%s status=sent", user_id)
+
+            logger.info("activation_email_sent to=%s user_id=%s ip=%s", email_masked, user_id, ip_address)
             return True
-            
+
         except Exception as e:
-            # Extraer error_code si es MailerSendError
             error_code = getattr(e, "error_code", "unknown")
             error_msg = f"{error_code}: {str(e)[:180]}"
-            
-            # Persistir fallo: status='failed', attempts++, last_error
-            # WHERE solo por token (es UNIQUE, suficiente para identificar)
+
             try:
                 result = await self.db.execute(
                     update(AccountActivation)
                     .where(AccountActivation.token == token)
                     .values(
                         activation_email_status='failed',
-                        activation_email_attempts=func.coalesce(
-                            AccountActivation.activation_email_attempts, 0
-                        ) + 1,
+                        activation_email_attempts=func.coalesce(AccountActivation.activation_email_attempts, 0) + 1,
                         activation_email_last_error=error_msg,
                     )
                 )
                 await self.db.commit()
-                
+
                 if result.rowcount != 1:
                     logger.warning(
                         "activation_email_tracking_update_missed user_id=%s token_preview=%s rowcount=%s expected=1",
@@ -435,7 +357,7 @@ class RegistrationFlowService:
                     token_preview,
                     str(commit_error)[:100],
                 )
-            
+
             logger.warning(
                 "activation_email_failed to=%s user_id=%s ip=%s error_code=%s error=%s",
                 email_masked,
