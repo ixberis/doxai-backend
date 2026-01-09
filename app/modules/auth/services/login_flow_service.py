@@ -56,12 +56,12 @@ def _get_backoff_delay(attempt_count: int) -> float:
 class LoginFlowService:
     """
     Orquestador del login y refresh de tokens.
-    
+
     Uses RateLimitService as single source of truth for:
     - Rate limiting by IP (20/5min)
     - Lockout by email (5/15min)
     - Progressive backoff calculation
-    
+
     Registers sessions in user_sessions table for Auth Metrics.
     """
 
@@ -82,7 +82,7 @@ class LoginFlowService:
     # Login attempt recording (best-effort, won't block login flow)
     # BD 2.0: Solo se registra si el usuario existe (auth_user_id NOT NULL en DB)
     # ─────────────────────────────────────────────────────────────────────────
-    
+
     async def _record_login_attempt(
         self,
         *,
@@ -94,20 +94,18 @@ class LoginFlowService:
     ) -> None:
         """
         Records login attempt to login_attempts table (best-effort).
-        
+
         BD 2.0: Solo inserta si user existe (auth_user_id es NOT NULL en DB).
         Para intentos con usuario inexistente, NO insertamos - el audit log
         estructurado se mantiene en AuditService.
-        
+
         If the insert fails, logs the error but doesn't block the login flow.
         """
         # BD 2.0: Si no hay usuario, no podemos insertar (auth_user_id es NOT NULL)
         if user is None:
-            logger.debug(
-                "login_attempt_skipped: user=None (auth_user_id NOT NULL constraint)"
-            )
+            logger.debug("login_attempt_skipped: user=None (auth_user_id NOT NULL constraint)")
             return
-            
+
         try:
             await self.login_attempt_repo.record_attempt(
                 user_id=user.user_id,
@@ -119,23 +117,27 @@ class LoginFlowService:
             )
             logger.debug(
                 "login_attempt_recorded: user_id=%s auth_user_id=%s success=%s reason=%s",
-                user.user_id, str(user.auth_user_id)[:8] + "...", success, reason,
+                user.user_id,
+                str(user.auth_user_id)[:8] + "...",
+                success,
+                reason,
             )
         except Exception as e:
             logger.warning(
                 "login_attempts_insert_failed: user_id=%s success=%s error=%s",
-                user.user_id, success, str(e),
+                user.user_id,
+                success,
+                str(e),
             )
 
     async def _apply_backoff(self, ip_address: str, email: str) -> None:
         """Apply progressive backoff delay based on failed attempt count."""
-        # Get attempt count from rate limiter
         attempt_count = self._rate_limiter.get_attempt_count(
             endpoint="auth:login",
             key_type="email",
             identifier=email,
         )
-        
+
         delay = _get_backoff_delay(attempt_count)
         if delay > 0:
             logger.debug(f"Applying backoff delay: {delay}s for email={email[:4]}***")
@@ -184,10 +186,8 @@ class LoginFlowService:
         # Buscar usuario
         user = await self.user_service.get_by_email(email)
         if not user:
-            # BD 2.0: No insertamos en login_attempts (auth_user_id NOT NULL)
-            # Mantenemos el log estructurado en AuditService
             await self._record_login_attempt(
-                user=None,  # BD 2.0: skip insert
+                user=None,
                 success=False,
                 reason=LoginFailureReason.user_not_found,
                 ip_address=ip_address,
@@ -199,7 +199,6 @@ class LoginFlowService:
                 reason="Usuario no encontrado",
                 user_agent=user_agent,
             )
-            # Generic message to not reveal if user exists
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas.",
@@ -208,7 +207,6 @@ class LoginFlowService:
         # Obtener hash de contraseña desde el modelo actual
         password_hash = getattr(user, "user_password_hash", None)
         if password_hash is None:
-            # Fallback por compatibilidad con modelos antiguos
             password_hash = getattr(user, "password_hash", None)
 
         if password_hash is None:
@@ -230,9 +228,8 @@ class LoginFlowService:
 
         # Verificar contraseña
         if not verify_password(password, password_hash):
-            # Record failed attempt (invalid credentials) - best effort
             await self._record_login_attempt(
-                user=user,  # BD 2.0: tiene auth_user_id
+                user=user,
                 success=False,
                 reason=LoginFailureReason.invalid_credentials,
                 ip_address=ip_address,
@@ -244,7 +241,6 @@ class LoginFlowService:
                 reason="Contraseña incorrecta",
                 user_agent=user_agent,
             )
-            # Generic message
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas.",
@@ -252,9 +248,8 @@ class LoginFlowService:
 
         # Verificar activación
         if not await self.activation_service.is_active(user):
-            # Record failed attempt (account not activated) - best effort
             await self._record_login_attempt(
-                user=user,  # BD 2.0: tiene auth_user_id
+                user=user,
                 success=False,
                 reason=LoginFailureReason.account_not_activated,
                 ip_address=ip_address,
@@ -276,12 +271,13 @@ class LoginFlowService:
 
         # Login exitoso - reset rate limit counters
         self._reset_rate_limit_counters(ip_address, email)
-        
+
         # ═══════════════════════════════════════════════════════════════════════
         # SSOT: Garantizar que usuario tiene auth_user_id (fix legacy)
         # ═══════════════════════════════════════════════════════════════════════
         if user.auth_user_id is None:
             from uuid import uuid4
+
             new_auth_user_id = uuid4()
             user.auth_user_id = new_auth_user_id
             self.db.add(user)
@@ -292,16 +288,16 @@ class LoginFlowService:
                 user.user_id,
                 str(new_auth_user_id)[:8] + "...",
             )
-        
+
         # Record successful login attempt - best effort
         await self._record_login_attempt(
-            user=user,  # BD 2.0: tiene auth_user_id
+            user=user,
             success=True,
             reason=None,
             ip_address=ip_address,
             user_agent=user_agent,
         )
-        
+
         AuditService.log_login_success(
             user_id=str(user.user_id),
             email=user.user_email,
@@ -313,24 +309,38 @@ class LoginFlowService:
         tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
 
         # Multi-sesión: cada login crea nueva sesión (no revocamos anteriores)
-        # Esto permite Chrome+Firefox+celular simultáneos
-        await self.session_service.create_session(
-            user_id=user.user_id,
-            access_token=tokens["access_token"],
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
+        # BD 2.0: Pasar auth_user_id (UUID SSOT) - NOT NULL en user_sessions
+        try:
+            session_ok = await self.session_service.create_session(
+                user_id=user.user_id,
+                auth_user_id=user.auth_user_id,  # BD 2.0 SSOT
+                access_token=tokens["access_token"],
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            if not session_ok:
+                # No bloquea login, pero deja evidencia clara en logs
+                logger.error(
+                    "session_create_failed: user_id=%s auth_user_id=%s",
+                    user.user_id,
+                    str(user.auth_user_id)[:8] + "...",
+                )
+        except Exception:
+            # Si SessionService falla con excepción, no queremos 500 por un side-effect
+            logger.exception(
+                "session_create_exception: user_id=%s auth_user_id=%s",
+                user.user_id,
+                str(user.auth_user_id)[:8] + "...",
+            )
 
-        # Construir respuesta alineada con LoginResponse (schemas)
-        # Incluir auth_user_id (SSOT UUID) en la respuesta
         return {
             "message": "Login exitoso.",
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "token_type": "bearer",
             "user": {
-                "user_id": str(user.user_id),  # INT - internal
-                "auth_user_id": str(user.auth_user_id),  # UUID - SSOT
+                "user_id": str(user.user_id),
+                "auth_user_id": str(user.auth_user_id),
                 "user_email": user.user_email,
                 "user_full_name": user.user_full_name,
                 "user_role": getattr(user, "user_role", None),
@@ -362,7 +372,6 @@ class LoginFlowService:
                 detail="Refresh token requerido.",
             )
 
-        # Validar refresh token usando helper de jwt_utils
         token_payload = verify_token_type(refresh_token, expected_type="refresh")
         if not token_payload:
             logger.warning("Intento de refresh con token inválido o expirado")
@@ -378,8 +387,6 @@ class LoginFlowService:
                 detail="Token sin identificador de usuario.",
             )
 
-        # SSOT: sub puede ser UUID (nuevo) o INT (legacy transitorio)
-        # Intentar buscar por auth_user_id primero, fallback a user_id
         user = await self._get_user_by_token_sub(user_id_from_token)
         if not user:
             raise HTTPException(
@@ -392,14 +399,12 @@ class LoginFlowService:
                 detail="Usuario inactivo o no activado.",
             )
 
-        # SSOT: Emitir nuevo token con auth_user_id (UUID)
         tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
 
         AuditService.log_refresh_token_success(
             user_id=str(user.user_id),
         )
 
-        # El schema de TokenResponse probablemente NO espera message, solo tokens
         return {
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
@@ -409,22 +414,20 @@ class LoginFlowService:
     async def _get_user_by_token_sub(self, sub: str):
         """
         Resuelve usuario desde el sub del token.
-        
+
         SSOT: sub debería ser auth_user_id (UUID).
         Legacy: sub puede ser user_id (INT) durante transición.
         """
         from uuid import UUID
-        
-        # Intentar parsear como UUID primero (SSOT)
+
         try:
             auth_user_id = UUID(sub)
             user = await self.user_service.get_by_auth_user_id(auth_user_id)
             if user:
                 return user
         except ValueError:
-            pass  # No es UUID, intentar como INT
-        
-        # Fallback: sub es user_id INT (legacy)
+            pass
+
         try:
             user_id_int = int(sub)
             user = await self.user_service.get_by_id(user_id_int)
@@ -436,10 +439,11 @@ class LoginFlowService:
                 return user
         except ValueError:
             pass
-        
+
         return None
 
 
 __all__ = ["LoginFlowService"]
 
 # Fin del script backend/app/modules/auth/services/login_flow_service.py
+

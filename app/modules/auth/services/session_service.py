@@ -20,6 +20,7 @@ import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -58,7 +59,9 @@ class SessionService:
 
     async def create_session(
         self,
+        *,
         user_id: int,
+        auth_user_id: UUID,  # UUID - BD 2.0 SSOT (NOT NULL en DB)
         access_token: str,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
@@ -67,8 +70,11 @@ class SessionService:
         """
         Registra una nueva sesión en user_sessions.
         
+        BD 2.0: Requiere auth_user_id (UUID SSOT) - NOT NULL en DB.
+        
         Args:
-            user_id: ID del usuario
+            user_id: ID interno del usuario
+            auth_user_id: UUID SSOT del usuario (BD 2.0) - REQUERIDO
             access_token: Token de acceso (se almacena hasheado)
             ip_address: IP del cliente
             user_agent: User-Agent del cliente
@@ -83,12 +89,12 @@ class SessionService:
         expires_at = now + timedelta(minutes=ttl)
         
         try:
-            # Usar query directa para compatibilidad con cualquier estado del ORM
+            # BD 2.0: Incluir auth_user_id (UUID SSOT) - NOT NULL en DB
             q = text("""
                 INSERT INTO public.user_sessions 
-                    (user_id, token_type, token_hash, issued_at, expires_at, ip_address, user_agent)
+                    (user_id, auth_user_id, token_type, token_hash, issued_at, expires_at, ip_address, user_agent)
                 VALUES 
-                    (:user_id, 'access', :token_hash, :issued_at, :expires_at, :ip_address, :user_agent)
+                    (:user_id, :auth_user_id, 'access', :token_hash, :issued_at, :expires_at, :ip_address, :user_agent)
                 ON CONFLICT (token_hash) DO UPDATE SET
                     issued_at = EXCLUDED.issued_at,
                     expires_at = EXCLUDED.expires_at,
@@ -96,6 +102,7 @@ class SessionService:
             """)
             await self.db.execute(q, {
                 "user_id": user_id,
+                "auth_user_id": auth_user_id,  # UUID nativo - asyncpg lo maneja correctamente
                 "token_hash": token_hash,
                 "issued_at": now,
                 "expires_at": expires_at,
@@ -105,15 +112,16 @@ class SessionService:
             await self.db.commit()
             
             logger.info(
-                "session_created user_id=%s expires_at=%s ip=%s",
+                "session_created user_id=%s auth_user_id=%s expires_at=%s ip=%s",
                 user_id,
+                str(auth_user_id)[:8] + "...",
                 expires_at.isoformat(),
                 ip_address or "unknown",
             )
             return True
             
         except Exception as e:
-            logger.warning("create_session failed: %s", e)
+            logger.exception("create_session failed: user_id=%s error=%s", user_id, e)
             await self.db.rollback()
             return False
 
