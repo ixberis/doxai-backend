@@ -4,20 +4,22 @@
 backend/app/modules/auth/services/token_service.py
 
 Utilidades de token para rutas protegidas de Auth.
-Valida tipo y expiración de JWT, y expone dependencias para obtener el user_id actual.
+Valida tipo y expiración de JWT, y expone dependencias para obtener el usuario actual.
 Incluye wrapper retro-compatible `get_current_user` que retorna el objeto User.
 
-Refactor Fase 3:
-- Ajusta imports a la ubicación real de jwt_utils (app.utils.jwt_utils).
-- Usa get_async_session desde app.shared.database.database.
-- Se apoya en UserService, que ahora utiliza UserRepository como capa de acceso a datos.
+SSOT Architecture (2025-01-07):
+- JWT sub contiene auth_user_id (UUID), NO user_id (INT)
+- _validate_and_get_user resuelve UUID primero, con fallback a INT para tokens legacy
+- get_current_user_id retorna auth_user_id (UUID string)
+- get_current_user retorna el objeto AppUser completo
 
 Autor: Ixchel Beristain
-Actualizado: 2025-11-19
+Actualizado: 2025-01-07 (SSOT auth_user_id)
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
@@ -27,19 +29,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auth.enums import TokenType
 from app.modules.auth.services.user_service import UserService
 from app.shared.database.database import get_async_session
-from app.shared.utils.jwt_utils import decode_token, verify_token_type  # ubicación real
+from app.shared.utils.jwt_utils import verify_token_type
 
 _bearer = HTTPBearer(auto_error=True)
+logger = logging.getLogger(__name__)
 
 
-async def _validate_and_get_user_id(
+async def _validate_and_get_user(
     token: str,
     db: AsyncSession,
     expected_type: str = "access",
     require_active_user: bool = True,
-) -> str:
+):
     """
-    Valida el token (firma, expiración y tipo) y, opcionalmente, que el usuario esté activo.
+    Valida el token (firma, expiración y tipo) y resuelve el usuario.
+    
+    SSOT: sub puede ser auth_user_id (UUID nuevo) o user_id (INT legacy).
+    Prefiere auth_user_id, con fallback a user_id durante transición.
 
     Args:
         token: JWT en texto plano.
@@ -48,8 +54,10 @@ async def _validate_and_get_user_id(
         require_active_user: Si True, verifica que el usuario asociado esté activo.
 
     Returns:
-        user_id (sub) del token.
+        AppUser object.
     """
+    from uuid import UUID as PyUUID
+    
     # verify_token_type ya decodifica y valida el tipo; devuelve payload o None
     payload = verify_token_type(token, expected_type=expected_type)
     if not payload:
@@ -58,19 +66,55 @@ async def _validate_and_get_user_id(
             detail="Token inválido, expirado o de tipo incorrecto",
         )
 
-    user_id = payload.get("sub")
-    if not user_id:
+    sub = payload.get("sub")
+    if not sub:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token sin 'sub' (user_id)")
 
+    user_service = UserService.with_session(db)
+    user = None
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # SSOT: Resolver usuario por auth_user_id (UUID) - ruta principal
+    # ═══════════════════════════════════════════════════════════════════════
+    try:
+        auth_user_id = PyUUID(sub)
+        user = await user_service.get_by_auth_user_id(auth_user_id)
+    except ValueError:
+        pass  # No es UUID, intentar como INT (legacy)
+    
+    # Fallback: sub es user_id INT (legacy transitorio)
+    if not user:
+        try:
+            user_id_int = int(sub)
+            user = await user_service.get_by_id(user_id_int)
+            if user:
+                logger.warning(
+                    "legacy_token_sub_int_used user_id=%s - migrando a auth_user_id UUID",
+                    user_id_int,
+                )
+                # Fix legacy: generar auth_user_id si no existe
+                if user.auth_user_id is None:
+                    from uuid import uuid4
+                    user.auth_user_id = uuid4()
+                    db.add(user)
+                    await db.commit()
+                    await db.refresh(user)
+                    logger.warning(
+                        "legacy_user_missing_auth_user_id_fixed user_id=%s new_auth_user_id=%s",
+                        user_id_int,
+                        str(user.auth_user_id)[:8] + "...",
+                    )
+        except ValueError:
+            pass
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+    
     if require_active_user:
-        user_service = UserService.with_session(db)
-        user = await user_service.get_by_id(user_id)
-        if not user:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
         if not await user_service.is_active(user):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo o bloqueado")
 
-    return user_id
+    return user
 
 
 async def get_current_user_id(
@@ -78,18 +122,18 @@ async def get_current_user_id(
     db: AsyncSession = Depends(get_async_session),
 ) -> str:
     """
-    Dependencia para rutas que requieren:
-      - Un token de acceso válido (firma + expiración).
-      - Tipo de token correcto (access).
-      - Usuario asociado activo.
+    Dependencia para rutas que requieren un token válido.
+    Retorna auth_user_id (UUID como string) del usuario.
     """
     expected_type = TokenType.access.value if hasattr(TokenType, "access") else "access"
-    return await _validate_and_get_user_id(
+    user = await _validate_and_get_user(
         creds.credentials,
         db,
         expected_type=expected_type,
         require_active_user=True,
     )
+    # SSOT: Retornar auth_user_id (UUID)
+    return str(user.auth_user_id)
 
 
 async def get_optional_user_id(
@@ -97,21 +141,21 @@ async def get_optional_user_id(
     db: AsyncSession = Depends(get_async_session),
 ) -> Optional[str]:
     """
-    Dependencia opcional: si hay token válido devuelve user_id, si no hay token o es inválido, devuelve None.
-    Útil para endpoints que cambian ligeramente su comportamiento si el usuario está autenticado.
+    Dependencia opcional: si hay token válido devuelve auth_user_id (UUID), 
+    si no hay token o es inválido, devuelve None.
     """
     if creds is None:
         return None
     try:
         expected_type = TokenType.access.value if hasattr(TokenType, "access") else "access"
-        return await _validate_and_get_user_id(
+        user = await _validate_and_get_user(
             creds.credentials,
             db,
             expected_type=expected_type,
             require_active_user=False,
         )
+        return str(user.auth_user_id)
     except HTTPException:
-        # Si el token es inválido, en esta dependencia devolvemos None (no reventamos el endpoint).
         return None
 
 
@@ -123,14 +167,16 @@ async def get_current_user(
     db: AsyncSession = Depends(get_async_session),
 ):
     """
-    Retro-compatibilidad: devuelve el objeto User (no solo el user_id).
+    Retro-compatibilidad: devuelve el objeto User completo.
     Permite que imports antiguos `from ...token_service import get_current_user` sigan funcionando.
     """
-    user_id = await get_current_user_id(creds=creds, db=db)
-    user = await UserService.with_session(db).get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
-    return user
+    expected_type = TokenType.access.value if hasattr(TokenType, "access") else "access"
+    return await _validate_and_get_user(
+        creds.credentials,
+        db,
+        expected_type=expected_type,
+        require_active_user=True,
+    )
 
 
 __all__ = [

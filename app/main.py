@@ -517,6 +517,14 @@ def _configure_cors(app_instance: FastAPI) -> dict:
 # Registramos CORS AL FINAL para que se ejecute PRIMERO (outermost).
 setup_observability(app)
 
+# Timing middleware para diagnóstico de latencia
+try:
+    from app.shared.middleware.timing_middleware import TimingMiddleware
+    app.add_middleware(TimingMiddleware)
+    logger.info("⏱️ Timing middleware habilitado")
+except Exception as e:
+    logger.warning(f"⚠️ Timing middleware no disponible: {e}")
+
 # CORS middleware - se registra al final para ejecutarse primero
 _cors_config = _configure_cors(app)
 

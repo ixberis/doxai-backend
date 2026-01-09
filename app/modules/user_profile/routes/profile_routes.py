@@ -11,13 +11,20 @@ Este módulo expone endpoints autenticados para:
 
 ⚠️ Todos los endpoints requieren autenticación JWT
 
+Timing por fases:
+- auth_context: extracción y validación de user_id/email
+- db_query: consulta a base de datos
+- service: lógica de negocio adicional
+- serialization: transformación de DTOs a response
+
 Autor: DoxAI
 Fecha: 2025-10-18
-Actualizado: 2025-12-27 - Fix DI con PasswordHasher y SessionManager
+Actualizado: 2025-01-07 - Timing por fases completo + error handling estándar
 """
 
 from typing import Optional
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +46,8 @@ from app.modules.auth.services import get_current_user
 from app.shared.auth_context import extract_user_id
 
 router = APIRouter(tags=["User Profile"])
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -85,9 +94,6 @@ async def get_profile_service(
     )
 
 
-logger = logging.getLogger(__name__)
-
-
 # ---------------------------------------------------------------------------
 # Helper: Convertir ProfileDTO a UserProfileResponse
 # ---------------------------------------------------------------------------
@@ -125,6 +131,167 @@ def _profile_dto_to_response(dto) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Internal: Lógica compartida para GET profile (evita duplicación)
+# ---------------------------------------------------------------------------
+async def _get_profile_internal(
+    user,
+    service: ProfileService,
+    endpoint_name: str = "get_profile",
+) -> dict:
+    """
+    Lógica interna para obtener perfil con timing por fases.
+    
+    Fases medidas:
+    - auth_context: extracción de user_id
+    - db_query: tiempo de consulta a BD
+    - serialization: tiempo de transformación DTO → response
+    
+    Returns:
+        dict con datos del perfil listos para response
+        
+    Raises:
+        NotFoundException: si el usuario no existe
+        HTTPException(500): en errores internos
+    """
+    start_total = time.perf_counter()
+    
+    # Fase 1: Auth Context
+    auth_start = time.perf_counter()
+    uid = extract_user_id(user)
+    auth_ms = (time.perf_counter() - auth_start) * 1000
+    
+    if auth_ms > 500:
+        logger.warning(
+            "query_slow op=%s phase=auth_context user_id=%s duration_ms=%.2f",
+            endpoint_name, uid, auth_ms
+        )
+    
+    try:
+        # Fase 2: DB Query
+        db_start = time.perf_counter()
+        dto = await service.get_profile(user_id=uid)
+        db_ms = (time.perf_counter() - db_start) * 1000
+        
+        if db_ms > 500:
+            logger.warning(
+                "query_slow op=%s phase=db_query user_id=%s duration_ms=%.2f",
+                endpoint_name, uid, db_ms
+            )
+        
+        # Fase 3: Serialization
+        ser_start = time.perf_counter()
+        response_data = _profile_dto_to_response(dto)
+        ser_ms = (time.perf_counter() - ser_start) * 1000
+        
+        if ser_ms > 500:
+            logger.warning(
+                "query_slow op=%s phase=serialization user_id=%s duration_ms=%.2f",
+                endpoint_name, uid, ser_ms
+            )
+        
+        # Total
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.info(
+            "query_completed op=%s user_id=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f",
+            endpoint_name, uid, auth_ms, db_ms, ser_ms, total_ms
+        )
+        
+        return response_data
+        
+    except ValueError as e:
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.warning(
+            "query_not_found op=%s user_id=%s duration_ms=%.2f",
+            endpoint_name, uid, total_ms
+        )
+        raise NotFoundException(detail=str(e))
+    except Exception:
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.exception(
+            "query_error op=%s user_id=%s duration_ms=%.2f",
+            endpoint_name, uid, total_ms
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al obtener perfil",
+                "error_code": "PROFILE_FETCH_ERROR",
+            }
+        )
+
+
+async def _update_profile_internal(
+    user,
+    profile_data: UserProfileUpdateRequest,
+    service: ProfileService,
+    endpoint_name: str = "update_profile",
+) -> dict:
+    """
+    Lógica interna para actualizar perfil con timing por fases.
+    """
+    from datetime import datetime, timezone
+    from app.modules.user_profile.services.profile_service import UpdateProfileDTO
+    
+    start_total = time.perf_counter()
+    
+    # Fase 1: Auth Context
+    auth_start = time.perf_counter()
+    uid = extract_user_id(user)
+    auth_ms = (time.perf_counter() - auth_start) * 1000
+    
+    try:
+        # Fase 2: DB Update
+        db_start = time.perf_counter()
+        dto = UpdateProfileDTO(
+            full_name=profile_data.user_full_name,
+            phone=profile_data.user_phone,
+        )
+        updated_dto = await service.update_profile(user_id=uid, data=dto)
+        db_ms = (time.perf_counter() - db_start) * 1000
+        
+        if db_ms > 500:
+            logger.warning(
+                "query_slow op=%s phase=db_update user_id=%s duration_ms=%.2f",
+                endpoint_name, uid, db_ms
+            )
+        
+        # Fase 3: Serialization
+        ser_start = time.perf_counter()
+        response_data = {
+            "success": True,
+            "message": "Perfil actualizado correctamente",
+            "updated_at": datetime.now(timezone.utc),
+            "user": _profile_dto_to_response(updated_dto),
+        }
+        ser_ms = (time.perf_counter() - ser_start) * 1000
+        
+        # Total
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.info(
+            "query_completed op=%s user_id=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f",
+            endpoint_name, uid, auth_ms, db_ms, ser_ms, total_ms
+        )
+        
+        return response_data
+        
+    except ValueError as e:
+        raise BadRequestException(detail=str(e))
+    except Exception:
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.exception(
+            "query_error op=%s user_id=%s duration_ms=%.2f",
+            endpoint_name, uid, total_ms
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al actualizar perfil",
+                "error_code": "PROFILE_UPDATE_ERROR",
+            }
+        )
+
+
 # ===== Profile Routes =====
 
 @router.get(
@@ -137,18 +304,8 @@ async def get_user_profile(
     user=Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
 ):
-    """
-    Obtiene el perfil completo del usuario autenticado.
-    """
-    uid = extract_user_id(user)
-    try:
-        dto = await service.get_profile(user_id=uid)
-        return _profile_dto_to_response(dto)
-    except ValueError as e:
-        raise NotFoundException(detail=str(e))
-    except Exception:
-        logger.exception("Error al obtener perfil para user_id=%s", uid)
-        raise HTTPException(status_code=500, detail="Error interno al obtener perfil")
+    """Obtiene el perfil completo del usuario autenticado."""
+    return await _get_profile_internal(user, service, "get_profile")
 
 
 # Alias para compatibilidad con UI que llama GET /api/profile/profile
@@ -163,15 +320,7 @@ async def get_user_profile_alias(
     service: ProfileService = Depends(get_profile_service),
 ):
     """Alias de get_user_profile para compatibilidad con UI."""
-    uid = extract_user_id(user)
-    try:
-        dto = await service.get_profile(user_id=uid)
-        return _profile_dto_to_response(dto)
-    except ValueError as e:
-        raise NotFoundException(detail=str(e))
-    except Exception:
-        logger.exception("Error al obtener perfil para user_id=%s", uid)
-        raise HTTPException(status_code=500, detail="Error interno al obtener perfil")
+    return await _get_profile_internal(user, service, "get_profile_alias")
 
 
 @router.put(
@@ -185,32 +334,8 @@ async def update_user_profile(
     user=Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
 ):
-    """
-    Actualiza el perfil del usuario autenticado.
-    """
-    uid = extract_user_id(user)
-    try:
-        from datetime import datetime, timezone
-        from app.modules.user_profile.services.profile_service import UpdateProfileDTO
-        
-        # Mapear campos del request (user_full_name -> full_name)
-        dto = UpdateProfileDTO(
-            full_name=profile_data.user_full_name,
-            phone=profile_data.user_phone,
-        )
-        updated_dto = await service.update_profile(user_id=uid, data=dto)
-        
-        return {
-            "success": True,
-            "message": "Perfil actualizado correctamente",
-            "updated_at": datetime.now(timezone.utc),
-            "user": _profile_dto_to_response(updated_dto),
-        }
-    except ValueError as e:
-        raise BadRequestException(detail=str(e))
-    except Exception:
-        logger.exception("Error al actualizar perfil para user_id=%s", uid)
-        raise HTTPException(status_code=500, detail="Error interno al actualizar perfil")
+    """Actualiza el perfil del usuario autenticado."""
+    return await _update_profile_internal(user, profile_data, service, "update_profile")
 
 
 # Alias para compatibilidad con UI que llama PUT /api/profile/profile
@@ -226,28 +351,7 @@ async def update_user_profile_alias(
     service: ProfileService = Depends(get_profile_service),
 ):
     """Alias de update_user_profile para compatibilidad con UI."""
-    uid = extract_user_id(user)
-    try:
-        from datetime import datetime, timezone
-        from app.modules.user_profile.services.profile_service import UpdateProfileDTO
-        
-        dto = UpdateProfileDTO(
-            full_name=profile_data.user_full_name,
-            phone=profile_data.user_phone,
-        )
-        updated_dto = await service.update_profile(user_id=uid, data=dto)
-        
-        return {
-            "success": True,
-            "message": "Perfil actualizado correctamente",
-            "updated_at": datetime.now(timezone.utc),
-            "user": _profile_dto_to_response(updated_dto),
-        }
-    except ValueError as e:
-        raise BadRequestException(detail=str(e))
-    except Exception:
-        logger.exception("Error al actualizar perfil para user_id=%s", uid)
-        raise HTTPException(status_code=500, detail="Error interno al actualizar perfil")
+    return await _update_profile_internal(user, profile_data, service, "update_profile_alias")
 
 
 # ===== Credits Routes =====
@@ -263,20 +367,55 @@ async def get_credits_balance(
 ):
     """
     Obtiene el balance de créditos del usuario autenticado.
+    
+    Timing por fases: auth_context, db_query
+    
+    Errores: Retorna HTTP 500 con error_code estándar (NO oculta errores).
     """
+    start_total = time.perf_counter()
+    
+    # Fase 1: Auth Context
+    auth_start = time.perf_counter()
     uid = extract_user_id(user)
+    auth_ms = (time.perf_counter() - auth_start) * 1000
     
     try:
+        # Fase 2: DB Query
+        db_start = time.perf_counter()
         balance = await service.get_credits_balance(user_id=uid)
+        db_ms = (time.perf_counter() - db_start) * 1000
+        
+        total_ms = (time.perf_counter() - start_total) * 1000
+        
+        if db_ms > 500:
+            logger.warning(
+                "query_slow op=get_credits phase=db_query user_id=%s duration_ms=%.2f",
+                uid, db_ms
+            )
+        
+        logger.info(
+            "query_completed op=get_credits user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
+            uid, balance, auth_ms, db_ms, total_ms
+        )
+        
         return {
             "credits_balance": balance,
         }
-    except Exception:
-        logger.exception("Error al obtener créditos para user_id=%s", uid)
-        # Retornar 0 en caso de error para no romper la UI
-        return {
-            "credits_balance": 0,
-        }
+        
+    except Exception as e:
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.exception(
+            "query_error op=get_credits user_id=%s duration_ms=%.2f error=%s",
+            uid, total_ms, str(e)
+        )
+        # NO ocultar errores - devolver 500 con código de error estándar
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al obtener créditos",
+                "error_code": "CREDITS_FETCH_ERROR",
+            }
+        )
 
 
 # ===== Subscription Routes =====
@@ -297,12 +436,27 @@ async def get_subscription_status(
     """
     from app.modules.auth.enums import UserStatus
     
+    start_total = time.perf_counter()
+    
+    # Fase 1: Auth Context
+    auth_start = time.perf_counter()
     uid = extract_user_id(user)
     email = getattr(user, "user_email", None) or getattr(user, "email", None) or "unknown@example.com"
+    auth_ms = (time.perf_counter() - auth_start) * 1000
     
     try:
+        # Fase 2: DB Query
+        db_start = time.perf_counter()
         balance = await service.get_credits_balance(user_id=uid)
+        db_ms = (time.perf_counter() - db_start) * 1000
+        
         sub_status = UserStatus.active if balance > 0 else UserStatus.not_active
+        
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.info(
+            "query_completed op=get_subscription user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
+            uid, balance, auth_ms, db_ms, total_ms
+        )
         
         return {
             "user_id": uid,  # int - schema espera int
@@ -313,8 +467,18 @@ async def get_subscription_status(
             "last_payment_date": None,
         }
     except Exception:
-        logger.exception("Error al obtener suscripción para user_id=%s", uid)
-        raise HTTPException(status_code=500, detail="Error interno al obtener estado de suscripción")
+        total_ms = (time.perf_counter() - start_total) * 1000
+        logger.exception(
+            "query_error op=get_subscription user_id=%s duration_ms=%.2f",
+            uid, total_ms
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al obtener estado de suscripción",
+                "error_code": "SUBSCRIPTION_FETCH_ERROR",
+            }
+        )
 
 
 # ===== Utility Routes =====
@@ -345,4 +509,10 @@ async def update_last_login(
         await db.commit()
     except Exception:
         logger.exception("Error al actualizar último login para user_id=%s", uid)
-        raise HTTPException(status_code=500, detail="Error interno al actualizar último login")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al actualizar último login",
+                "error_code": "LAST_LOGIN_UPDATE_ERROR",
+            }
+        )

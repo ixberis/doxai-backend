@@ -20,8 +20,10 @@ Fecha: 18/10/2025
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
+from uuid import UUID as PyUUID
 from sqlalchemy import String, Boolean, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 from app.shared.database.database import Base
 from app.modules.auth.enums import UserRole, user_role_pg_enum
@@ -48,7 +50,26 @@ from app.modules.auth.models.login_models import LoginAttempt, UserSession  # no
 class AppUser(Base):
     __tablename__ = "app_users"
 
+    # PK interna (INT) - SOLO para administración/reportes internos
     user_id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SSOT: auth_user_id (UUID) - IDENTIDAD GLOBAL DEL USUARIO EN DOXAI
+    # ═══════════════════════════════════════════════════════════════════════════
+    # - NO tiene server_default: el backend DEBE generarlo con uuid4() al registrar
+    # - NOT NULL para instalación limpia (nullable=False)
+    # - UNIQUE: permite lookup eficiente por UUID
+    # - Este UUID va en JWT sub y se usa para ownership en: projects, rag, billing
+    # - NO existe "auth.users" como SSOT externa; app_users.auth_user_id ES el SSOT
+    # ═══════════════════════════════════════════════════════════════════════════
+    auth_user_id: Mapped[PyUUID] = mapped_column(
+        PGUUID(as_uuid=True), 
+        unique=True, 
+        nullable=False,  # NOT NULL - obligatorio
+        index=True,
+        # NO server_default - se genera en el backend con uuid4()
+    )
+    
     user_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     user_email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     user_phone: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)

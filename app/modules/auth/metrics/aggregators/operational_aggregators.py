@@ -494,25 +494,25 @@ class OperationalAggregators:
             
             try:
                 q = text("""
-                    SELECT
-                        (SELECT COUNT(*)::int 
-                         FROM public.user_sessions 
-                         WHERE issued_at >= :from_date::date 
-                           AND issued_at < (:to_date::date + interval '1 day')
-                        ) AS created,
-                        (SELECT COUNT(*)::int 
-                         FROM public.user_sessions 
-                         WHERE expires_at >= :from_date::date 
-                           AND expires_at < (:to_date::date + interval '1 day')
-                           AND revoked_at IS NULL 
-                           AND expires_at <= NOW()
-                        ) AS expired,
-                        (SELECT COUNT(*)::int 
-                         FROM public.user_sessions 
-                         WHERE revoked_at >= :from_date::date 
-                           AND revoked_at < (:to_date::date + interval '1 day')
-                        ) AS revoked
-                """)
+                        SELECT
+                            (SELECT COUNT(*)::int 
+                             FROM public.user_sessions 
+                             WHERE issued_at >= CAST(:from_date AS date) 
+                               AND issued_at < (CAST(:to_date AS date) + interval '1 day')
+                            ) AS created,
+                            (SELECT COUNT(*)::int 
+                             FROM public.user_sessions 
+                             WHERE expires_at >= CAST(:from_date AS date) 
+                               AND expires_at < (CAST(:to_date AS date) + interval '1 day')
+                               AND revoked_at IS NULL 
+                               AND expires_at <= NOW()
+                            ) AS expired,
+                            (SELECT COUNT(*)::int 
+                             FROM public.user_sessions 
+                             WHERE revoked_at >= CAST(:from_date AS date) 
+                               AND revoked_at < (CAST(:to_date AS date) + interval '1 day')
+                            ) AS revoked
+                    """)
                 res = await self.db.execute(q, params)
                 row = res.first()
                 if row:

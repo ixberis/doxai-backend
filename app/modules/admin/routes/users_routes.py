@@ -181,7 +181,19 @@ async def list_users(
     """
     List all users with pagination, search, filters, and sorting.
     Includes email_health for each user.
+    
+    Timing por fases:
+    - validation: validación de parámetros
+    - count_query: COUNT(*) para total
+    - main_query: SELECT con datos y email_health
+    - serialization: construcción de response objects
     """
+    import time
+    start_time = time.perf_counter()
+    
+    # Fase: Validation
+    validation_start = time.perf_counter()
+    
     # Validate sort_by
     if sort_by not in SORT_COLUMNS:
         raise HTTPException(
@@ -267,13 +279,23 @@ async def list_users(
         include_deleted,
         email_pending,
     )
+    
+    validation_ms = (time.perf_counter() - validation_start) * 1000
 
-    # Count total
+    # Fase: Count Query
+    count_start = time.perf_counter()
     count_q = text(f"SELECT COUNT(*) FROM public.app_users u {where_clause}")
     count_res = await db.execute(count_q, params)
     total = count_res.scalar() or 0
+    count_ms = (time.perf_counter() - count_start) * 1000
     
-    logger.info("admin_users_list total=%d page=%d include_deleted=%s", total, page, include_deleted)
+    if count_ms > 500:
+        logger.warning(
+            "query_slow op=admin_list_users phase=count_query duration_ms=%.2f total=%d",
+            count_ms, total
+        )
+    
+    # Fase: Main Query
 
     # Get users with email health data
     users_q = text(f"""
@@ -364,8 +386,19 @@ async def list_users(
         LIMIT :limit OFFSET :offset
     """)
 
+    main_query_start = time.perf_counter()
     res = await db.execute(users_q, params)
     rows = res.fetchall()
+    main_query_ms = (time.perf_counter() - main_query_start) * 1000
+    
+    if main_query_ms > 500:
+        logger.warning(
+            "query_slow op=admin_list_users phase=main_query duration_ms=%.2f rows=%d",
+            main_query_ms, len(rows)
+        )
+    
+    # Fase: Serialization
+    serialization_start = time.perf_counter()
 
     def build_email_health(row) -> EmailHealth:
         """Build email health object based on user's activation status."""
@@ -481,6 +514,32 @@ async def list_users(
             deleted_at=row.deleted_at,
             email_health=build_email_health(row),
         ))
+
+    # Calcular tiempo de serialización
+    serialization_ms = (time.perf_counter() - serialization_start) * 1000
+    
+    if serialization_ms > 500:
+        logger.warning(
+            "query_slow op=admin_list_users phase=serialization duration_ms=%.2f rows=%d",
+            serialization_ms, len(rows)
+        )
+
+    # Log timing total con desglose por fases
+    total_ms = (time.perf_counter() - start_time) * 1000
+    
+    logger.info(
+        "query_completed op=admin_list_users total=%d page=%d per_page=%d "
+        "validation_ms=%.2f count_ms=%.2f main_query_ms=%.2f ser_ms=%.2f total_ms=%.2f",
+        total, page, per_page,
+        validation_ms, count_ms, main_query_ms, serialization_ms, total_ms
+    )
+    
+    if total_ms > 500:
+        logger.warning(
+            "query_slow op=admin_list_users total_ms=%.2f breakdown: "
+            "count=%.2f main=%.2f ser=%.2f",
+            total_ms, count_ms, main_query_ms, serialization_ms
+        )
 
     return AdminUsersListResponse(
         users=users,

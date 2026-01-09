@@ -212,25 +212,33 @@ class RegistrationFlowService:
                 detail=f"La contraseña es demasiado larga (máximo {MAX_PASSWORD_LENGTH} caracteres)."
             )
 
+        # SSOT: Generar auth_user_id explícitamente (no default en DB)
+        # Esto permite que en el futuro, si se integra Supabase Auth,
+        # se use auth.users.id en lugar de generar uno nuevo.
+        from uuid import uuid4
+        generated_auth_user_id = uuid4()
+        
         user = AppUser(
             user_email=email,
             user_full_name=full_name or "",
             user_password_hash=password_hash,
-            user_phone=phone,  # Persistir teléfono del registro
+            user_phone=phone,
+            auth_user_id=generated_auth_user_id,  # SSOT: UUID explícito
         )
 
         # DEBUG logging (no PII) - confirma que teléfono se recibe
         logger.info(
-            "REGISTRATION: crear usuario nuevo email=%s has_phone=%s phone_len=%d",
+            "REGISTRATION: crear usuario nuevo email=%s has_phone=%s auth_user_id=%s",
             email[:3] + "***",
             bool(phone),
-            len(phone) if phone else 0,
+            str(generated_auth_user_id)[:8] + "...",
         )
         try:
             created = await self.user_service.add(user)
-            # IMPORTANTE: Capturar user_id inmediatamente después del add()
+            # IMPORTANTE: Capturar atributos inmediatamente después del add()
             # para evitar lazy-load en contexto async después de que la sesión expire
-            created_user_id = created.user_id
+            created_user_id = created.user_id       # INT - internal PK
+            created_auth_user_id = created.auth_user_id  # UUID - SSOT para ownership
             created_user_email = created.user_email
             created_user_full_name = created.user_full_name
         except IntegrityError as e:
@@ -267,8 +275,9 @@ class RegistrationFlowService:
             ip_address=ip_address,
         )
 
+        # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT)
         access_token = self.token_issuer.create_access_token(
-            sub=str(created_user_id),
+            sub=str(created_auth_user_id),
         )
 
         self.audit_service.log_register_success(

@@ -263,6 +263,22 @@ class LoginFlowService:
         # Login exitoso - reset rate limit counters
         self._reset_rate_limit_counters(ip_address, email)
         
+        # ═══════════════════════════════════════════════════════════════════════
+        # SSOT: Garantizar que usuario tiene auth_user_id (fix legacy)
+        # ═══════════════════════════════════════════════════════════════════════
+        if user.auth_user_id is None:
+            from uuid import uuid4
+            new_auth_user_id = uuid4()
+            user.auth_user_id = new_auth_user_id
+            self.db.add(user)
+            await self.db.commit()
+            await self.db.refresh(user)
+            logger.warning(
+                "legacy_user_missing_auth_user_id_fixed user_id=%s new_auth_user_id=%s",
+                user.user_id,
+                str(new_auth_user_id)[:8] + "...",
+            )
+        
         # Record successful login attempt - best effort
         await self._record_login_attempt(
             user_id=user.user_id,
@@ -279,7 +295,8 @@ class LoginFlowService:
             user_agent=user_agent,
         )
 
-        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.user_id))
+        # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT) - SIEMPRE
+        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
 
         # Multi-sesión: cada login crea nueva sesión (no revocamos anteriores)
         # Esto permite Chrome+Firefox+celular simultáneos
@@ -291,13 +308,15 @@ class LoginFlowService:
         )
 
         # Construir respuesta alineada con LoginResponse (schemas)
+        # Incluir auth_user_id (SSOT UUID) en la respuesta
         return {
             "message": "Login exitoso.",
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "token_type": "bearer",
             "user": {
-                "user_id": str(user.user_id),
+                "user_id": str(user.user_id),  # INT - internal
+                "auth_user_id": str(user.auth_user_id),  # UUID - SSOT
                 "user_email": user.user_email,
                 "user_full_name": user.user_full_name,
                 "user_role": getattr(user, "user_role", None),
@@ -338,14 +357,16 @@ class LoginFlowService:
                 detail="Refresh token inválido o expirado.",
             )
 
-        user_id = token_payload.get("sub")
-        if not user_id:
+        user_id_from_token = token_payload.get("sub")
+        if not user_id_from_token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token sin identificador de usuario.",
             )
 
-        user = await self.user_service.get_by_id(user_id)
+        # SSOT: sub puede ser UUID (nuevo) o INT (legacy transitorio)
+        # Intentar buscar por auth_user_id primero, fallback a user_id
+        user = await self._get_user_by_token_sub(user_id_from_token)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -357,7 +378,8 @@ class LoginFlowService:
                 detail="Usuario inactivo o no activado.",
             )
 
-        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.user_id))
+        # SSOT: Emitir nuevo token con auth_user_id (UUID)
+        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
 
         AuditService.log_refresh_token_success(
             user_id=str(user.user_id),
@@ -369,6 +391,39 @@ class LoginFlowService:
             "refresh_token": tokens["refresh_token"],
             "token_type": "bearer",
         }
+
+    async def _get_user_by_token_sub(self, sub: str):
+        """
+        Resuelve usuario desde el sub del token.
+        
+        SSOT: sub debería ser auth_user_id (UUID).
+        Legacy: sub puede ser user_id (INT) durante transición.
+        """
+        from uuid import UUID
+        
+        # Intentar parsear como UUID primero (SSOT)
+        try:
+            auth_user_id = UUID(sub)
+            user = await self.user_service.get_by_auth_user_id(auth_user_id)
+            if user:
+                return user
+        except ValueError:
+            pass  # No es UUID, intentar como INT
+        
+        # Fallback: sub es user_id INT (legacy)
+        try:
+            user_id_int = int(sub)
+            user = await self.user_service.get_by_id(user_id_int)
+            if user:
+                logger.warning(
+                    "legacy_token_sub_int_used user_id=%s - token debería usar auth_user_id UUID",
+                    user_id_int,
+                )
+                return user
+        except ValueError:
+            pass
+        
+        return None
 
 
 __all__ = ["LoginFlowService"]

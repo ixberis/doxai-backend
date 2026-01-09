@@ -132,24 +132,45 @@ class ProfileService:
         Raises:
             ValueError: Si el usuario no existe
         """
-        stmt = select(User).where(User.user_id == user_id)
+        import time
+        start = time.perf_counter()
+        
+        # Seleccionar solo columnas necesarias (evita cargar todo el modelo)
+        stmt = select(
+            User.user_id,
+            User.user_full_name,
+            User.user_email,
+            User.user_phone,
+            User.user_role,
+            User.user_status,
+            User.user_created_at,
+            User.user_updated_at,
+            User.user_last_login,
+        ).where(User.user_id == user_id)
+        
         result = await self.db.execute(stmt)
-        user: Optional[User] = result.scalar_one_or_none()
+        row = result.first()
+        
+        duration_ms = (time.perf_counter() - start) * 1000
+        if duration_ms > 500:
+            logger.warning(f"query_slow operation=get_profile user_id={user_id} duration_ms={duration_ms:.2f}")
+        else:
+            logger.debug(f"query_completed operation=get_profile user_id={user_id} duration_ms={duration_ms:.2f}")
 
-        if not user:
+        if not row:
             raise ValueError("Usuario no encontrado")
 
-        # Mapear columnas reales de AppUser (user_full_name, user_email, etc)
+        # Mapear columnas desde el Row (índices posicionales)
         return ProfileDTO(
-            user_id=user.user_id,
-            full_name=user.user_full_name,
-            email=user.user_email,
-            phone=user.user_phone,
-            role=str(user.user_role.value) if hasattr(user.user_role, 'value') else str(user.user_role),
-            status=str(user.user_status.value) if hasattr(user.user_status, 'value') else str(user.user_status),
-            created_at=user.user_created_at,
-            updated_at=user.user_updated_at,
-            last_login=user.user_last_login,
+            user_id=row[0],
+            full_name=row[1],
+            email=row[2],
+            phone=row[3],
+            role=str(row[4].value) if hasattr(row[4], 'value') else str(row[4]),
+            status=str(row[5].value) if hasattr(row[5], 'value') else str(row[5]),
+            created_at=row[6],
+            updated_at=row[7],
+            last_login=row[8],
         )
 
     # ---------- Perfil: edición ----------
@@ -231,17 +252,42 @@ class ProfileService:
 
         Prioridad:
           1) credits_gateway (si está inyectado)
-          2) Ledger de credit_transactions (suma de credits_delta)
-          3) 0 (sin romper la pantalla)
+          2) Wallet denormalizada (payments_wallet.balance) - más rápido
+          3) Ledger de credit_transactions (suma de credits_delta) - fallback
+          4) 0 (sin romper la pantalla)
         """
+        import time
+        start = time.perf_counter()
+        
         # 1) Gateway inyectado
         if self.credits_gateway is not None:
             try:
-                return await self.credits_gateway.get_balance(user_id)
+                balance = await self.credits_gateway.get_balance(user_id)
+                duration_ms = (time.perf_counter() - start) * 1000
+                logger.debug(f"[credits] user_id={user_id} balance={balance} source=gateway duration_ms={duration_ms:.2f}")
+                return balance
             except Exception as e:
                 logger.warning(f"[credits_gateway] get_balance falló: {e}")
 
-        # 2) Ledger SQL: suma de credit_transactions.credits_delta
+        # 2) Wallet denormalizada (más rápido - single row lookup)
+        try:
+            stmt = text(
+                "SELECT balance FROM payments_wallet WHERE user_id = :uid"
+            )
+            res = await self.db.execute(stmt, {"uid": user_id})
+            row = res.first()
+            if row and row[0] is not None:
+                balance = int(row[0])
+                duration_ms = (time.perf_counter() - start) * 1000
+                if duration_ms > 500:
+                    logger.warning(f"query_slow operation=get_credits_balance user_id={user_id} duration_ms={duration_ms:.2f}")
+                else:
+                    logger.debug(f"[credits] user_id={user_id} balance={balance} source=wallet duration_ms={duration_ms:.2f}")
+                return balance
+        except Exception as e:
+            logger.debug(f"[credits] Wallet no disponible, fallback a ledger: {e}")
+
+        # 3) Ledger SQL: suma de credit_transactions.credits_delta (fallback)
         try:
             stmt = text(
                 "SELECT COALESCE(SUM(credits_delta), 0) FROM credit_transactions WHERE user_id = :uid"
@@ -250,13 +296,18 @@ class ProfileService:
             row = res.first()
             if row and row[0] is not None:
                 balance = int(row[0])
-                logger.debug(f"[credits] user_id={user_id} balance={balance} source=credit_transactions")
+                duration_ms = (time.perf_counter() - start) * 1000
+                if duration_ms > 500:
+                    logger.warning(f"query_slow operation=get_credits_balance user_id={user_id} duration_ms={duration_ms:.2f}")
+                else:
+                    logger.debug(f"[credits] user_id={user_id} balance={balance} source=ledger duration_ms={duration_ms:.2f}")
                 return balance
         except Exception as e:
             logger.info(f"[credits] No se pudo leer credit_transactions: {e}")
 
-        # 3) Default (sin datos)
-        logger.debug(f"[credits] user_id={user_id} balance=0 source=fallback_zero")
+        # 4) Default (sin datos)
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.debug(f"[credits] user_id={user_id} balance=0 source=fallback_zero duration_ms={duration_ms:.2f}")
         return 0
 
     async def get_credits_overview(self, user_id: int) -> CreditsOverviewDTO:

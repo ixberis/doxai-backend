@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional, Sequence
+from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,10 +41,20 @@ class UserRepository:
     # ------------------------------------------------------------------
     async def get_by_id(self, user_id: int) -> Optional[AppUser]:
         """
-        Obtiene un usuario por su identificador interno (PK).
+        Obtiene un usuario por su identificador interno (PK INT).
         Devuelve None si no existe.
         """
         stmt = select(AppUser).where(AppUser.user_id == user_id)
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_auth_user_id(self, auth_user_id: UUID) -> Optional[AppUser]:
+        """
+        Obtiene un usuario por auth_user_id (UUID SSOT).
+        Este es el método preferido para resolver usuarios desde JWT sub.
+        Devuelve None si no existe.
+        """
+        stmt = select(AppUser).where(AppUser.auth_user_id == auth_user_id)
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 

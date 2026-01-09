@@ -177,7 +177,7 @@ class UserService:
 
     async def get_by_id(self, user_id: Any) -> Optional[AppUser]:
         """
-        Recupera usuario por PK (int/UUID según tu modelo).
+        Recupera usuario por PK (INT).
 
         Nota:
             El modelo actual usa BIGINT, pero algunos flujos (JWT, activación, etc.)
@@ -204,6 +204,35 @@ class UserService:
                 return user
             except Exception as e:
                 log.error("Users.get_by_id ERROR: %s", e)
+                raise
+
+    async def get_by_auth_user_id(self, auth_user_id) -> Optional[AppUser]:
+        """
+        Recupera usuario por auth_user_id (UUID SSOT).
+        
+        Este es el método preferido para resolver usuarios desde JWT sub.
+        """
+        from uuid import UUID as PyUUID
+        
+        # Normalizar a UUID si viene como string
+        if isinstance(auth_user_id, str):
+            try:
+                auth_user_id = PyUUID(auth_user_id)
+            except ValueError:
+                log.error("Users.get_by_auth_user_id: auth_user_id inválido: %r", auth_user_id)
+                return None
+
+        async with self._session_scope() as session:
+            await self._ping_db(session, timeout_ms=2000)
+            await self._apply_stmt_timeout(session, timeout_ms=3000)
+
+            repo = UserRepository(session)
+            try:
+                user = await repo.get_by_auth_user_id(auth_user_id)
+                log.info("Users.get_by_auth_user_id ← completado (auth_user_id=%s)", auth_user_id)
+                return user
+            except Exception as e:
+                log.error("Users.get_by_auth_user_id ERROR: %s", e)
                 raise
 
     # ----------------------------- Escrituras -------------------------------
