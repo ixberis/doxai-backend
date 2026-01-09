@@ -80,12 +80,13 @@ class LoginFlowService:
 
     # ─────────────────────────────────────────────────────────────────────────
     # Login attempt recording (best-effort, won't block login flow)
+    # BD 2.0: Solo se registra si el usuario existe (auth_user_id NOT NULL en DB)
     # ─────────────────────────────────────────────────────────────────────────
     
     async def _record_login_attempt(
         self,
         *,
-        user_id: Optional[int],
+        user,  # AppUser o None
         success: bool,
         reason: Optional[LoginFailureReason],
         ip_address: Optional[str],
@@ -94,24 +95,36 @@ class LoginFlowService:
         """
         Records login attempt to login_attempts table (best-effort).
         
+        BD 2.0: Solo inserta si user existe (auth_user_id es NOT NULL en DB).
+        Para intentos con usuario inexistente, NO insertamos - el audit log
+        estructurado se mantiene en AuditService.
+        
         If the insert fails, logs the error but doesn't block the login flow.
         """
+        # BD 2.0: Si no hay usuario, no podemos insertar (auth_user_id es NOT NULL)
+        if user is None:
+            logger.debug(
+                "login_attempt_skipped: user=None (auth_user_id NOT NULL constraint)"
+            )
+            return
+            
         try:
             await self.login_attempt_repo.record_attempt(
-                user_id=user_id,
+                user_id=user.user_id,
+                auth_user_id=user.auth_user_id,
                 success=success,
                 reason=reason,
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
             logger.debug(
-                "login_attempt_recorded: user_id=%s success=%s reason=%s",
-                user_id, success, reason,
+                "login_attempt_recorded: user_id=%s auth_user_id=%s success=%s reason=%s",
+                user.user_id, str(user.auth_user_id)[:8] + "...", success, reason,
             )
         except Exception as e:
             logger.warning(
                 "login_attempts_insert_failed: user_id=%s success=%s error=%s",
-                user_id, success, str(e),
+                user.user_id, success, str(e),
             )
 
     async def _apply_backoff(self, ip_address: str, email: str) -> None:
@@ -171,9 +184,10 @@ class LoginFlowService:
         # Buscar usuario
         user = await self.user_service.get_by_email(email)
         if not user:
-            # Record failed attempt (user not found) - best effort
+            # BD 2.0: No insertamos en login_attempts (auth_user_id NOT NULL)
+            # Mantenemos el log estructurado en AuditService
             await self._record_login_attempt(
-                user_id=None,
+                user=None,  # BD 2.0: skip insert
                 success=False,
                 reason=LoginFailureReason.user_not_found,
                 ip_address=ip_address,
@@ -218,7 +232,7 @@ class LoginFlowService:
         if not verify_password(password, password_hash):
             # Record failed attempt (invalid credentials) - best effort
             await self._record_login_attempt(
-                user_id=user.user_id,
+                user=user,  # BD 2.0: tiene auth_user_id
                 success=False,
                 reason=LoginFailureReason.invalid_credentials,
                 ip_address=ip_address,
@@ -240,7 +254,7 @@ class LoginFlowService:
         if not await self.activation_service.is_active(user):
             # Record failed attempt (account not activated) - best effort
             await self._record_login_attempt(
-                user_id=user.user_id,
+                user=user,  # BD 2.0: tiene auth_user_id
                 success=False,
                 reason=LoginFailureReason.account_not_activated,
                 ip_address=ip_address,
@@ -281,7 +295,7 @@ class LoginFlowService:
         
         # Record successful login attempt - best effort
         await self._record_login_attempt(
-            user_id=user.user_id,
+            user=user,  # BD 2.0: tiene auth_user_id
             success=True,
             reason=None,
             ip_address=ip_address,

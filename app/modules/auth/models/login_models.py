@@ -13,8 +13,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy import String, Boolean, ForeignKey, DateTime, func, Index
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.shared.database.database import Base
@@ -28,21 +30,34 @@ if TYPE_CHECKING:
 class LoginAttempt(Base):
     """
     Registro de auditoría de intentos de login (éxito y fallo).
+
+    BD 2.0: auth_user_id (UUID SSOT) es NOT NULL en la DB.
+    Solo se inserta cuando el usuario existe.
+    Para intentos con usuario inexistente, NO se persiste en login_attempts
+    (se mantiene el log estructurado en audit_service).
     """
     __tablename__ = "login_attempts"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # FK a AppUser.user_id (nullable para intentos donde el usuario no existe)
-    user_id: Mapped[Optional[int]] = mapped_column(
+    # BD 2.0 SSOT: auth_user_id UUID (ownership / RLS) - NOT NULL
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_users.auth_user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # FK a AppUser.user_id (compat / referencia interna) - NOT NULL
+    user_id: Mapped[int] = mapped_column(
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
 
     # Resultado del intento
     success: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    
+
     # Razón de falla (si success=False)
     reason: Mapped[Optional[LoginFailureReason]] = mapped_column(
         login_failure_reason_pg_enum(create_type=False),
@@ -52,7 +67,7 @@ class LoginAttempt(Base):
     # Auditoría
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)  # IPv6
     user_agent: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -74,7 +89,15 @@ class UserSession(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # FK a AppUser.user_id
+    # BD 2.0 SSOT: auth_user_id UUID (ownership / RLS)
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_users.auth_user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # FK a AppUser.user_id (compat / referencia interna)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
         nullable=False,

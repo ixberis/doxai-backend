@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Union
+from uuid import UUID
 
 from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,18 +61,49 @@ class ActivationService:
     async def issue_activation_token(
         self,
         user_id: Union[int, str],
+        auth_user_id: Optional[UUID] = None,
         *,
         ttl_minutes: int = 60 * 24,
         token_factory: Optional[callable] = None,
     ) -> str:
         """
         Emite un token de activación nuevo para el usuario.
+        
+        BD 2.0: Requiere auth_user_id (UUID SSOT) para persistir en account_activations.
+        Si no se proporciona, intenta obtenerlo del usuario en DB.
+        
+        Args:
+            user_id: ID interno del usuario (int o str convertible a int).
+            auth_user_id: UUID SSOT del usuario. Si None, se busca en DB.
+            ttl_minutes: Tiempo de vida del token en minutos (default 24h).
+            token_factory: Callable para generar el token (default: secrets.token_urlsafe).
+            
+        Returns:
+            Token de activación generado.
+            
+        Raises:
+            ValueError: Si user_id es inválido o no se puede obtener auth_user_id.
         """
-        # Normalizar user_id a entero, ya que account_activations.user_id es INTEGER/BIGINT.
+        from uuid import UUID as UUIDType
+        
+        # Normalizar user_id a entero
         try:
             uid_int = int(user_id)
         except (TypeError, ValueError):
             raise ValueError(f"user_id inválido para token de activación: {user_id!r}")
+
+        # Obtener auth_user_id si no se proporcionó
+        if auth_user_id is None:
+            user = await self._get_user(uid_int)
+            if user is None:
+                raise ValueError(f"Usuario no encontrado para user_id={uid_int}")
+            auth_user_id = getattr(user, "auth_user_id", None)
+            if auth_user_id is None:
+                raise ValueError(f"Usuario {uid_int} no tiene auth_user_id (SSOT requerido)")
+        
+        # Asegurar que auth_user_id es UUID
+        if isinstance(auth_user_id, str):
+            auth_user_id = UUIDType(auth_user_id)
 
         now = datetime.now(timezone.utc)
         expiration = now + timedelta(minutes=ttl_minutes)
@@ -83,9 +115,10 @@ class ActivationService:
 
         token = token_factory()
 
-        # Creamos registro vía repositorio (centraliza la lógica de commit).
+        # Creamos registro vía repositorio con auth_user_id (BD 2.0 SSOT)
         await self.activation_repo.create_activation(
             user_id=uid_int,
+            auth_user_id=auth_user_id,
             token=token,
             expires_at=expiration,
         )

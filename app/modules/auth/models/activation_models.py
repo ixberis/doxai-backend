@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/models/activation_models.py
@@ -21,9 +20,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy import String, ForeignKey, DateTime, Integer, Text, func, Index
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.shared.database.database import Base
@@ -46,7 +47,6 @@ email_status_pg_enum = PG_ENUM(
     create_type=False,  # IMPORTANT: enum already exists in DB
 )
 
-
 # NOTA: Los enums se crean vía SQL canónico en database/auth/01_types/.
 # Aquí solo los referenciamos con create_type=False.
 
@@ -56,7 +56,15 @@ class AccountActivation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # FK a AppUser.user_id (tabla app_users)
+    # BD 2.0 SSOT: auth_user_id UUID (ownership / RLS)
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_users.auth_user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # FK a AppUser.user_id (compat / referencia interna)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
         nullable=False,
@@ -90,20 +98,20 @@ class AccountActivation(Base):
         server_default='pending',
         comment="Estado del envío del email de activación"
     )
-    
+
     activation_email_attempts: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         server_default="0",
         comment="Número de intentos de envío del email"
     )
-    
+
     activation_email_sent_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
         comment="Timestamp del envío exitoso del email"
     )
-    
+
     activation_email_last_error: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
@@ -124,7 +132,7 @@ Index("ix_account_activations_expires_at", AccountActivation.expires_at)
 
 # NOTA: Índice parcial opcional para optimizar consultas de "pendientes":
 # Cuando adoptes migraciones con Alembic, considera añadir:
-# CREATE INDEX ix_account_activations_pending 
+# CREATE INDEX ix_account_activations_pending
 #   ON account_activations (user_id, expires_at)
 #   WHERE status = 'sent' AND consumed_at IS NULL;
 

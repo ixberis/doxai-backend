@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/repositories/login_attempt_repository.py
@@ -15,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional, Sequence
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +41,8 @@ class LoginAttemptRepository:
     async def record_attempt(
         self,
         *,
-        user_id: Optional[int] = None,
+        user_id: int,
+        auth_user_id: UUID,
         success: bool,
         reason: Optional[LoginFailureReason] = None,
         ip_address: Optional[str] = None,
@@ -51,8 +52,12 @@ class LoginAttemptRepository:
         """
         Registra un intento de login.
 
+        BD 2.0: Solo se llama cuando el usuario EXISTE (auth_user_id es NOT NULL en DB).
+        Para intentos con usuario inexistente, NO insertar - mantener audit log.
+
         Args:
-            user_id: Identificador del usuario.
+            user_id: Identificador interno del usuario (NOT NULL).
+            auth_user_id: UUID SSOT del usuario (NOT NULL).
             success: True si el login fue exitoso.
             reason: Razón de fallo (si success=False).
             ip_address: IP origen (opcional).
@@ -64,6 +69,7 @@ class LoginAttemptRepository:
 
         attempt = LoginAttempt(
             user_id=user_id,
+            auth_user_id=auth_user_id,  # UUID nativo (DB 2.0 SSOT)
             success=success,
             reason=reason,
             ip_address=ip_address,
@@ -123,3 +129,4 @@ class LoginAttemptRepository:
 __all__ = ["LoginAttemptRepository"]
 
 # Fin del archivo backend/app/modules/auth/repositories/login_attempt_repository.py
+

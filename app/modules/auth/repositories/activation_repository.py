@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/repositories/activation_repository.py
@@ -15,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +42,7 @@ class ActivationRepository:
         self,
         *,
         user_id: int,
+        auth_user_id: UUID,
         token: str,
         expires_at: datetime,
         status: ActivationStatus = ActivationStatus.sent,
@@ -50,7 +51,8 @@ class ActivationRepository:
         Crea un nuevo registro de activación para un usuario.
 
         Args:
-            user_id: Identificador del usuario (FK a app_users.user_id).
+            user_id: Identificador interno del usuario (FK a app_users.user_id).
+            auth_user_id: UUID SSOT del usuario (FK a app_users.auth_user_id).
             token: Token de activación único.
             expires_at: Fecha/hora de expiración.
             status: Estado inicial (por defecto ActivationStatus.sent).
@@ -60,6 +62,7 @@ class ActivationRepository:
         """
         activation = AccountActivation(
             user_id=user_id,
+            auth_user_id=auth_user_id,  # UUID nativo (DB 2.0 SSOT)
             token=token,
             status=status,
             expires_at=expires_at,
@@ -156,3 +159,4 @@ class ActivationRepository:
 __all__ = ["ActivationRepository"]
 
 # Fin del archivo backend/app/modules/auth/repositories/activation_repository.py
+

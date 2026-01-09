@@ -18,12 +18,14 @@ Fecha: 18/10/2025
 """
 
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID as PyUUID
+
 from sqlalchemy import String, Boolean, DateTime, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.shared.database.database import Base
 from app.modules.auth.enums import UserRole, user_role_pg_enum
@@ -52,7 +54,7 @@ class AppUser(Base):
 
     # PK interna (INT) - SOLO para administración/reportes internos
     user_id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SSOT: auth_user_id (UUID) - IDENTIDAD GLOBAL DEL USUARIO EN DOXAI
     # ═══════════════════════════════════════════════════════════════════════════
@@ -63,13 +65,13 @@ class AppUser(Base):
     # - NO existe "auth.users" como SSOT externa; app_users.auth_user_id ES el SSOT
     # ═══════════════════════════════════════════════════════════════════════════
     auth_user_id: Mapped[PyUUID] = mapped_column(
-        PGUUID(as_uuid=True), 
-        unique=True, 
+        PGUUID(as_uuid=True),
+        unique=True,
         nullable=False,  # NOT NULL - obligatorio
         index=True,
         # NO server_default - se genera en el backend con uuid4()
     )
-    
+
     user_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     user_email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     user_phone: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
@@ -89,29 +91,62 @@ class AppUser(Base):
     user_is_activated: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     user_activated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     user_last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    
+
     # Welcome email tracking (estado explícito + claim atómico)
     welcome_email_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     welcome_email_claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     welcome_email_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     welcome_email_last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     welcome_email_attempts: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
-    
-    user_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    user_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # --- Auth relationships (strings simples, el __init__.py garantiza el orden correcto) ---
+    user_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    user_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # -------------------------------------------------------------------------
+    # Auth relationships
+    # -------------------------------------------------------------------------
+    # BD 2.0: Varias tablas apuntan a app_users por 2 rutas:
+    #   - FK por user_id (INT, compat interna)
+    #   - FK por auth_user_id (UUID SSOT)
+    # Esto causa AmbiguousForeignKeysError si no se especifica foreign_keys.
+    # Solución canónica: declarar explícitamente la FK usada en cada relationship.
+    # -------------------------------------------------------------------------
+
     account_activations: Mapped[List["AccountActivation"]] = relationship(
-        "AccountActivation", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+        "AccountActivation",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        foreign_keys=[AccountActivation.user_id],
     )
+
     password_resets: Mapped[List["PasswordReset"]] = relationship(
-        "PasswordReset", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+        "PasswordReset",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        foreign_keys=[PasswordReset.user_id],
     )
+
     login_attempts: Mapped[List["LoginAttempt"]] = relationship(
-        "LoginAttempt", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+        "LoginAttempt",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        foreign_keys=[LoginAttempt.user_id],
     )
+
     sessions: Mapped[List["UserSession"]] = relationship(
-        "UserSession", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+        "UserSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        foreign_keys=[UserSession.user_id],
     )
 
     # NOTA: Las relaciones payments, wallet, credit_transactions, usage_reservations
@@ -121,6 +156,8 @@ class AppUser(Base):
     def __repr__(self) -> str:
         return f"<AppUser user_id={self.user_id} email={self.user_email!r} active={self.user_is_activated}>"
 
+
 User = AppUser
 __all__ = ["AppUser", "User"]
+
 # Fin del archivo

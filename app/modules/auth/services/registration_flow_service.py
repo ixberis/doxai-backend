@@ -175,6 +175,7 @@ class RegistrationFlowService:
                 # Usuario no activo: reenviar activación best-effort
                 token = await self.activation_service.issue_activation_token(
                     user_id=existing.user_id,
+                    auth_user_id=existing.auth_user_id,  # BD 2.0 SSOT
                 )
                 await self._send_activation_email_best_effort(
                     email=existing.user_email,
@@ -264,6 +265,7 @@ class RegistrationFlowService:
         logger.info("REGISTRATION: crear token de activación y enviar correo")
         token = await self.activation_service.issue_activation_token(
             user_id=created_user_id,
+            auth_user_id=created_auth_user_id,  # BD 2.0 SSOT
         )
         
         # Best-effort: intentar enviar email, pero no fallar el registro
