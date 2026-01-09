@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/services/__init__.py
@@ -10,9 +9,14 @@ usando la nueva función `get_current_user_id` de token_service.
 
 Autor: Ixchel Beristain
 Actualizado: 18/10/2025
+Updated: 2026-01-09 - SSOT: JWT sub = auth_user_id (UUID). Resolver usuario por UUID, con fallback legacy a user_id INT.
 """
 
+from __future__ import annotations
+
+import logging
 from typing import Optional
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -23,6 +27,8 @@ from app.modules.auth.services.token_service import (
     get_current_user_id,
     get_optional_user_id,
 )
+
+logger = logging.getLogger(__name__)
 
 # Export explícito de lo que otros módulos suelen importar
 __all__ = [
@@ -40,15 +46,54 @@ async def get_current_user(
 ):
     """
     Retro-compatibilidad: devuelve el objeto User (no solo el user_id).
-    Internamente usa get_current_user_id(...) para validar el token.
+
+    BD 2.0 SSOT:
+      - JWT sub = auth_user_id (UUID)
+    Legacy transitorio:
+      - JWT sub podría ser user_id (INT)
+
+    Internamente usa get_current_user_id(...) para validar el token y extraer el sub.
+    Luego resuelve el usuario por auth_user_id (UUID) y, si no aplica, hace fallback a user_id (INT).
     """
     # Importación local para evitar ciclos de import
     from app.modules.auth.services.user_service import UserService
 
-    user_id: str = await get_current_user_id(creds=creds, db=db)
+    # `get_current_user_id` hoy retorna el `sub` del token (string)
+    sub: str = await get_current_user_id(creds=creds, db=db)
+
     user_service = UserService(db)
-    user = await user_service.get_by_id(user_id)
+
+    # 1) SSOT: intentar resolver como UUID (auth_user_id)
+    try:
+        auth_user_id = UUID(sub)
+        user = await user_service.get_by_auth_user_id(auth_user_id)
+        if user:
+            return user
+    except (ValueError, TypeError):
+        # No es UUID, intentar legacy abajo
+        pass
+
+    # 2) Legacy fallback: resolver como INT (user_id)
+    try:
+        user_id_int = int(sub)
+    except (ValueError, TypeError):
+        logger.warning("invalid_token_sub_not_uuid_or_int sub=%r", sub)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido.",
+        )
+
+    user = await user_service.get_by_id(user_id_int)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario no encontrado",
+        )
+
+    # Aviso: token legacy usando sub INT
+    logger.warning("legacy_token_sub_int_used user_id=%s", user_id_int)
     return user
+
+
 # Fin del archivo
+
