@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/projects/services/queries.py
@@ -9,13 +8,19 @@ Ahora async para compatibilidad con AsyncSession.
 
 Autor: Ixchel Beristain
 Fecha: 2025-10-26 (async 2025-12-27)
+Actualizado: 2026-01-09 - SSOT: aceptar auth_user_id (UUID) + fallback legacy user_email
 """
 from __future__ import annotations
+
 from typing import Optional
 from uuid import UUID
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.projects.facades import ProjectQueryFacade
+# IMPORTANTE:
+# Import directo para evitar side-effects/ciclos via facades/__init__.py
+from app.modules.projects.facades.project_query_facade import ProjectQueryFacade
+
 from app.modules.projects.enums import ProjectState, ProjectStatus
 from app.modules.projects.enums.project_action_type_enum import ProjectActionType
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
@@ -71,16 +76,25 @@ class ProjectsQueryService:
 
     async def list_active_projects(
         self,
-        user_email: str,
         *,
+        auth_user_id: Optional[UUID] = None,
+        user_email: Optional[str] = None,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ):
-        """Lista proyectos activos (state != ARCHIVED) con ordenamiento."""
+        """
+        Lista proyectos activos (state != ARCHIVED) con ordenamiento.
+
+        BD 2.0 SSOT:
+          - auth_user_id (UUID) preferido.
+        Legacy fallback:
+          - user_email (solo si auth_user_id no está disponible).
+        """
         return await self.facade.list_active_projects(
+            auth_user_id=auth_user_id,
             user_email=user_email,
             order_by=order_by,
             asc=asc,
@@ -91,16 +105,25 @@ class ProjectsQueryService:
 
     async def list_closed_projects(
         self,
-        user_email: str,
         *,
+        auth_user_id: Optional[UUID] = None,
+        user_email: Optional[str] = None,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ):
-        """Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento."""
+        """
+        Lista proyectos cerrados/archivados (state == ARCHIVED) con ordenamiento.
+
+        BD 2.0 SSOT:
+          - auth_user_id (UUID) preferido.
+        Legacy fallback:
+          - user_email (solo si auth_user_id no está disponible).
+        """
         return await self.facade.list_closed_projects(
+            auth_user_id=auth_user_id,
             user_email=user_email,
             order_by=order_by,
             asc=asc,
@@ -110,8 +133,20 @@ class ProjectsQueryService:
         )
 
     # ---- Archivos ----
-    async def list_files(self, project_id: UUID, *, limit: int = 100, offset: int = 0, include_total: bool = False):
-        return await self.facade.list_files(project_id, limit=limit, offset=offset, include_total=include_total)
+    async def list_files(
+        self,
+        project_id: UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        include_total: bool = False,
+    ):
+        return await self.facade.list_files(
+            project_id,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
 
     async def get_file_by_id(self, file_id: UUID):
         return await self.facade.get_file_by_id(file_id)
@@ -120,8 +155,20 @@ class ProjectsQueryService:
         return await self.facade.count_files_by_project(project_id)
 
     # ---- Auditoría ----
-    async def list_actions(self, project_id: UUID, *, action_type: Optional[ProjectActionType] = None, limit: int = 100, offset: int = 0):
-        return await self.facade.list_actions(project_id, action_type=action_type, limit=limit, offset=offset)
+    async def list_actions(
+        self,
+        project_id: UUID,
+        *,
+        action_type: Optional[ProjectActionType] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ):
+        return await self.facade.list_actions(
+            project_id,
+            action_type=action_type,
+            limit=limit,
+            offset=offset,
+        )
 
     async def list_file_events(
         self,
@@ -132,7 +179,13 @@ class ProjectsQueryService:
         limit: int = 100,
         offset: int = 0,
     ):
-        return await self.facade.list_file_events(project_id, file_id=file_id, event_type=event_type, limit=limit, offset=offset)
+        return await self.facade.list_file_events(
+            project_id,
+            file_id=file_id,
+            event_type=event_type,
+            limit=limit,
+            offset=offset,
+        )
 
     async def list_file_events_seek(
         self,
@@ -151,4 +204,8 @@ class ProjectsQueryService:
             event_type=event_type,
             limit=limit,
         )
+
+
 # Fin del archivo backend/app/modules/projects/services/queries.py
+
+

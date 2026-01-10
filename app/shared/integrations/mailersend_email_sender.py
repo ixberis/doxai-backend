@@ -8,12 +8,13 @@ Usa templates de templates/emails/ como fuente de verdad.
 Autor: Ixchel Beristain
 Creado: 2025-12-16
 Actualizado: 2026-01-02 - Instrumentación de eventos para métricas
+Actualizado: 2026-01-09 - Canon SSOT (auth_user_id), no PII, idempotencia estable, _send_email restaurado
 
 Notas:
 - MailerSend API es más confiable que SMTP en entornos cloud (Railway, Vercel).
 - No requiere TLS cert validation del sistema operativo.
-- Soporta tracking de emails y webhooks (no implementados aquí).
-- Cada envío registra evento en auth_email_events para métricas.
+- Soporta tracking de emails y webhooks (webhooks se implementan en routes/webhooks_routes.py).
+- Cada envío registra evento en auth_email_events para métricas (sin PII: solo dominio).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, Tuple, TYPE_CHECKING, Dict, Any
 from uuid import UUID
 
 import httpx
@@ -87,15 +88,23 @@ class MailerSendEmailSender:
         self.timeout = timeout
         self.frontend_url = _normalize_base_url(frontend_url)
         self.support_email = support_email or "soporte@doxai.site"
-        self._db_session = db_session  # Legacy, kept for backwards compatibility
-        self._event_session_factory = event_session_factory  # async_sessionmaker for event logging
+
+        # Legacy (no usar para logging de eventos, pero lo conservamos por compatibilidad)
+        self._db_session = db_session
+
+        # async_sessionmaker para logging de eventos (aislado)
+        self._event_session_factory = event_session_factory
 
     # ─────────────────────────────────────────────────────────────────────────
     # Event Logging Helpers (for auth_email_events metrics)
     # ─────────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _generate_idempotency_key(email_type: str, auth_user_id: Optional[UUID], unique_context: str) -> str:
+    def _generate_idempotency_key(
+        email_type: str,
+        auth_user_id: Optional[UUID],
+        unique_context: str,
+    ) -> str:
         """
         Generate a stable idempotency key for deduplication.
 
@@ -137,8 +146,7 @@ class MailerSendEmailSender:
             if not callable(self._event_session_factory):
                 if not _factory_warning_logged:
                     logger.warning(
-                        "email_event_log_skipped_invalid_factory: "
-                        "event_session_factory is not callable"
+                        "email_event_log_skipped_invalid_factory: event_session_factory is not callable"
                     )
                     _factory_warning_logged = True
                 return None
@@ -152,7 +160,7 @@ class MailerSendEmailSender:
             if not _factory_warning_logged:
                 logger.warning(
                     "email_event_log_skipped_no_sessionlocal_import: %s",
-                    str(e)
+                    str(e),
                 )
                 _factory_warning_logged = True
             return None
@@ -199,7 +207,8 @@ class MailerSendEmailSender:
             from sqlalchemy import text
 
             async with session_factory() as log_session:
-                q = text("""
+                q = text(
+                    """
                     INSERT INTO public.auth_email_events (
                         email_type,
                         status,
@@ -237,21 +246,25 @@ class MailerSendEmailSender:
                         correlation_id = COALESCE(EXCLUDED.correlation_id, auth_email_events.correlation_id),
                         updated_at = now()
                     RETURNING event_id
-                """)
+                    """
+                )
 
-                result = await log_session.execute(q, {
-                    "email_type": email_type,
-                    "status": status,
-                    "status_check": status,
-                    "recipient_domain": self._extract_domain(to_email),
-                    "auth_user_id": str(auth_user_id) if auth_user_id else None,
-                    "provider_message_id": provider_message_id,
-                    "latency_ms": latency_ms,
-                    "error_code": error_code,
-                    "error_message": (error_message or "")[:500] if error_message else None,
-                    "idempotency_key": idempotency_key,
-                    "correlation_id": correlation_id,
-                })
+                result = await log_session.execute(
+                    q,
+                    {
+                        "email_type": email_type,
+                        "status": status,
+                        "status_check": status,
+                        "recipient_domain": self._extract_domain(to_email),
+                        "auth_user_id": str(auth_user_id) if auth_user_id else None,
+                        "provider_message_id": provider_message_id,
+                        "latency_ms": latency_ms,
+                        "error_code": error_code,
+                        "error_message": (error_message or "")[:500] if error_message else None,
+                        "idempotency_key": idempotency_key,
+                        "correlation_id": correlation_id,
+                    },
+                )
 
                 row = result.first()
                 event_id = row[0] if row else None
@@ -273,6 +286,10 @@ class MailerSendEmailSender:
                 str(e),
             )
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Settings factory
+    # ─────────────────────────────────────────────────────────────────────────
+
     @classmethod
     def from_settings(
         cls,
@@ -280,24 +297,27 @@ class MailerSendEmailSender:
         db_session: Optional["AsyncSession"] = None,
         event_session_factory: Optional["async_sessionmaker[AsyncSession]"] = None,
     ) -> "MailerSendEmailSender":
-        """
-        Crea instancia desde settings (fuente de verdad).
-        """
+        """Crea instancia desde settings (fuente de verdad)."""
         api_key = ""
-        if settings.mailersend_api_key:
+        if getattr(settings, "mailersend_api_key", None):
             api_key = settings.mailersend_api_key.get_secret_value().strip()
 
-        from_email = (settings.mailersend_from_email or "").strip()
-        from_name = (settings.mailersend_from_name or "DoxAI").strip()
-        timeout = settings.email_timeout_sec or 30
+        from_email = (getattr(settings, "mailersend_from_email", None) or "").strip()
+        from_name = (getattr(settings, "mailersend_from_name", None) or "DoxAI").strip()
+        timeout = getattr(settings, "email_timeout_sec", None) or 30
+
         frontend_url = _normalize_base_url(
-            getattr(settings, "frontend_base_url", None) or settings.frontend_url
+            getattr(settings, "frontend_base_url", None) or getattr(settings, "frontend_url", None)
         )
 
         if not api_key:
-            raise ValueError("[MailerSend] MAILERSEND_API_KEY es requerido. Configúrelo en Railway/Vercel.")
+            raise ValueError(
+                "[MailerSend] MAILERSEND_API_KEY es requerido. Configúrelo en Railway/Vercel."
+            )
         if not from_email:
-            raise ValueError("[MailerSend] MAILERSEND_FROM_EMAIL es requerido. Configúrelo en Railway/Vercel.")
+            raise ValueError(
+                "[MailerSend] MAILERSEND_FROM_EMAIL es requerido. Configúrelo en Railway/Vercel."
+            )
 
         support_email = getattr(settings, "support_email", None) or "soporte@doxai.site"
 
@@ -326,9 +346,295 @@ class MailerSendEmailSender:
         from app.shared.config import settings
         return cls.from_settings(settings)
 
-    # -------------------------------------------------------------------------
-    # (resto del archivo SIN CAMBIOS de lógica, solo ajusté send_* firmas/llamadas)
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # MailerSend error classification
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _classify_mailersend_error(self, status_code: int, error_body: str) -> str:
+        """
+        Clasifica errores de MailerSend a códigos internos.
+
+        No expone detalles del provider al cliente.
+        """
+        error_lower = (error_body or "").lower()
+
+        if status_code == 422 and "#ms42225" in error_lower:
+            return "mailersend_trial_unique_recipients_limit"
+
+        if status_code == 422 and "trial" in error_lower and "limit" in error_lower:
+            return "mailersend_trial_limit"
+
+        if status_code == 429:
+            return "mailersend_rate_limit"
+
+        if status_code == 401:
+            return "mailersend_auth_error"
+
+        if status_code == 422:
+            return "mailersend_validation_error"
+
+        if status_code >= 500:
+            return "mailersend_server_error"
+
+        if status_code >= 400:
+            return "mailersend_client_error"
+
+        return "mailersend_unknown_error"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Template builders
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_activation_body(self, full_name: str, activation_token: str) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de activación."""
+        user_name = full_name or "Usuario"
+        activation_link = ""
+        if self.frontend_url:
+            activation_link = f"{self.frontend_url}/auth/activate?token={activation_token}"
+
+        context: Dict[str, Any] = {
+            "user_name": user_name,
+            "activation_link": activation_link,
+            "frontend_url": self.frontend_url or "",
+            "expiration_hours": "1",
+        }
+
+        html, text, used_template = render_email("activation_email", context)
+
+        if not text:
+            text = get_fallback_text(
+                "activation" if activation_link else "activation_no_link",
+                context,
+            )
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    def _build_password_reset_body(self, full_name: str, reset_token: str) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de reset de contraseña."""
+        user_name = full_name or "Usuario"
+        reset_link = ""
+        if self.frontend_url:
+            reset_link = f"{self.frontend_url}/auth/reset-password?token={reset_token}"
+
+        context: Dict[str, Any] = {
+            "user_name": user_name,
+            "reset_link": reset_link,
+            "reset_url": reset_link,
+            "frontend_url": self.frontend_url or "",
+            "expiration_hours": "1",
+        }
+
+        html, text, used_template = render_email("password_reset_email", context)
+
+        if not text:
+            text = get_fallback_text("password_reset", context)
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    def _build_welcome_body(self, full_name: str, credits_assigned: int) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de bienvenida."""
+        user_name = full_name or "Usuario"
+        context: Dict[str, Any] = {
+            "user_name": user_name,
+            "credits_assigned": str(credits_assigned),
+            "frontend_url": self.frontend_url or "",
+        }
+
+        html, text, used_template = render_email("welcome_email", context)
+
+        if not text:
+            text = get_fallback_text("welcome", context)
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    def _build_admin_activation_notice_body(
+        self,
+        *,
+        user_email: str,
+        user_name: str,
+        user_id: str,
+        credits_assigned: int,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        activation_datetime_utc: Optional[str] = None,
+    ) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de notificación admin de activación."""
+        from datetime import datetime, timezone
+
+        if not activation_datetime_utc:
+            activation_datetime_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        context: Dict[str, Any] = {
+            "user_email": user_email,
+            "user_name": user_name or "No especificado",
+            "user_id": str(user_id),
+            "activation_datetime": activation_datetime_utc,
+            "credits_assigned": str(credits_assigned),
+            "ip_address": ip_address or "No disponible",
+            "user_agent": (user_agent or "No disponible")[:200],
+        }
+
+        html, text, used_template = render_email("admin_activation_notice", context)
+
+        if not text:
+            text = (
+                "NUEVA CUENTA ACTIVADA - DoxAI\n"
+                "==============================\n\n"
+                f"Email: {user_email}\n"
+                f"Nombre: {user_name or 'No especificado'}\n"
+                f"User ID: {user_id}\n"
+                f"Fecha/Hora: {activation_datetime_utc} UTC\n"
+                f"Créditos: {credits_assigned}\n"
+                f"IP: {ip_address or 'No disponible'}\n"
+            )
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    def _build_password_reset_success_body(
+        self,
+        *,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        reset_datetime_utc: Optional[str] = None,
+    ) -> Tuple[str, str, bool]:
+        """Construye cuerpo para email de notificación de reset exitoso."""
+        from datetime import datetime, timezone
+
+        if not reset_datetime_utc:
+            reset_datetime_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        login_url = f"{self.frontend_url}/auth/login" if self.frontend_url else ""
+
+        context: Dict[str, Any] = {
+            "user_name": full_name or "Usuario",
+            "reset_datetime": reset_datetime_utc,
+            "ip_address": ip_address or "No disponible",
+            "user_agent": (user_agent or "No disponible")[:200],
+            "login_url": login_url,
+            "frontend_url": self.frontend_url or "",
+            "support_email": self.support_email,
+        }
+
+        html, text, used_template = render_email("password_reset_success_email", context)
+
+        if not text:
+            text = (
+                "CONTRASEÑA RESTABLECIDA - DoxAI\n"
+                "================================\n\n"
+                f"Hola {full_name or 'Usuario'},\n\n"
+                "Su contraseña ha sido restablecida exitosamente.\n\n"
+                f"Fecha/Hora: {reset_datetime_utc} UTC\n"
+                f"IP: {ip_address or 'No disponible'}\n\n"
+                f"Si usted no realizó este cambio, contacte soporte: {self.support_email}\n"
+            )
+
+        if not html:
+            html = f"<pre>{text}</pre>"
+
+        return html, text, used_template
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Core sender (this MUST exist for tests to patch it)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _send_email(self, to_email: str, subject: str, html_body: str, text_body: str) -> str:
+        """
+        Envía email via MailerSend API. Retorna message_id.
+
+        IMPORTANT: Este método existe para:
+        - centralizar el POST a MailerSend
+        - permitir patch en tests (instrumentation)
+        """
+        payload = {
+            "from": {"email": self.from_email, "name": self.from_name},
+            "reply_to": {"email": self.support_email, "name": "Soporte DoxAI"},
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "html": html_body,
+            "text": text_body,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        logger.info("[MailerSend] sending: to=%s subject=%s from=%s", to_email, subject, self.from_email)
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    MAILERSEND_API_URL,
+                    json=payload,
+                    headers=headers,
+                )
+
+                # MailerSend returns 202 Accepted on success
+                if response.status_code == 202:
+                    message_id = response.headers.get("X-Message-Id", "accepted")
+                    logger.info("[MailerSend] sent ok: to=%s message_id=%s", to_email, message_id)
+                    return message_id
+
+                error_body = response.text
+                content_type = response.headers.get("Content-Type", "")
+                error_code = self._classify_mailersend_error(response.status_code, error_body)
+
+                if "application/json" in content_type:
+                    try:
+                        error_json = response.json()
+                        logger.warning(
+                            "[MailerSend] send failed: to=%s status=%d error_code=%s json=%s",
+                            to_email,
+                            response.status_code,
+                            error_code,
+                            error_json,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[MailerSend] send failed: to=%s status=%d error_code=%s body=%s",
+                            to_email,
+                            response.status_code,
+                            error_code,
+                            (error_body or "")[:500],
+                        )
+                else:
+                    logger.warning(
+                        "[MailerSend] send failed: to=%s status=%d error_code=%s body=%s",
+                        to_email,
+                        response.status_code,
+                        error_code,
+                        (error_body or "")[:500],
+                    )
+
+                raise MailerSendError(
+                    error_code=error_code,
+                    status_code=response.status_code,
+                    message=f"Error de envío de email (código: {error_code})",
+                )
+
+            except httpx.TimeoutException as e:
+                logger.error("[MailerSend] timeout: to=%s error=%s", to_email, str(e))
+                raise RuntimeError(f"MailerSend timeout: {e}") from e
+            except httpx.RequestError as e:
+                logger.error("[MailerSend] request error: to=%s error=%s", to_email, str(e))
+                raise RuntimeError(f"MailerSend request error: {e}") from e
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API: send_* methods (instrumented)
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def send_activation_email(
         self,
@@ -337,7 +643,8 @@ class MailerSendEmailSender:
         activation_token: str,
         *,
         auth_user_id: Optional[UUID] = None,
-        user_id: Optional[int] = None,  # legacy (no persist)
+        correlation_id: Optional[str] = None,
+        user_id: Optional[int] = None,  # legacy param kept for callsites/tests (not persisted)
     ) -> None:
         """Envía email de activación de cuenta con instrumentación (SSOT auth_user_id)."""
         email_type = "account_activation"
@@ -360,6 +667,7 @@ class MailerSendEmailSender:
             to_email=to_email,
             auth_user_id=auth_user_id,
             idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
 
         start_time = time.perf_counter()
@@ -375,6 +683,7 @@ class MailerSendEmailSender:
                 provider_message_id=message_id,
                 latency_ms=latency_ms,
                 idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
@@ -389,6 +698,7 @@ class MailerSendEmailSender:
                 error_code=str(err_code),
                 error_message=str(e)[:500],
                 idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
             raise
 
@@ -399,7 +709,8 @@ class MailerSendEmailSender:
         reset_token: str,
         *,
         auth_user_id: Optional[UUID] = None,
-        user_id: Optional[int] = None,  # legacy (no persist)
+        correlation_id: Optional[str] = None,
+        user_id: Optional[int] = None,  # legacy param kept (not persisted)
     ) -> None:
         """Envía email de reset de contraseña con instrumentación (SSOT auth_user_id)."""
         email_type = "password_reset_request"
@@ -422,6 +733,7 @@ class MailerSendEmailSender:
             to_email=to_email,
             auth_user_id=auth_user_id,
             idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
 
         start_time = time.perf_counter()
@@ -437,6 +749,7 @@ class MailerSendEmailSender:
                 provider_message_id=message_id,
                 latency_ms=latency_ms,
                 idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
@@ -451,6 +764,7 @@ class MailerSendEmailSender:
                 error_code=str(err_code),
                 error_message=str(e)[:500],
                 idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
             raise
 
@@ -461,7 +775,8 @@ class MailerSendEmailSender:
         credits_assigned: int,
         *,
         auth_user_id: Optional[UUID] = None,
-        user_id: Optional[int] = None,  # legacy (no persist)
+        correlation_id: Optional[str] = None,
+        user_id: Optional[int] = None,  # legacy param kept (not persisted)
     ) -> None:
         """Envía email de bienvenida con instrumentación (SSOT auth_user_id)."""
         email_type = "welcome"
@@ -484,6 +799,7 @@ class MailerSendEmailSender:
             to_email=to_email,
             auth_user_id=auth_user_id,
             idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
 
         start_time = time.perf_counter()
@@ -499,6 +815,7 @@ class MailerSendEmailSender:
                 provider_message_id=message_id,
                 latency_ms=latency_ms,
                 idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
@@ -513,12 +830,140 @@ class MailerSendEmailSender:
                 error_code=str(err_code),
                 error_message=str(e)[:500],
                 idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
             raise
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # El resto del archivo (builders, _send_email, admin notice, reset success)
-    # se mantiene como está en tu base; solo necesitarás pasar auth_user_id
-    # desde los callsites (RegistrationFlowService / ActivationFlowService).
-    # ─────────────────────────────────────────────────────────────────────────
+    async def send_admin_activation_notice(
+        self,
+        to_email: str,
+        *,
+        user_email: str,
+        user_name: str,
+        user_id: str,
+        credits_assigned: int,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        activation_datetime_utc: Optional[str] = None,
+    ) -> None:
+        """
+        Envía notificación al admin cuando un usuario activa su cuenta.
+        Nota: este correo es operativo/admin; NO se instrumenta en auth_email_events
+        (si lo quieres instrumentar, lo podemos meter como email_type=admin_activation_notice
+        y agregar el enum).
+        """
+        html, text, used_template = self._build_admin_activation_notice_body(
+            user_email=user_email,
+            user_name=user_name,
+            user_id=user_id,
+            credits_assigned=credits_assigned,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            activation_datetime_utc=activation_datetime_utc,
+        )
+
+        logger.info(
+            "[MailerSend] admin activation notice: to=%s user=%s user_id=%s template=%s",
+            to_email,
+            (user_email[:3] + "***") if user_email else "unknown",
+            user_id,
+            "loaded" if used_template else "fallback",
+        )
+
+        await self._send_email(
+            to_email,
+            f"Cuenta activada en DoxAI - {user_email}",
+            html,
+            text,
+        )
+
+    async def send_password_reset_success_email(
+        self,
+        to_email: str,
+        *,
+        full_name: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        reset_datetime_utc: Optional[str] = None,
+        auth_user_id: Optional[UUID] = None,
+        correlation_id: Optional[str] = None,
+    ) -> None:
+        """
+        Envía notificación al usuario cuando su contraseña fue restablecida.
+        Instrumentado en auth_email_events con email_type=password_reset_success.
+        """
+        from datetime import datetime, timezone as tz
+
+        email_type = "password_reset_success"
+
+        # estabilizar timestamp para idempotencia
+        if not reset_datetime_utc:
+            reset_datetime_utc = datetime.now(tz.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        idempotency_key = self._generate_idempotency_key(email_type, auth_user_id, reset_datetime_utc)
+
+        html, text, used_template = self._build_password_reset_success_body(
+            full_name=full_name,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            reset_datetime_utc=reset_datetime_utc,
+        )
+
+        logger.info(
+            "[MailerSend] password_reset_success: to=%s template=%s",
+            (to_email[:3] + "***") if to_email else "unknown",
+            "loaded" if used_template else "fallback",
+        )
+
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            auth_user_id=auth_user_id,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+        )
+
+        start_time = time.perf_counter()
+        try:
+            message_id = await self._send_email(
+                to_email,
+                "Su contraseña fue restablecida - DoxAI",
+                html,
+                text,
+            )
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                auth_user_id=auth_user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+            )
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            err_code = getattr(e, "error_code", "unknown_error")
+
+            await self._log_email_event(
+                email_type=email_type,
+                status="failed",
+                to_email=to_email,
+                auth_user_id=auth_user_id,
+                latency_ms=latency_ms,
+                error_code=str(err_code),
+                error_message=str(e)[:500],
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+            )
+            raise
+
+
+__all__ = ["MailerSendEmailSender", "MailerSendError"]
+
+# Fin del archivo backend/app/shared/integrations/mailersend_email_sender.py
+
 

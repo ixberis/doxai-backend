@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/user_profile/services/profile_service.py
@@ -122,19 +121,10 @@ class ProfileService:
     async def get_profile(self, user_id: int) -> ProfileDTO:
         """
         Obtiene el perfil de un usuario por su user_id (int).
-        
-        Args:
-            user_id: ID del usuario (int, columna user_id de app_users)
-            
-        Returns:
-            ProfileDTO con los datos del perfil
-            
-        Raises:
-            ValueError: Si el usuario no existe
         """
         import time
         start = time.perf_counter()
-        
+
         # Seleccionar solo columnas necesarias (evita cargar todo el modelo)
         stmt = select(
             User.user_id,
@@ -147,10 +137,10 @@ class ProfileService:
             User.user_updated_at,
             User.user_last_login,
         ).where(User.user_id == user_id)
-        
+
         result = await self.db.execute(stmt)
         row = result.first()
-        
+
         duration_ms = (time.perf_counter() - start) * 1000
         if duration_ms > 500:
             logger.warning(f"query_slow operation=get_profile user_id={user_id} duration_ms={duration_ms:.2f}")
@@ -160,14 +150,13 @@ class ProfileService:
         if not row:
             raise ValueError("Usuario no encontrado")
 
-        # Mapear columnas desde el Row (índices posicionales)
         return ProfileDTO(
             user_id=row[0],
             full_name=row[1],
             email=row[2],
             phone=row[3],
-            role=str(row[4].value) if hasattr(row[4], 'value') else str(row[4]),
-            status=str(row[5].value) if hasattr(row[5], 'value') else str(row[5]),
+            role=str(row[4].value) if hasattr(row[4], "value") else str(row[4]),
+            status=str(row[5].value) if hasattr(row[5], "value") else str(row[5]),
             created_at=row[6],
             updated_at=row[7],
             last_login=row[8],
@@ -178,13 +167,6 @@ class ProfileService:
     async def update_profile(self, user_id: int, data: UpdateProfileDTO) -> ProfileDTO:
         """
         Actualiza el perfil de un usuario.
-        
-        Args:
-            user_id: ID del usuario (int)
-            data: Datos a actualizar
-            
-        Returns:
-            ProfileDTO actualizado
         """
         # Si cambia el email, validar unicidad (case-insensitive)
         if data.email is not None:
@@ -209,7 +191,6 @@ class ProfileService:
         if data.email is not None:
             user.user_email = str(data.email).lower()
 
-        # Timestamps - user_updated_at se actualiza automáticamente por onupdate
         await self.db.flush()
         await self.db.commit()
 
@@ -220,10 +201,6 @@ class ProfileService:
     async def change_password(self, user_id: int, payload: ChangePasswordDTO) -> None:
         """
         Cambia la contraseña del usuario.
-        
-        Args:
-            user_id: ID del usuario (int)
-            payload: Contraseña actual y nueva
         """
         stmt = select(User).where(User.user_id == user_id)
         result = await self.db.execute(stmt)
@@ -252,28 +229,30 @@ class ProfileService:
 
         Prioridad:
           1) credits_gateway (si está inyectado)
-          2) Wallet denormalizada (payments_wallet.balance) - más rápido
-          3) Ledger de credit_transactions (suma de credits_delta) - fallback
-          4) 0 (sin romper la pantalla)
+          2) Wallet denormalizada (BD 2.0): public.wallets.balance (lookup 1 fila)
+          3) Ledger credit_transactions (suma credits_delta) - fallback
+          4) 0 (best-effort)
+
+        IMPORTANTE:
+        - Cada fallback hace rollback en caso de error para evitar que el
+          request quede en estado "transaction aborted" (InFailedSQLTransactionError).
         """
         import time
         start = time.perf_counter()
-        
+
         # 1) Gateway inyectado
         if self.credits_gateway is not None:
             try:
                 balance = await self.credits_gateway.get_balance(user_id)
                 duration_ms = (time.perf_counter() - start) * 1000
                 logger.debug(f"[credits] user_id={user_id} balance={balance} source=gateway duration_ms={duration_ms:.2f}")
-                return balance
+                return int(balance)
             except Exception as e:
                 logger.warning(f"[credits_gateway] get_balance falló: {e}")
 
-        # 2) Wallet denormalizada (más rápido - single row lookup)
+        # 2) Wallet denormalizada (BD 2.0): wallets
         try:
-            stmt = text(
-                "SELECT balance FROM payments_wallet WHERE user_id = :uid"
-            )
+            stmt = text("SELECT balance FROM wallets WHERE user_id = :uid")
             res = await self.db.execute(stmt, {"uid": user_id})
             row = res.first()
             if row and row[0] is not None:
@@ -282,16 +261,19 @@ class ProfileService:
                 if duration_ms > 500:
                     logger.warning(f"query_slow operation=get_credits_balance user_id={user_id} duration_ms={duration_ms:.2f}")
                 else:
-                    logger.debug(f"[credits] user_id={user_id} balance={balance} source=wallet duration_ms={duration_ms:.2f}")
+                    logger.debug(f"[credits] user_id={user_id} balance={balance} source=wallets duration_ms={duration_ms:.2f}")
                 return balance
         except Exception as e:
-            logger.debug(f"[credits] Wallet no disponible, fallback a ledger: {e}")
+            # Rollback para no envenenar la transacción del request
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            logger.debug(f"[credits] Wallet (wallets) no disponible, fallback a ledger: {e}")
 
         # 3) Ledger SQL: suma de credit_transactions.credits_delta (fallback)
         try:
-            stmt = text(
-                "SELECT COALESCE(SUM(credits_delta), 0) FROM credit_transactions WHERE user_id = :uid"
-            )
+            stmt = text("SELECT COALESCE(SUM(credits_delta), 0) FROM credit_transactions WHERE user_id = :uid")
             res = await self.db.execute(stmt, {"uid": user_id})
             row = res.first()
             if row and row[0] is not None:
@@ -303,9 +285,13 @@ class ProfileService:
                     logger.debug(f"[credits] user_id={user_id} balance={balance} source=ledger duration_ms={duration_ms:.2f}")
                 return balance
         except Exception as e:
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
             logger.info(f"[credits] No se pudo leer credit_transactions: {e}")
 
-        # 4) Default (sin datos)
+        # 4) Default best-effort (sin datos, sin error)
         duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"[credits] user_id={user_id} balance=0 source=fallback_zero duration_ms={duration_ms:.2f}")
         return 0
@@ -316,8 +302,13 @@ class ProfileService:
 
         Prioridad:
           1) credits_gateway (si está)
-          2) Fallback SQL sobre credit_transactions (si existe)
+          2) Fallback SQL sobre credit_transactions (best-effort)
           3) balance=0 sin fechas
+
+        Nota:
+        - Este fallback intenta ser tolerante: si no hay columnas esperadas,
+          no rompe el endpoint.
+        - Si falla un query, hace rollback para no envenenar la transacción.
         """
         # 1) Gateway inyectado
         if self.credits_gateway is not None:
@@ -326,15 +317,17 @@ class ProfileService:
             except Exception as e:
                 logger.warning(f"[credits_gateway] get_overview falló: {e}")
 
-        # 2) Fallback SQL
         overview = CreditsOverviewDTO(balance=await self.get_credits_balance(user_id))
+
+        # 2) Fallback SQL (best-effort)
         try:
-            # Suponiendo tipos 'top_up' y 'consume'
+            # Heurística: usamos operation_code por compatibilidad común
+            # (SIGNUP_BONUS, TOP_UP, CONSUME, etc.). Si tu esquema difiere, no rompe.
             stmt_last_topup = text(
                 """
                 SELECT created_at
                 FROM credit_transactions
-                WHERE user_id = :uid AND type = 'top_up'
+                WHERE user_id = :uid AND (operation_code = 'SIGNUP_BONUS' OR operation_code ILIKE '%TOP%')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
@@ -348,7 +341,7 @@ class ProfileService:
                 """
                 SELECT created_at
                 FROM credit_transactions
-                WHERE user_id = :uid AND type = 'consume'
+                WHERE user_id = :uid AND operation_code ILIKE '%CONSUM%'
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
@@ -359,7 +352,11 @@ class ProfileService:
                 overview.last_consume_at = row_consume[0]
 
         except Exception as e:
-            logger.info(f"[fallback] No se pudo leer credit_transactions: {e}")
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            logger.info(f"[fallback] No se pudo leer credit_transactions overview: {e}")
 
         return overview
 
@@ -370,11 +367,7 @@ class ProfileService:
     ) -> PurchaseCreditsLinkDTO:
         """
         Devuelve el deep link del frontend para comprar créditos.
-        Si usas proveedor externo (Stripe/PayPal), el flujo puede iniciar desde el frontend.
-
-        redirect_path: ruta del frontend a la que volver tras el pago.
         """
-        # En apps productivas, podrías firmar un state param JWT con user_id para volver con seguridad.
         url = f"{self.frontend_base_url.rstrip('/')}/billing/credits?redirect={redirect_path}"
         return PurchaseCreditsLinkDTO(url=url)
 
@@ -382,14 +375,12 @@ class ProfileService:
 
     async def logout(self, user_id: int, session_id: Optional[str]) -> None:
         """
-        Revoca la sesión actual del usuario. La implementación real depende
-        del SessionManager inyectado (Redis, tabla refresh_tokens, etc.).
+        Revoca la sesión actual del usuario.
         """
         try:
             await self.session_manager.revoke_session(user_id, session_id)
         except Exception as e:
             logger.error(f"No se pudo revocar la sesión: {e}")
-            # A discreción: no levantar para no bloquear UI. Aquí optamos por propagar.
             raise
 
 

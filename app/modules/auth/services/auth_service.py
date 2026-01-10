@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/services/auth_service.py
@@ -21,6 +20,9 @@ La lógica de negocio detallada se delega a los "flow services":
 
 Autor: Ixchel Beristain
 Actualizado: 19/11/2025
+Actualizado: 2026-01-09
+  - Lazy-loading de EmailSender para evitar overhead (MailerSend) en login.
+  - Lazy-loading de flow services que dependen de EmailSender.
 """
 
 from __future__ import annotations
@@ -47,6 +49,10 @@ class AuthService:
     Nota:
         Mantiene compatibilidad con la interfaz anterior de AuthService,
         pero internamente delega la lógica a servicios de flujo más pequeños.
+
+    Performance:
+        Login NO usa email. Inicializar EmailSender (MailerSend) puede costar segundos.
+        Por eso, EmailSender y los flows que dependen de él se inicializan LAZY.
     """
 
     def __init__(
@@ -59,31 +65,81 @@ class AuthService:
     ) -> None:
         self.db = db
         self.settings = get_settings()
-        # IMPORTANTE: pasar db_session para instrumentación de auth_email_events
-        self.email_sender = email_sender or EmailSender.from_env(db_session=db)
+
+        # reCAPTCHA / tokens
         self.recaptcha_verifier = recaptcha_verifier
         self.token_issuer = token_issuer or TokenIssuerService()
-        # Inyección de función de verificación de reCAPTCHA (con default si no se provee)
-        self._verify_recaptcha = verify_recaptcha_fn if verify_recaptcha_fn is not None else verify_recaptcha_or_raise
+        self._verify_recaptcha = (
+            verify_recaptcha_fn if verify_recaptcha_fn is not None else verify_recaptcha_or_raise
+        )
 
-        # Flow services
-        self._registration_flow = RegistrationFlowService(
-            db=self.db,
-            email_sender=self.email_sender,
-            token_issuer=self.token_issuer,
-        )
-        self._activation_flow = ActivationFlowService(
-            db=self.db,
-            email_sender=self.email_sender,
-        )
-        self._password_reset_flow = PasswordResetFlowService(
-            db=self.db,
-            email_sender=self.email_sender,
-        )
-        self._login_flow = LoginFlowService(
-            db=self.db,
-            token_issuer=self.token_issuer,
-        )
+        # ──────────────────────────────────────────────────────────────────
+        # Lazy dependencies
+        # ──────────────────────────────────────────────────────────────────
+        self._email_sender_instance: Optional[EmailSender] = email_sender
+        self._email_sender_initialized: bool = email_sender is not None
+
+        self._registration_flow_instance: Optional[RegistrationFlowService] = None
+        self._activation_flow_instance: Optional[ActivationFlowService] = None
+        self._password_reset_flow_instance: Optional[PasswordResetFlowService] = None
+        self._login_flow_instance: Optional[LoginFlowService] = None
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Lazy properties
+    # ──────────────────────────────────────────────────────────────────────
+
+    @property
+    def email_sender(self) -> EmailSender:
+        """
+        Lazy-load EmailSender solo cuando se necesita (registro/activación/reset).
+        Login NO lo usa, así que evitamos overhead en /auth/login.
+        """
+        if not self._email_sender_initialized:
+            # IMPORTANTE: pasar db_session para instrumentación de auth_email_events
+            self._email_sender_instance = EmailSender.from_env(db_session=self.db)
+            self._email_sender_initialized = True
+        # mypy: ya está inicializado aquí
+        return self._email_sender_instance  # type: ignore[return-value]
+
+    @property
+    def _registration_flow(self) -> RegistrationFlowService:
+        if self._registration_flow_instance is None:
+            self._registration_flow_instance = RegistrationFlowService(
+                db=self.db,
+                email_sender=self.email_sender,
+                token_issuer=self.token_issuer,
+            )
+        return self._registration_flow_instance
+
+    @property
+    def _activation_flow(self) -> ActivationFlowService:
+        if self._activation_flow_instance is None:
+            self._activation_flow_instance = ActivationFlowService(
+                db=self.db,
+                email_sender=self.email_sender,
+            )
+        return self._activation_flow_instance
+
+    @property
+    def _password_reset_flow(self) -> PasswordResetFlowService:
+        if self._password_reset_flow_instance is None:
+            self._password_reset_flow_instance = PasswordResetFlowService(
+                db=self.db,
+                email_sender=self.email_sender,
+            )
+        return self._password_reset_flow_instance
+
+    @property
+    def _login_flow(self) -> LoginFlowService:
+        """
+        LoginFlow NO usa EmailSender. Inicialización directa para evitar overhead.
+        """
+        if self._login_flow_instance is None:
+            self._login_flow_instance = LoginFlowService(
+                db=self.db,
+                token_issuer=self.token_issuer,
+            )
+        return self._login_flow_instance
 
     # ------------------------------------------------------------------ #
     # Registro
@@ -96,7 +152,7 @@ class AuthService:
         payload = as_dict(data)
         recaptcha_token = payload.get("recaptcha_token")
         ip_address = payload.get("ip_address", "unknown")
-        
+
         await self._verify_recaptcha(
             recaptcha_token,
             self.recaptcha_verifier,
@@ -104,7 +160,6 @@ class AuthService:
             ip_address=ip_address,
         )
         result = await self._registration_flow.register_user(payload)
-        # RegistrationFlowService retorna RegistrationResult, extraemos el payload
         return result.payload
 
     async def register(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
@@ -128,15 +183,14 @@ class AuthService:
         payload = as_dict(data)
         recaptcha_token = payload.get("recaptcha_token")
         ip_address = payload.get("ip_address", "unknown")
-        
-        # Validar CAPTCHA antes de procesar (anti-abuso)
+
         await self._verify_recaptcha(
             recaptcha_token,
             self.recaptcha_verifier,
             action="activation_resend",
             ip_address=ip_address,
         )
-        
+
         return await self._activation_flow.resend_activation(payload)
 
     # ------------------------------------------------------------------ #
@@ -150,15 +204,14 @@ class AuthService:
         payload = as_dict(data)
         recaptcha_token = payload.get("recaptcha_token")
         ip_address = payload.get("ip_address", "unknown")
-        
-        # Validar CAPTCHA antes de procesar (anti-abuso)
+
         await self._verify_recaptcha(
             recaptcha_token,
             self.recaptcha_verifier,
             action="password_forgot",
             ip_address=ip_address,
         )
-        
+
         return await self._password_reset_flow.start_password_reset(payload)
 
     async def start_reset(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:

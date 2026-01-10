@@ -15,7 +15,6 @@ Updated: 2026-01-09 - SSOT: JWT sub = auth_user_id (UUID). Resolver usuario por 
 from __future__ import annotations
 
 import logging
-from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -58,10 +57,11 @@ async def get_current_user(
     # Importación local para evitar ciclos de import
     from app.modules.auth.services.user_service import UserService
 
-    # `get_current_user_id` hoy retorna el `sub` del token (string)
+    # `get_current_user_id` retorna el `sub` del token (string)
     sub: str = await get_current_user_id(creds=creds, db=db)
 
-    user_service = UserService(db)
+    # Canónico: usar sesión prestada explícitamente
+    user_service = UserService.with_session(db)
 
     # 1) SSOT: intentar resolver como UUID (auth_user_id)
     try:
@@ -77,7 +77,10 @@ async def get_current_user(
     try:
         user_id_int = int(sub)
     except (ValueError, TypeError):
-        logger.warning("invalid_token_sub_not_uuid_or_int sub=%r", sub)
+        logger.warning(
+            "invalid_token_sub_not_uuid_or_int sub_prefix=%s",
+            (sub[:8] + "...") if isinstance(sub, str) else "non-str",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido.",
@@ -90,7 +93,7 @@ async def get_current_user(
             detail="Usuario no encontrado",
         )
 
-    # Aviso: token legacy usando sub INT
+    # Aviso: token legacy usando sub INT (transitorio)
     logger.warning("legacy_token_sub_int_used user_id=%s", user_id_int)
     return user
 

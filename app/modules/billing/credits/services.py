@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Wallet, CreditTransaction, UsageReservation
 from .enums import CreditTxType, ReservationStatus
 from .repositories import (
     WalletRepository,
@@ -52,7 +50,7 @@ class WalletService:
         self,
         session: AsyncSession,
         auth_user_id: UUID,
-    ) -> Wallet:
+    ):
         wallet, _ = await self.wallet_repo.get_or_create(session, auth_user_id)
         return wallet
 
@@ -87,7 +85,7 @@ class WalletService:
         idempotency_key: Optional[str] = None,
         payment_id: Optional[int] = None,
         tx_metadata: Optional[dict] = None,
-    ) -> CreditTransaction:
+    ):
         if credits <= 0:
             raise ValueError("credits must be positive")
 
@@ -134,7 +132,7 @@ class WalletService:
         reservation_id: Optional[int] = None,
         job_id: Optional[str] = None,
         tx_metadata: Optional[dict] = None,
-    ) -> CreditTransaction:
+    ):
         if credits <= 0:
             raise ValueError("credits must be positive")
 
@@ -194,15 +192,6 @@ class CreditService:
         welcome_credits: int = 5,
         session: Optional[AsyncSession] = None,
     ) -> bool:
-        """
-        Asegura que un usuario tenga créditos de bienvenida (SSOT auth_user_id).
-
-        Idempotente: si ya tiene créditos de SIGNUP_BONUS, no crea más.
-
-        IMPORTANT:
-        - Si ocurre error de DB, hacemos rollback best-effort para NO dejar
-          la transacción del request en estado abortado (evita 500 en activación).
-        """
         db = session or self.session
         if not db:
             logger.warning("CreditService.ensure_welcome_credits: no session provided")
@@ -233,7 +222,6 @@ class CreditService:
             return True
 
         except Exception as e:
-            # Best-effort rollback to prevent InFailedSQLTransactionError downstream
             try:
                 await db.rollback()
             except Exception:
@@ -267,9 +255,17 @@ class CreditService:
         return await self.wallet_service.get_available(db, auth_user_id)
 
 
-# ReservationService: dejo sin cambios funcionales aquí porque requiere refactor mayor.
-# Si tus tablas en DB 2.0 ya migraron a auth_user_id, lo ajustamos después (Fase Billing).
 class ReservationService:
+    """
+    Servicio para consumir reservaciones de créditos (RAG billing).
+
+    Nota:
+    - SSOT es auth_user_id.
+    - Idempotencia:
+        * Si la reservación ya está CONSUMED → True
+        * Si ya existe tx ledger asociada a reservation_id → no duplica y marca CONSUMED
+    """
+
     def __init__(
         self,
         reservation_repo: Optional[UsageReservationRepository] = None,
@@ -280,7 +276,146 @@ class ReservationService:
         self.wallet_repo = wallet_repo or WalletRepository()
         self.tx_repo = tx_repo or CreditTransactionRepository()
 
-    # (Mantén el resto como está en tu repo actual; lo ajustamos cuando toques RAG billing)
+    async def consume_reservation(self, session: AsyncSession, operation_id: str) -> bool:
+        """
+        Consume una reservación (deja ledger DEBIT y actualiza wallet/reservation).
+
+        Args:
+            session: AsyncSession
+            operation_id: identificador de operación (se guarda en reservation.operation_code)
+
+        Returns:
+            True si se consumió o ya estaba consumida (idempotente).
+        """
+        reservation = await self.reservation_repo.get_by_operation_id(session, operation_id, for_update=True)
+        if not reservation:
+            # Comportamiento conservador: no-op idempotente
+            logger.warning("consume_reservation: reservation not found for operation_id=%s", operation_id)
+            return False
+
+        if reservation.reservation_status == ReservationStatus.CONSUMED:
+            return True
+
+        # Idempotencia por ledger: si ya existe tx (por reservation_id) no duplicar
+        existing_tx = await self.tx_repo.get_by_reservation_id(session, reservation.id, tx_type=CreditTxType.DEBIT)
+        if existing_tx:
+            await self.reservation_repo.update_status(
+                session,
+                reservation,
+                ReservationStatus.CONSUMED,
+                credits_consumed=reservation.credits_reserved,
+            )
+            return True
+
+        credits = int(reservation.credits_reserved or 0)
+        if credits <= 0:
+            logger.warning("consume_reservation: invalid credits_reserved=%s for reservation_id=%s", credits, reservation.id)
+            await self.reservation_repo.update_status(
+                session,
+                reservation,
+                ReservationStatus.CONSUMED,
+                credits_consumed=0,
+            )
+            return True
+
+        # Wallet lock
+        wallet = await self.wallet_repo.get_by_auth_user_id(session, reservation.auth_user_id, for_update=True)
+        if not wallet:
+            raise ValueError("Wallet not found for reservation auth_user_id")
+
+        # Al consumir: reducir balance y reserved en la misma magnitud
+        await self.wallet_repo.update_balance(session, wallet, delta=-credits, delta_reserved=-credits)
+
+        # Ledger debit asociado a reservation_id (no duplica por uq)
+        await self.tx_repo.create(
+            session,
+            auth_user_id=reservation.auth_user_id,
+            tx_type=CreditTxType.DEBIT,
+            credits_delta=-credits,
+            balance_after=wallet.balance,
+            operation_code=reservation.operation_code,
+            reservation_id=reservation.id,
+            tx_metadata={"type": "reservation_consume", "operation_id": operation_id},
+        )
+
+        await self.reservation_repo.update_status(
+            session,
+            reservation,
+            ReservationStatus.CONSUMED,
+            credits_consumed=credits,
+        )
+
+        return True
+
+    async def create_reservation(
+        self,
+        session: AsyncSession,
+        auth_user_id: UUID,
+        credits: int,
+        *,
+        operation_id: str,
+        operation_code: Optional[str] = None,
+        job_id: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+        reason: Optional[str] = None,
+        expires_at: Optional[object] = None,  # datetime | None (evitar typing extra)
+    ) -> ReservationResult:
+        """
+        Crea una reservación de créditos (SSOT auth_user_id).
+
+        Idempotencia mínima:
+        - Si ya existe reservación con operation_id (mapeado a operation_code),
+          regresa la existente sin duplicar.
+
+        Nota:
+        - Reservar NO descuenta balance total; solo incrementa balance_reserved.
+        """
+        if credits <= 0:
+            raise ValueError("credits must be positive")
+
+        # Idempotencia por operation_id (en repo se busca por operation_code)
+        existing = await self.reservation_repo.get_by_operation_id(session, operation_id, for_update=True)
+        if existing:
+            return ReservationResult(
+                reservation_id=existing.id,
+                wallet_id=0,  # no siempre tenemos wallet loaded aquí; se puede llenar si lo necesitas
+                credits=int(existing.credits_reserved or 0),
+                operation_id=operation_id,
+                auth_user_id=existing.auth_user_id,
+            )
+
+        # Wallet (lock) + validación de fondos disponibles
+        wallet = await self.wallet_repo.get_by_auth_user_id(session, auth_user_id, for_update=True)
+        if not wallet:
+            wallet, _ = await self.wallet_repo.get_or_create(session, auth_user_id)
+
+        if wallet.available < credits:
+            raise ValueError(
+                f"Insufficient credits: available={wallet.available}, required={credits}"
+            )
+
+        # Reservar: subir reserved, mantener balance
+        await self.wallet_repo.update_balance(session, wallet, delta=0, delta_reserved=credits)
+
+        reservation = await self.reservation_repo.create(
+            session,
+            auth_user_id=auth_user_id,
+            credits_reserved=credits,
+            operation_code=operation_code or operation_id,
+            job_id=job_id,
+            idempotency_key=idempotency_key,
+            reason=reason,
+            expires_at=expires_at,  # repo lo guarda como reservation_expires_at
+            status=ReservationStatus.ACTIVE,
+        )
+
+        return ReservationResult(
+            reservation_id=reservation.id,
+            wallet_id=wallet.id,
+            credits=credits,
+            operation_id=operation_id,
+            auth_user_id=auth_user_id,
+        )
 
 
 __all__ = [
@@ -290,3 +425,4 @@ __all__ = [
     "ReservationService",
 ]
 
+# Fin del archivo 

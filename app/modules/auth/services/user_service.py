@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/services/user_service.py
@@ -12,6 +11,11 @@ Refactor Fase 3:
 
 Autor: Ixchel Beristain
 Actualizado: 2025-11-19
+Actualizado: 2026-01-09
+  - Evita ping/overhead cuando la sesión es prestada (reduce latencia en login).
+  - get_by_id: NO consulta si user_id no es int (evita bigint=varchar).
+  - get_current_user_from_token: resuelve por auth_user_id UUID (SSOT) primero.
+  - Reduce ruido de logs (lecturas frecuentes a DEBUG).
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+from uuid import UUID as PyUUID
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import text
@@ -45,6 +50,14 @@ def _is_callable(obj: Any) -> bool:
         return False
 
 
+def _mask_email(email: str) -> str:
+    e = (email or "").strip().lower()
+    if not e or "@" not in e:
+        return "unknown"
+    local, domain = e.split("@", 1)
+    return f"{local[:3]}***@{domain}" if len(local) >= 3 else f"{local[:1]}***@{domain}"
+
+
 class UserService:
     """
     Servicio de usuarios (lectura/escritura) con DI flexible.
@@ -52,6 +65,10 @@ class UserService:
       - session_factory: async_sessionmaker[AsyncSession] o callable que retorne AsyncSession
       - session: AsyncSession (sesión prestada)
     También tolera que accidentalmente te pasen una AsyncSession en 'session_factory'.
+
+    Nota performance:
+      - Si la sesión es PRESTADA (login/request-scope), NO hacemos ping preventivo.
+        Eso evita roundtrips extra en endpoints hot (p.ej. /auth/login).
     """
 
     def __init__(
@@ -77,6 +94,16 @@ class UserService:
         return cls(session=session)
 
     # ---------------------- Gestión de sesión interna -----------------------
+
+    def _using_borrowed_session(self) -> bool:
+        """
+        True si la sesión la aporta el caller (request-scope / prestada).
+        En ese caso evitamos ping preventivo para no agregar latencia.
+        """
+        if self._session is not None:
+            return True
+        sf = self._session_factory
+        return isinstance(sf, AsyncSession)
 
     @asynccontextmanager
     async def _session_scope(self):
@@ -129,28 +156,50 @@ class UserService:
         except Exception as e:
             log.debug("No se pudo aplicar statement_timeout local a la consulta: %s", e)
 
+    async def _pre_query_guards(
+        self,
+        session: AsyncSession,
+        *,
+        stmt_timeout_ms: int,
+        ping_timeout_ms: int = 2000,
+    ) -> None:
+        """
+        Guards previos a query:
+          - Ping solo cuando NO usamos sesión prestada (para evitar overhead en login).
+          - statement_timeout siempre best-effort.
+        """
+        if not self._using_borrowed_session():
+            await self._ping_db(session, timeout_ms=ping_timeout_ms)
+        await self._apply_stmt_timeout(session, timeout_ms=stmt_timeout_ms)
+
     # ----------------------------- Lecturas ---------------------------------
 
     async def get_by_email(self, email: str) -> Optional[AppUser]:
         """
         Obtiene un usuario por email (case-insensitive). Devuelve None si no existe.
-        Añade ping y timeouts para evitar cuelgues en pasos críticos (p.ej. registro).
+
+        Performance:
+          - En login normalmente se usa session prestada → NO hacemos ping preventivo.
+          - statement_timeout se mantiene best-effort.
         """
+        import time
+        start = time.perf_counter()
+        
         norm_email = (email or "").strip().lower()
         if not norm_email:
             return None
 
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=3000)
+            await self._pre_query_guards(session, stmt_timeout_ms=3000)
 
             repo = UserRepository(session)
+            query_start = time.perf_counter()
             try:
                 user = await repo.get_by_email(norm_email)
-                log.info("Users.get_by_email ← consulta completada (email=%s)", norm_email)
+                log.debug("Users.get_by_email ok (email=%s)", _mask_email(norm_email))
                 return user
             except Exception as e:
-                log.error("Users.get_by_email ERROR: %s", e)
+                log.exception("Users.get_by_email ERROR email=%s error=%s", _mask_email(norm_email), e)
                 raise
 
     async def exists_by_email(self, email: str) -> bool:
@@ -163,26 +212,24 @@ class UserService:
             return False
 
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=3000)
+            await self._pre_query_guards(session, stmt_timeout_ms=3000)
 
             repo = UserRepository(session)
             try:
                 exists = await repo.exists_by_email(norm_email)
-                log.info("Users.exists_by_email ← %s (email=%s)", exists, norm_email)
+                log.debug("Users.exists_by_email=%s (email=%s)", exists, _mask_email(norm_email))
                 return exists
             except Exception as e:
-                log.error("Users.exists_by_email ERROR: %s", e)
+                log.exception("Users.exists_by_email ERROR email=%s error=%s", _mask_email(norm_email), e)
                 raise
 
     async def get_by_id(self, user_id: Any) -> Optional[AppUser]:
         """
         Recupera usuario por PK (INT).
 
-        Nota:
-            El modelo actual usa BIGINT, pero algunos flujos (JWT, activación, etc.)
-            pasan el user_id como string. Aquí lo normalizamos a int siempre que
-            sea posible, para evitar errores de tipo (bigint = varchar).
+        SSOT:
+          - JWT sub SHOULD be auth_user_id (UUID), NO user_id (INT).
+          - Por seguridad y para evitar bigint=varchar, si no es convertible a int, retornamos None.
         """
         # Normalizar user_id a entero cuando venga como string
         normalized_id: Any = user_id
@@ -190,49 +237,50 @@ class UserService:
             try:
                 normalized_id = int(user_id)
             except ValueError:
-                # Si no se puede convertir, dejamos el valor original y dejamos que la consulta falle
-                log.error("Users.get_by_id: user_id inválido no convertible a int: %r", user_id)
+                # NO consultamos con varchar contra bigint: eso rompe y puede abortar tx.
+                log.warning("Users.get_by_id: user_id no convertible a int (skipping): %r", user_id)
+                return None
 
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=3000)
+            await self._pre_query_guards(session, stmt_timeout_ms=3000)
 
             repo = UserRepository(session)
             try:
                 user = await repo.get_by_id(normalized_id)
-                log.info("Users.get_by_id ← completado (id=%s)", normalized_id)
+                log.debug("Users.get_by_id ok (id=%s)", normalized_id)
                 return user
             except Exception as e:
-                log.error("Users.get_by_id ERROR: %s", e)
+                log.exception("Users.get_by_id ERROR id=%s error=%s", normalized_id, e)
                 raise
 
-    async def get_by_auth_user_id(self, auth_user_id) -> Optional[AppUser]:
+    async def get_by_auth_user_id(self, auth_user_id: Any) -> Optional[AppUser]:
         """
         Recupera usuario por auth_user_id (UUID SSOT).
-        
+
         Este es el método preferido para resolver usuarios desde JWT sub.
         """
-        from uuid import UUID as PyUUID
-        
         # Normalizar a UUID si viene como string
         if isinstance(auth_user_id, str):
             try:
                 auth_user_id = PyUUID(auth_user_id)
             except ValueError:
-                log.error("Users.get_by_auth_user_id: auth_user_id inválido: %r", auth_user_id)
+                log.warning("Users.get_by_auth_user_id: auth_user_id inválido: %r", auth_user_id)
                 return None
 
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=3000)
+            await self._pre_query_guards(session, stmt_timeout_ms=3000)
 
             repo = UserRepository(session)
             try:
                 user = await repo.get_by_auth_user_id(auth_user_id)
-                log.info("Users.get_by_auth_user_id ← completado (auth_user_id=%s)", auth_user_id)
+                log.debug("Users.get_by_auth_user_id ok (auth_user_id=%s)", str(auth_user_id)[:8] + "...")
                 return user
             except Exception as e:
-                log.error("Users.get_by_auth_user_id ERROR: %s", e)
+                log.exception(
+                    "Users.get_by_auth_user_id ERROR auth_user_id=%s error=%s",
+                    str(auth_user_id)[:8] + "...",
+                    e,
+                )
                 raise
 
     # ----------------------------- Escrituras -------------------------------
@@ -246,8 +294,8 @@ class UserService:
             user.user_email = user.user_email.strip().lower()
 
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=5000)
+            # En creación sí vale la pena ping + timeout más amplio si la sesión no es prestada
+            await self._pre_query_guards(session, stmt_timeout_ms=5000)
 
             repo = UserRepository(session)
             try:
@@ -255,7 +303,7 @@ class UserService:
                 log.info("Users.add ← usuario creado (id=%s)", getattr(created, "user_id", None))
                 return created
             except Exception as e:
-                log.error("Users.add ERROR: %s", e)
+                log.exception("Users.add ERROR: %s", e)
                 raise
 
     async def save(self, user: AppUser) -> AppUser:
@@ -263,8 +311,7 @@ class UserService:
         Actualiza un usuario existente. El commit y refresh se delegan al repositorio.
         """
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=5000)
+            await self._pre_query_guards(session, stmt_timeout_ms=5000)
 
             repo = UserRepository(session)
             try:
@@ -272,28 +319,27 @@ class UserService:
                 log.info("Users.save ← usuario actualizado (id=%s)", getattr(updated, "user_id", None))
                 return updated
             except Exception as e:
-                log.error("Users.save ERROR: %s", e)
+                log.exception("Users.save ERROR: %s", e)
                 raise
 
-    async def set_status(self, user: AppUser, status: UserStatus) -> AppUser:
+    async def set_status(self, user: AppUser, status_value: UserStatus) -> AppUser:
         """
         Cambia el estatus lógico del usuario y persiste el cambio.
         """
         async with self._session_scope() as session:
-            await self._ping_db(session, timeout_ms=2000)
-            await self._apply_stmt_timeout(session, timeout_ms=5000)
+            await self._pre_query_guards(session, stmt_timeout_ms=5000)
 
             repo = UserRepository(session)
             try:
-                updated = await repo.set_status(user, status)
+                updated = await repo.set_status(user, status_value)
                 log.info(
                     "Users.set_status ← usuario %s ahora en estado %s",
                     getattr(updated, "user_id", None),
-                    status,
+                    status_value,
                 )
                 return updated
             except Exception as e:
-                log.error("Users.set_status ERROR: %s", e)
+                log.exception("Users.set_status ERROR: %s", e)
                 raise
 
     # -------------------------- Helpers de estado ---------------------------
@@ -302,15 +348,14 @@ class UserService:
         """
         Verifica si el usuario está activo según UserStatus.
         """
-        status_value = getattr(user, "user_status", None)
-        if status_value is None:
+        status_field = getattr(user, "user_status", None)
+        if status_field is None:
             # Fallback: si no hay campo de estado, asumimos activo
             return True
         try:
-            return status_value == UserStatus.active
+            return status_field == UserStatus.active
         except Exception:
-            # En caso de que user_status no sea un enum pero sí un str/int compatible
-            return str(status_value) == getattr(UserStatus.active, "value", "active")
+            return str(status_field) == getattr(UserStatus.active, "value", "active")
 
 
 # ---------------------- Helper retro-compatible ----------------------
@@ -323,6 +368,10 @@ async def get_current_user_from_token(
     """
     Decodifica el JWT, recupera el usuario y valida que esté activo.
     Mantiene compatibilidad con código legado que dependía de este helper.
+
+    SSOT:
+      - sub debería ser auth_user_id (UUID).
+      - fallback legacy: sub puede ser user_id (INT) durante transición.
     """
     try:
         payload = decode_access_token(token)
@@ -332,12 +381,28 @@ async def get_current_user_from_token(
             detail="Token inválido o expirado",
         ) from e
 
-    user_id = payload.get("sub")
-    if not user_id:
+    sub = payload.get("sub")
+    if not sub:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token sin 'sub'")
 
     repo = UserRepository(session)
-    user = await repo.get_by_id(user_id)
+
+    # 1) Intentar SSOT (UUID)
+    user: Optional[AppUser] = None
+    try:
+        auth_user_id = PyUUID(str(sub))
+        user = await repo.get_by_auth_user_id(auth_user_id)
+    except Exception:
+        user = None
+
+    # 2) Fallback legacy (INT)
+    if user is None:
+        try:
+            user_id_int = int(str(sub))
+            user = await repo.get_by_id(user_id_int)
+        except Exception:
+            user = None
+
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
 
@@ -351,6 +416,7 @@ async def get_current_user_from_token(
 __all__ = ["UserService", "get_current_user_from_token"]
 
 # Fin del script backend/app/modules/auth/services/user_service.py
+
 
 
 
