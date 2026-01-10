@@ -29,7 +29,7 @@ from app.modules.projects.schemas import (
     ProjectResponse,
 )
 from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_user_id_and_email
+from app.shared.auth_context import extract_auth_user_id_and_email
 
 router = APIRouter(tags=["projects:crud"])
 
@@ -76,9 +76,9 @@ async def create_project(
     """
     Crea un proyecto nuevo para el usuario autenticado.
     """
-    uid, uemail = extract_user_id_and_email(user)
+    auth_uid, uemail = extract_auth_user_id_and_email(user)
     project = await svc.create_project(
-        user_id=uid,
+        auth_user_id=auth_uid,
         user_email=uemail,
         project_name=payload.project_name,
         project_slug=payload.project_slug,
@@ -101,7 +101,7 @@ async def get_project_by_id(
     Devuelve un proyecto por su ID, validando pertenencia del usuario.
     BD 2.0 SSOT: ownership se valida contra auth_user_id (UUID).
     """
-    uid, _ = extract_user_id_and_email(user)
+    auth_uid, _ = extract_auth_user_id_and_email(user)
     project = await q.get_project_by_id(project_id)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
@@ -109,7 +109,7 @@ async def get_project_by_id(
     # BD 2.0 SSOT: comparar con auth_user_id (UUID)
     project_owner = project.get("auth_user_id") if isinstance(project, dict) else getattr(project, "auth_user_id", None)
     # Normalizar a string para comparación (puede venir como UUID o str)
-    if str(project_owner) != str(uid):
+    if str(project_owner) != str(auth_uid):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
     return _coerce_to_project_read(project)
@@ -130,7 +130,7 @@ def get_project_by_slug(
     Devuelve un proyecto por su slug, validando pertenencia del usuario.
     BD 2.0 SSOT: ownership se valida contra auth_user_id (UUID).
     """
-    uid, _ = extract_user_id_and_email(user)
+    auth_uid, _ = extract_auth_user_id_and_email(user)
     project = q.get_project_by_slug(slug)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
@@ -138,7 +138,7 @@ def get_project_by_slug(
     # BD 2.0 SSOT: comparar con auth_user_id (UUID)
     project_owner = project.get("auth_user_id") if isinstance(project, dict) else getattr(project, "auth_user_id", None)
     # Normalizar a string para comparación (puede venir como UUID o str)
-    if str(project_owner) != str(uid):
+    if str(project_owner) != str(auth_uid):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
     return _coerce_to_project_read(project)
@@ -158,10 +158,10 @@ async def update_project(
     """
     Actualiza metadatos del proyecto (nombre/ descripción). Requiere propiedad.
     """
-    uid, uemail = extract_user_id_and_email(user)
+    auth_uid, uemail = extract_auth_user_id_and_email(user)
     project = await svc.update_project(
         project_id,
-        user_id=uid,
+        auth_user_id=auth_uid,
         user_email=uemail,
         **payload.model_dump(exclude_none=True),
     )
@@ -181,10 +181,10 @@ async def delete_project(
     """
     Elimina físicamente un proyecto. Normalmente reservado a tareas administrativas.
     """
-    uid, uemail = extract_user_id_and_email(user)
+    auth_uid, uemail = extract_auth_user_id_and_email(user)
     ok = await svc.delete(
         project_id,
-        user_id=uid,
+        auth_user_id=auth_uid,
         user_email=uemail,
     )
     return {"success": bool(ok), "message": "Proyecto eliminado" if ok else "No se pudo eliminar"}

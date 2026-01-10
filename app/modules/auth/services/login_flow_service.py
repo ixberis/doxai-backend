@@ -203,6 +203,7 @@ class LoginFlowService:
 
         # ─── Fase: DB Query (buscar usuario) con timings detallados ───
         user, db_timings = await self.user_service.get_by_email(email, return_timings=True)
+        timings["conn_checkout_ms"] = db_timings.get("conn_checkout_ms", 0)
         timings["db_prep_ms"] = db_timings.get("db_prep_ms", 0)
         timings["db_exec_ms"] = db_timings.get("db_exec_ms", 0)
         
@@ -412,10 +413,11 @@ class LoginFlowService:
         timings["total_ms"] = (time.perf_counter() - start_total) * 1000
         logger.info(
             "login_completed auth_user_id=%s "
-            "rate_limit_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+            "rate_limit_ms=%.2f conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
             "activation_check_ms=%.2f token_issue_ms=%.2f session_create_ms=%.2f total_ms=%.2f",
             str(user.auth_user_id)[:8] + "...",
             timings.get("rate_limit_ms", 0),
+            timings.get("conn_checkout_ms", 0),
             timings.get("db_prep_ms", 0),
             timings.get("db_exec_ms", 0),
             timings.get("password_verify_ms", 0),

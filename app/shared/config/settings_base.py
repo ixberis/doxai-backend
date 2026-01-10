@@ -38,8 +38,10 @@ class BaseAppSettings(BaseSettings):
     db_host: str = Field(default="localhost", validation_alias="DB_HOST")
     db_port: int = Field(default=5432, validation_alias="DB_PORT")
     db_name: str = Field(default="doxai", validation_alias="DB_NAME")
-    db_pool_size: int = Field(default=10, validation_alias="DB_POOL_SIZE")
-    db_pool_recycle: int = Field(default=180, validation_alias="DB_POOL_RECYCLE")
+    db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=5, validation_alias="DB_MAX_OVERFLOW")
+    db_pool_timeout: int = Field(default=5, validation_alias="DB_POOL_TIMEOUT")
+    db_pool_recycle: int = Field(default=1800, validation_alias="DB_POOL_RECYCLE")
     db_pool_pre_ping: bool = Field(default=True, validation_alias="DB_POOL_PRE_PING")
     db_echo_sql: bool = Field(default=False, validation_alias="DB_ECHO_SQL")
     db_sslmode: str = Field(default="prefer", validation_alias="DB_SSLMODE")  # prefer|require|disable

@@ -4,10 +4,13 @@ from __future__ import annotations
 backend/app/shared/database/database.py
 
 SQLAlchemy + asyncpg detrás de PgBouncer (6543), sin prepared/statement cache.
-TLS habilitado. NullPool en la app; el pool lo maneja PgBouncer.
+TLS habilitado. Pool cliente (QueuePool) para reutilizar conexiones hacia PgBouncer.
+
+Fase C: Se reemplaza NullPool por QueuePool para eliminar el churn de conexiones
+y reducir latencia de login de ~10s a <1s.
 
 Provee:
-- engine (create_async_engine)
+- engine (create_async_engine con QueuePool)
 - SessionLocal (async_sessionmaker)
 - Base (DeclarativeBase con naming convention para Alembic)
 - Dependencias FastAPI: get_async_session / get_db
@@ -17,6 +20,7 @@ Provee:
 Notas:
 - Se añaden timeouts a nivel de conexión (asyncpg: timeout, command_timeout).
 - Se aplica SET SESSION statement_timeout al abrir cada sesión (configurable).
+- QueuePool con pool_pre_ping=True valida conexiones antes de reusar.
 """
 
 import os
@@ -45,7 +49,7 @@ except Exception:  # pragma: no cover
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import QueuePool
 
 from app.shared.config import settings
 
@@ -57,13 +61,6 @@ if sys.platform.startswith("win"):
         pass
 
 logger = logging.getLogger("uvicorn.error")
-
-# Silenciar errores ruidosos de cierre de conexiones de NullPool
-try:
-    nullpool_logger = logging.getLogger("sqlalchemy.pool.impl.NullPool")
-    nullpool_logger.setLevel(logging.CRITICAL)
-except Exception:
-    pass
 
 
 # ── Helper para normalizar settings a str (maneja SecretStr, None, ints, etc.)
@@ -134,6 +131,21 @@ else:
     DB_COMMAND_TIMEOUT_S: float = float(getattr(settings, "db_command_timeout_s", 5.0))
     DB_SESSION_STATEMENT_TIMEOUT_MS = int(getattr(settings, "db_session_statement_timeout_ms", 5000))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Fase C: Pool cliente (QueuePool) hacia PgBouncer
+    # ══════════════════════════════════════════════════════════════════════════
+    # - pool_size: conexiones permanentes en el pool del cliente
+    # - max_overflow: conexiones adicionales temporales bajo carga
+    # - pool_timeout: segundos máximos esperando una conexión del pool
+    # - pool_recycle: segundos antes de reciclar conexiones (evita stale)
+    # - pool_pre_ping: valida conexión antes de reusar (evita errores de conn cerrada)
+    # ══════════════════════════════════════════════════════════════════════════
+    DB_POOL_SIZE: int = int(getattr(settings, "db_pool_size", 5))
+    DB_MAX_OVERFLOW: int = int(getattr(settings, "db_max_overflow", 5))
+    DB_POOL_TIMEOUT: int = int(getattr(settings, "db_pool_timeout", 5))
+    DB_POOL_RECYCLE: int = int(getattr(settings, "db_pool_recycle", 1800))
+    DB_POOL_PRE_PING: bool = bool(getattr(settings, "db_pool_pre_ping", True))
+
     # DSN asyncpg para PgBouncer/Supabase (puerto 6543)
     ASYNC_DSN = (
         f"postgresql+asyncpg://"
@@ -145,7 +157,8 @@ else:
     log_level = logger.debug if DB_ECHO_SQL else logger.info
     log_level(
         f"[DB] Conectando a PgBouncer → {DB_HOST}:{DB_PORT}/{DB_NAME} "
-        f"(asyncpg, echo={DB_ECHO_SQL}, tls={DB_TLS_ENABLED}, tls_verify={DB_TLS_VERIFY})"
+        f"(asyncpg, echo={DB_ECHO_SQL}, tls={DB_TLS_ENABLED}, tls_verify={DB_TLS_VERIFY}, "
+        f"pool_size={DB_POOL_SIZE}, max_overflow={DB_MAX_OVERFLOW}, pool_pre_ping={DB_POOL_PRE_PING})"
     )
 
 
@@ -184,7 +197,7 @@ else:
     ssl_context = build_ssl_context() if DB_TLS_ENABLED else None
 
 
-    # ── Engine (sin pool app-side; PgBouncer se encarga del pooling)
+    # ── Engine con QueuePool (pool cliente hacia PgBouncer)
     def _prepared_statement_name_func() -> str:
         return f"__asyncpg_{uuid4().hex[:8]}__"
 
@@ -201,13 +214,29 @@ else:
     if DB_TLS_ENABLED and ssl_context is not None:
         connect_args["ssl"] = ssl_context
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Fase C: QueuePool explícito con parámetros configurables
+    # - Elimina NullPool para reutilizar conexiones hacia PgBouncer
+    # - pool_pre_ping=True valida conexión antes de checkout
+    # - Compatibilidad PgBouncer: statement_cache_size=0
+    # ══════════════════════════════════════════════════════════════════════════
     engine = create_async_engine(
         ASYNC_DSN,
-        poolclass=NullPool,
-        pool_pre_ping=False,
+        poolclass=QueuePool,  # Explícito (Ajuste B)
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_MAX_OVERFLOW,
+        pool_timeout=DB_POOL_TIMEOUT,
+        pool_recycle=DB_POOL_RECYCLE,
+        pool_pre_ping=DB_POOL_PRE_PING,
         echo=DB_ECHO_SQL,
         execution_options={"prepared_statement_cache_size": 0},
         connect_args=connect_args,
+    )
+
+    logger.info(
+        f"[DB] Engine creado con QueuePool: pool_size={DB_POOL_SIZE}, "
+        f"max_overflow={DB_MAX_OVERFLOW}, pool_timeout={DB_POOL_TIMEOUT}s, "
+        f"pool_recycle={DB_POOL_RECYCLE}s, pool_pre_ping={DB_POOL_PRE_PING}"
     )
 
     SessionLocal = async_sessionmaker(

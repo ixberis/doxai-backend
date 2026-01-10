@@ -4,14 +4,14 @@
 Servicios in-memory para pruebas de rutas del módulo Projects.
 No tocan DB ni facades. Devuelven datos deterministas a partir de los IDs.
 
-Actualizado: 2025-12-27
+Actualizado: 2026-01-10
+- BD 2.0 SSOT: Migrado de user_id (int) a auth_user_id (UUID)
 - Convertido a async para compatibilidad con rutas async
 - Añadido list_active_projects y list_closed_projects
 - Añadido DummyFacade con list_file_events_seek para cursor pagination
 - Corregido retorno de list_projects_by_user y list_ready_projects
 - Corregido event_type para usar solo valores válidos del enum
 - Normalización de datetimes a UTC-aware para evitar comparaciones naive/aware
-- user_id ahora es int (no UUID)
 
 Autor: Ixchel Beristain
 """
@@ -24,6 +24,10 @@ from decimal import Decimal
 
 from app.modules.projects.enums import ProjectState, ProjectStatus
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
+
+
+# Default auth_user_id for tests (BD 2.0 SSOT)
+DEFAULT_AUTH_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 # =============================================================================
@@ -53,10 +57,11 @@ class DummyFacade:
     Facade dummy para simular list_file_events_seek en tests.
     El router llama q.facade.list_file_events_seek(...) para cursor pagination.
     Ahora async para compatibilidad con rutas async.
+    BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id (int).
     """
 
-    def __init__(self, default_user_id: int):
-        self.default_user_id = default_user_id
+    def __init__(self, default_auth_user_id: UUID):
+        self.default_auth_user_id = default_auth_user_id
         # Almacén de eventos para tests de cursor
         self._events: List[Dict[str, Any]] = []
         self._init_seed_events()
@@ -65,7 +70,7 @@ class DummyFacade:
         """
         Crea 3 eventos ordenables para probar cursor seek.
         
-        Nota: user_id y user_email son Optional[UUID] y Optional[EmailStr] en el schema
+        Nota: auth_user_id y user_email son Optional[UUID] y Optional[EmailStr] en el schema
         (ProjectFileEventLogRead líneas 54-60), por lo que None es válido para eventos
         generados por el sistema.
         """
@@ -79,47 +84,35 @@ class DummyFacade:
             {
                 "id": UUID("33333333-3333-3333-3333-333333333331"),
                 "project_id": base_project_id,
-                "project_file_id": base_file_id,
-                "project_file_id_snapshot": base_file_id,  # Required by schema
-                "user_id": None,  # Sistema
+                "file_id": base_file_id,
+                "event_type": ProjectFileEvent.UPLOADED.value,
+                "event_details": "File uploaded",
+                "event_metadata": {},
+                "auth_user_id": None,  # BD 2.0 SSOT
                 "user_email": None,
-                "event_type": ProjectFileEvent.UPLOADED.value,  # "uploaded"
-                "event_details": {"action": "upload_1"},
-                "project_file_name_snapshot": "file1.pdf",
-                "project_file_path_snapshot": "/files/file1.pdf",
-                "project_file_size_kb_snapshot": Decimal("100.00"),
-                "project_file_checksum_snapshot": "checksum1",
-                "created_at": now - timedelta(hours=3),  # Más viejo
+                "created_at": now - timedelta(hours=3),
             },
             {
                 "id": UUID("33333333-3333-3333-3333-333333333332"),
                 "project_id": base_project_id,
-                "project_file_id": base_file_id,
-                "project_file_id_snapshot": base_file_id,
-                "user_id": None,
-                "user_email": None,
-                "event_type": ProjectFileEvent.VALIDATED.value,  # "validated"
-                "event_details": {"action": "validate_2"},
-                "project_file_name_snapshot": "file2.pdf",
-                "project_file_path_snapshot": "/files/file2.pdf",
-                "project_file_size_kb_snapshot": Decimal("200.00"),
-                "project_file_checksum_snapshot": "checksum2",
-                "created_at": now - timedelta(hours=2),  # Medio
+                "file_id": base_file_id,
+                "event_type": ProjectFileEvent.VALIDATED.value,
+                "event_details": "File validated",
+                "event_metadata": {},
+                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
+                "user_email": "test@example.com",
+                "created_at": now - timedelta(hours=2),
             },
             {
                 "id": UUID("33333333-3333-3333-3333-333333333333"),
                 "project_id": base_project_id,
-                "project_file_id": base_file_id,
-                "project_file_id_snapshot": base_file_id,
-                "user_id": None,
-                "user_email": None,
-                "event_type": ProjectFileEvent.MOVED.value,  # "moved"
-                "event_details": {"action": "move_3"},
-                "project_file_name_snapshot": "file3.pdf",
-                "project_file_path_snapshot": "/files/file3.pdf",
-                "project_file_size_kb_snapshot": Decimal("300.00"),
-                "project_file_checksum_snapshot": "checksum3",
-                "created_at": now - timedelta(hours=1),  # Más nuevo
+                "file_id": base_file_id,
+                "event_type": ProjectFileEvent.MOVED.value,
+                "event_details": "File moved",
+                "event_metadata": {"old_path": "/a", "new_path": "/b"},
+                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
+                "user_email": "test@example.com",
+                "created_at": now - timedelta(hours=1),
             },
         ]
 
@@ -127,26 +120,26 @@ class DummyFacade:
         self,
         project_id: UUID,
         *,
-        after_created_at: Optional[datetime] = None,
+        after_created_at=None,
         after_id: Optional[UUID] = None,
         event_type: Optional[str] = None,
         limit: int = 100,
-    ) -> Sequence[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
-        Simula cursor seek: (created_at DESC, id DESC).
-        Filtra eventos donde (created_at, id) < (after_created_at, after_id).
-        Normaliza datetimes a UTC-aware para comparaciones seguras.
+        Cursor pagination: devuelve eventos cuyo (created_at, id) < (after_created_at, after_id).
+        Ordenados por created_at DESC, id DESC.
+        Usa _as_utc_aware para normalizar datetimes y evitar comparaciones naive/aware.
         """
-        # Ordenar por (created_at DESC, id DESC) usando datetimes normalizados
+        events = self._events[:]
+        if event_type is not None:
+            events = [e for e in events if e.get("event_type") == event_type]
+
+        # Ordenar descendente por (created_at, id)
         sorted_events = sorted(
-            self._events,
+            events,
             key=lambda e: (_as_utc_aware(e["created_at"]), e["id"]),
             reverse=True,
         )
-
-        # Filtrar por event_type si se especifica
-        if event_type is not None:
-            sorted_events = [e for e in sorted_events if e.get("event_type") == event_type]
 
         # Aplicar cursor seek
         if after_created_at is not None and after_id is not None:
@@ -185,12 +178,16 @@ class DummyFacade:
 # =============================================================================
 
 class InMemoryProjectsQueryService:
-    """Implementa solo lo que las rutas usan en tests. Ahora async."""
+    """
+    Implementa solo lo que las rutas usan en tests. Ahora async.
+    BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id (int).
+    """
 
-    def __init__(self, default_user_id: Optional[int] = None):
-        self.default_user_id = default_user_id or 1
+    def __init__(self, default_user_id: Optional[UUID] = None):
+        # BD 2.0 SSOT: default_user_id es ahora UUID (auth_user_id)
+        self.default_auth_user_id = default_user_id or DEFAULT_AUTH_USER_ID
         # Facade dummy para cursor pagination
-        self.facade = DummyFacade(self.default_user_id)
+        self.facade = DummyFacade(self.default_auth_user_id)
         # Proyectos semilla para tests
         self._projects = self._init_seed_projects()
 
@@ -202,7 +199,7 @@ class InMemoryProjectsQueryService:
             {
                 "id": UUID("00000000-0000-0000-0000-000000000001"),
                 "project_id": UUID("00000000-0000-0000-0000-000000000001"),
-                "user_id": self.default_user_id,
+                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
                 "user_email": "test@example.com",
                 "project_name": "Active Project 1",
                 "project_slug": "active-proj-1",
@@ -218,7 +215,7 @@ class InMemoryProjectsQueryService:
             {
                 "id": UUID("00000000-0000-0000-0000-000000000002"),
                 "project_id": UUID("00000000-0000-0000-0000-000000000002"),
-                "user_id": self.default_user_id,
+                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
                 "user_email": "test@example.com",
                 "project_name": "Ready Project",
                 "project_slug": "ready-proj",
@@ -234,7 +231,7 @@ class InMemoryProjectsQueryService:
             {
                 "id": UUID("00000000-0000-0000-0000-000000000003"),
                 "project_id": UUID("00000000-0000-0000-0000-000000000003"),
-                "user_id": self.default_user_id,
+                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
                 "user_email": "test@example.com",
                 "project_name": "Archived Project",
                 "project_slug": "archived-proj",
@@ -263,7 +260,7 @@ class InMemoryProjectsQueryService:
         return {
             "id": project_id,
             "project_id": project_id,
-            "user_id": self.default_user_id,
+            "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
             "user_email": "test@example.com",
             "project_name": "Test Project",
             "project_slug": f"proj-{str(project_id)[:8]}",
@@ -286,7 +283,7 @@ class InMemoryProjectsQueryService:
         return {
             "id": UUID("00000000-0000-0000-0000-000000000099"),
             "project_id": UUID("00000000-0000-0000-0000-000000000099"),
-            "user_id": self.default_user_id,
+            "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
             "user_email": "test@example.com",
             "project_name": "Test Project by Slug",
             "project_slug": slug,
@@ -301,7 +298,7 @@ class InMemoryProjectsQueryService:
 
     async def list_projects_by_user(
         self,
-        user_id=None,
+        auth_user_id: Optional[UUID] = None,
         *,
         user_email: Optional[str] = None,
         state: Optional[str] = None,
@@ -313,13 +310,13 @@ class InMemoryProjectsQueryService:
         """
         Lista proyectos del usuario.
         Retorna: (items, total) si include_total=True, else items
-        Acepta user_id o user_email para filtrado.
+        BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id.
         """
         items = self._projects[:]
         if user_email is not None:
             items = [p for p in items if p.get("user_email") == user_email]
-        elif user_id is not None:
-            items = [p for p in items if p["user_id"] == user_id]
+        elif auth_user_id is not None:
+            items = [p for p in items if p["auth_user_id"] == auth_user_id]
         if state is not None:
             items = [p for p in items if p["state"] == state]
         if status is not None:
@@ -334,7 +331,7 @@ class InMemoryProjectsQueryService:
 
     async def list_ready_projects(
         self,
-        user_id=None,
+        auth_user_id: Optional[UUID] = None,
         *,
         user_email: Optional[str] = None,
         include_total: bool = False,
@@ -344,13 +341,13 @@ class InMemoryProjectsQueryService:
         """
         Lista proyectos en estado READY.
         Retorna: (items, total) si include_total=True, else items
-        Acepta user_id o user_email para filtrado.
+        BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id.
         """
         items = [p for p in self._projects if p["state"] == ProjectState.READY.value]
         if user_email is not None:
             items = [p for p in items if p.get("user_email") == user_email]
-        elif user_id is not None:
-            items = [p for p in items if p["user_id"] == user_id]
+        elif auth_user_id is not None:
+            items = [p for p in items if p["auth_user_id"] == auth_user_id]
 
         total = len(items)
         items = items[offset : offset + limit]
@@ -361,10 +358,9 @@ class InMemoryProjectsQueryService:
 
     async def list_active_projects(
         self,
-        user_id=None,
+        auth_user_id: Optional[UUID] = None,
         *,
         user_email: Optional[str] = None,
-        auth_user_id: Optional[str] = None,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
@@ -375,15 +371,15 @@ class InMemoryProjectsQueryService:
         Lista proyectos activos (state != ARCHIVED) con ordenamiento.
         Siempre retorna Tuple[items, total].
         Usa _as_utc_aware para comparaciones seguras de datetimes.
-        Acepta user_id o user_email para filtrado.
+        BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id.
         """
         items = [
             p for p in self._projects
             if p["state"] != ProjectState.ARCHIVED.value
             and (
                 (user_email is not None and p.get("user_email") == user_email)
-                or (user_id is not None and p["user_id"] == user_id)
-                or (user_email is None and user_id is None)
+                or (auth_user_id is not None and p["auth_user_id"] == auth_user_id)
+                or (user_email is None and auth_user_id is None)
             )
         ]
 
@@ -406,10 +402,9 @@ class InMemoryProjectsQueryService:
 
     async def list_closed_projects(
         self,
-        user_id=None,
+        auth_user_id: Optional[UUID] = None,
         *,
         user_email: Optional[str] = None,
-        auth_user_id: Optional[str] = None,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
@@ -420,15 +415,15 @@ class InMemoryProjectsQueryService:
         Lista proyectos cerrados (state == ARCHIVED) con ordenamiento.
         Siempre retorna Tuple[items, total].
         Usa _as_utc_aware para comparaciones seguras de datetimes.
-        Acepta user_id o user_email para filtrado.
+        BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id.
         """
         items = [
             p for p in self._projects
             if p["state"] == ProjectState.ARCHIVED.value
             and (
                 (user_email is not None and p.get("user_email") == user_email)
-                or (user_id is not None and p["user_id"] == user_id)
-                or (user_email is None and user_id is None)
+                or (auth_user_id is not None and p["auth_user_id"] == auth_user_id)
+                or (user_email is None and auth_user_id is None)
             )
         ]
 
@@ -452,7 +447,7 @@ class InMemoryProjectsQueryService:
     async def list_files(
         self,
         project_id: UUID,
-        user_id: int = None,
+        auth_user_id: UUID = None,
         include_total: bool = False,
         limit: int = 100,
         offset: int = 0,
@@ -484,7 +479,7 @@ class InMemoryProjectsQueryService:
             {
                 "id": UUID("22222222-2222-2222-2222-222222222222"),
                 "project_id": project_id,
-                "user_id": None,
+                "auth_user_id": None,  # BD 2.0 SSOT
                 "user_email": None,
                 "action_type": "updated",
                 "action_details": "Updated field name",
@@ -536,7 +531,10 @@ class InMemoryProjectsQueryService:
 # =============================================================================
 
 class InMemoryProjectsCommandService:
-    """Implementa solo lo que las rutas usan en tests (update/delete/status/state/archive). Ahora async."""
+    """
+    Implementa solo lo que las rutas usan en tests (update/delete/status/state/archive). Ahora async.
+    BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id (int).
+    """
 
     def __init__(self):
         # simulamos un pequeño "almacén" de proyectos tocados durante la sesión del test
@@ -544,7 +542,7 @@ class InMemoryProjectsCommandService:
 
     async def create_project(
         self,
-        user_id: int,
+        auth_user_id: UUID,  # BD 2.0 SSOT
         user_email: str,
         project_name: str,
         project_slug: str,
@@ -555,7 +553,7 @@ class InMemoryProjectsCommandService:
         p = {
             "id": project_id,
             "project_id": project_id,
-            "user_id": user_id,
+            "auth_user_id": auth_user_id,  # BD 2.0 SSOT
             "user_email": user_email,
             "project_name": project_name,
             "project_slug": project_slug,
@@ -571,9 +569,9 @@ class InMemoryProjectsCommandService:
         return p
 
     async def update_project(
-        self, project_id: UUID, user_id: int, user_email: str, **kwargs
+        self, project_id: UUID, auth_user_id: UUID, user_email: str, **kwargs
     ) -> Dict[str, Any]:
-        p = self._store.get(project_id) or (await InMemoryProjectsQueryService(user_id).get_project_by_id(project_id))
+        p = self._store.get(project_id) or (await InMemoryProjectsQueryService(auth_user_id).get_project_by_id(project_id))
         d = dict(p)
         for k, v in kwargs.items():
             if v is not None:
@@ -582,14 +580,14 @@ class InMemoryProjectsCommandService:
         self._store[project_id] = d
         return d
 
-    async def delete(self, project_id: UUID, user_id: int, user_email: str) -> bool:
+    async def delete(self, project_id: UUID, auth_user_id: UUID, user_email: str) -> bool:
         self._store.pop(project_id, None)
         return True
 
     async def change_status(
-        self, project_id: UUID, user_id: int, user_email: str, new_status: ProjectStatus
+        self, project_id: UUID, auth_user_id: UUID, user_email: str, new_status: ProjectStatus
     ) -> Dict[str, Any]:
-        p = self._store.get(project_id) or (await InMemoryProjectsQueryService(user_id).get_project_by_id(project_id))
+        p = self._store.get(project_id) or (await InMemoryProjectsQueryService(auth_user_id).get_project_by_id(project_id))
         d = dict(p)
         d["status"] = new_status.value if hasattr(new_status, "value") else str(new_status)
         d["updated_at"] = datetime.now(timezone.utc)
@@ -597,22 +595,22 @@ class InMemoryProjectsCommandService:
         return d
 
     async def transition_state(
-        self, project_id: UUID, user_id: int, user_email: str, to_state: ProjectState
+        self, project_id: UUID, auth_user_id: UUID, user_email: str, to_state: ProjectState
     ) -> Dict[str, Any]:
-        p = self._store.get(project_id) or (await InMemoryProjectsQueryService(user_id).get_project_by_id(project_id))
+        p = self._store.get(project_id) or (await InMemoryProjectsQueryService(auth_user_id).get_project_by_id(project_id))
         d = dict(p)
         d["state"] = to_state.value if hasattr(to_state, "value") else str(to_state)
         d["updated_at"] = datetime.now(timezone.utc)
         self._store[project_id] = d
         return d
 
-    async def archive(self, project_id: UUID, user_id: int, user_email: str) -> Dict[str, Any]:
-        return await self.transition_state(project_id, user_id, user_email, ProjectState.ARCHIVED)
+    async def archive(self, project_id: UUID, auth_user_id: UUID, user_email: str) -> Dict[str, Any]:
+        return await self.transition_state(project_id, auth_user_id, user_email, ProjectState.ARCHIVED)
 
     async def add_file(
         self,
         project_id: UUID,
-        user_id: int,
+        auth_user_id: UUID,  # BD 2.0 SSOT
         user_email: str,
         path: str,
         filename: str,
@@ -632,15 +630,15 @@ class InMemoryProjectsCommandService:
             checksum=checksum,
         )
 
-    async def validate_file(self, file_id: UUID, user_id: int, user_email: str):
+    async def validate_file(self, file_id: UUID, auth_user_id: UUID, user_email: str):
         """Devuelve objeto con atributo .id"""
         return SimpleNamespace(id=file_id, validated=True)
 
-    async def move_file(self, file_id: UUID, user_id: int, user_email: str, new_path: str):
+    async def move_file(self, file_id: UUID, auth_user_id: UUID, user_email: str, new_path: str):
         """Devuelve objeto con atributos .id y .path"""
         return SimpleNamespace(id=file_id, path=new_path)
 
-    async def delete_file(self, file_id: UUID, user_id: int, user_email: str) -> bool:
+    async def delete_file(self, file_id: UUID, auth_user_id: UUID, user_email: str) -> bool:
         return True
 
 

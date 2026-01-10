@@ -158,7 +158,13 @@ class UserService:
             raise
 
     async def _apply_stmt_timeout(self, session: AsyncSession, timeout_ms: int = 3000) -> None:
-        """Aplica SET LOCAL statement_timeout para la consulta principal."""
+        """
+        Aplica SET LOCAL statement_timeout para la consulta principal.
+        
+        Nota: SET LOCAL solo tiene efecto dentro de una transacción explícita.
+        En PgBouncer transaction pooling sin BEGIN, esto puede ser no-op.
+        Para garantizar efecto, el caller puede usar `async with session.begin():`.
+        """
         try:
             await session.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
             log.debug("statement_timeout local aplicado: %d ms", timeout_ms)
@@ -196,6 +202,7 @@ class UserService:
         Args:
             email: Email del usuario a buscar
             return_timings: Si True, retorna (user, timings_dict) con:
+                - conn_checkout_ms: tiempo de checkout de conexión del pool
                 - db_prep_ms: tiempo de preparación (session scope + pre_query_guards)
                 - db_exec_ms: tiempo de ejecución del query SQL
                 - db_total_ms: tiempo total de la operación
@@ -211,12 +218,19 @@ class UserService:
         norm_email = (email or "").strip().lower()
         if not norm_email:
             if return_timings:
-                return None, {"db_prep_ms": 0, "db_exec_ms": 0, "db_total_ms": 0}
+                return None, {"conn_checkout_ms": 0, "db_prep_ms": 0, "db_exec_ms": 0, "db_total_ms": 0}
             return None
 
         # ─── t1: Medir tiempo de preparación (session scope + pre_query_guards) ───
         t1_pre_session = time.perf_counter()
         async with self._session_scope() as session:
+            # ─── Fase C: Medir conn_checkout_ms (tiempo de obtener conexión del pool) ───
+            # Siempre forzar checkout para medir latencia real del pool
+            t_checkout_start = time.perf_counter()
+            await session.connection()  # fuerza checkout de conexión del pool
+            t_checkout_end = time.perf_counter()
+            timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
+            
             await self._pre_query_guards(session, stmt_timeout_ms=3000)
             t2_session_ready = time.perf_counter()
             timings["db_prep_ms"] = (t2_session_ready - t1_pre_session) * 1000
@@ -231,8 +245,9 @@ class UserService:
                 timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
                 
                 log.debug(
-                    "Users.get_by_email ok email=%s db_prep_ms=%.2f db_exec_ms=%.2f",
+                    "Users.get_by_email ok email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f",
                     _mask_email(norm_email),
+                    timings.get("conn_checkout_ms", 0),
                     timings["db_prep_ms"],
                     timings["db_exec_ms"],
                 )
@@ -246,8 +261,9 @@ class UserService:
                 timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
                 
                 log.exception(
-                    "Users.get_by_email ERROR email=%s db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
+                    "Users.get_by_email ERROR email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
                     _mask_email(norm_email),
+                    timings.get("conn_checkout_ms", 0),
                     timings["db_prep_ms"],
                     timings["db_exec_ms"],
                     e,
