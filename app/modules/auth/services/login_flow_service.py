@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, Mapping, Optional
 
 from fastapi import HTTPException, status
@@ -153,12 +154,29 @@ class LoginFlowService:
             - recaptcha_token (ya validado antes por AuthService)
             - ip_address
             - user_agent
+        
+        Timing por fases (Bloque B):
+            - rate_limit_ms: verificación de rate limiting + backoff
+            - db_acquire_ms: tiempo para obtener conexión (pool checkout)
+            - db_exec_ms: tiempo de ejecución del SQL
+            - password_verify_ms: verificación de contraseña (Argon2)
+            - activation_check_ms: verificación de activación
+            - token_issue_ms: emisión de JWT
+            - session_create_ms: registro de sesión
+            - total_ms: tiempo total del login
         """
+        start_total = time.perf_counter()
+        timings: Dict[str, float] = {}
+        email_masked = ""  # Para logs en error (sin datos sensibles)
+        
         payload = as_dict(data)
         email = (payload.get("email") or "").strip().lower()
         password = payload.get("password", "")
         ip_address = payload.get("ip_address", "unknown")
         user_agent = payload.get("user_agent")
+        
+        # Mask email para logs (evita datos sensibles)
+        email_masked = email[:3] + "***" if len(email) > 3 else "***"
 
         if not email or not password:
             raise HTTPException(
@@ -166,8 +184,8 @@ class LoginFlowService:
                 detail="Email y contraseña son obligatorios.",
             )
 
-        # Rate limiting using RateLimitService as single source of truth
-        # Check email lockout (5/15min window)
+        # ─── Fase: Rate Limiting ───
+        rate_start = time.perf_counter()
         email_result = self._rate_limiter.check_and_consume(
             endpoint="auth:login",
             key_type="email",
@@ -179,13 +197,28 @@ class LoginFlowService:
                 retry_after=email_result.retry_after,
                 detail="Demasiados intentos de inicio de sesión. Intente más tarde.",
             )
-
         # Apply progressive backoff before checking credentials
         await self._apply_backoff(ip_address, email)
+        timings["rate_limit_ms"] = (time.perf_counter() - rate_start) * 1000
 
-        # Buscar usuario
-        user = await self.user_service.get_by_email(email)
+        # ─── Fase: DB Query (buscar usuario) con timings detallados ───
+        user, db_timings = await self.user_service.get_by_email(email, return_timings=True)
+        timings["db_prep_ms"] = db_timings.get("db_prep_ms", 0)
+        timings["db_exec_ms"] = db_timings.get("db_exec_ms", 0)
+        
         if not user:
+            # ─── Log login_failed con timings disponibles ───
+            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+            logger.warning(
+                "login_failed reason=user_not_found email=%s "
+                "rate_limit_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f total_ms=%.2f",
+                email_masked,
+                timings.get("rate_limit_ms", 0),
+                timings.get("db_prep_ms", 0),
+                timings.get("db_exec_ms", 0),
+                timings["total_ms"],
+            )
+            
             await self._record_login_attempt(
                 user=None,
                 success=False,
@@ -226,8 +259,25 @@ class LoginFlowService:
                 detail="Configuración de usuario inválida.",
             )
 
-        # Verificar contraseña
-        if not verify_password(password, password_hash):
+        # ─── Fase: Password Verify (Argon2) ───
+        pw_start = time.perf_counter()
+        password_valid = verify_password(password, password_hash)
+        timings["password_verify_ms"] = (time.perf_counter() - pw_start) * 1000
+        
+        if not password_valid:
+            # ─── Log login_failed con timings disponibles ───
+            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+            logger.warning(
+                "login_failed reason=invalid_credentials email=%s "
+                "rate_limit_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f total_ms=%.2f",
+                email_masked,
+                timings.get("rate_limit_ms", 0),
+                timings.get("db_prep_ms", 0),
+                timings.get("db_exec_ms", 0),
+                timings.get("password_verify_ms", 0),
+                timings["total_ms"],
+            )
+            
             await self._record_login_attempt(
                 user=user,
                 success=False,
@@ -246,8 +296,27 @@ class LoginFlowService:
                 detail="Credenciales inválidas.",
             )
 
-        # Verificar activación
-        if not await self.activation_service.is_active(user):
+        # ─── Fase: Activation Check ───
+        act_start = time.perf_counter()
+        is_active = await self.activation_service.is_active(user)
+        timings["activation_check_ms"] = (time.perf_counter() - act_start) * 1000
+        
+        if not is_active:
+            # ─── Log login_failed con timings disponibles ───
+            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+            logger.warning(
+                "login_failed reason=account_not_activated email=%s "
+                "rate_limit_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+                "activation_check_ms=%.2f total_ms=%.2f",
+                email_masked,
+                timings.get("rate_limit_ms", 0),
+                timings.get("db_prep_ms", 0),
+                timings.get("db_exec_ms", 0),
+                timings.get("password_verify_ms", 0),
+                timings.get("activation_check_ms", 0),
+                timings["total_ms"],
+            )
+            
             await self._record_login_attempt(
                 user=user,
                 success=False,
@@ -305,9 +374,14 @@ class LoginFlowService:
             user_agent=user_agent,
         )
 
+        # ─── Fase: Token Issue ───
+        token_start = time.perf_counter()
         # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT) - SIEMPRE
         tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
+        timings["token_issue_ms"] = (time.perf_counter() - token_start) * 1000
 
+        # ─── Fase: Session Create ───
+        session_start = time.perf_counter()
         # Multi-sesión: cada login crea nueva sesión (no revocamos anteriores)
         # BD 2.0: Pasar auth_user_id (UUID SSOT) - NOT NULL en user_sessions
         try:
@@ -332,6 +406,24 @@ class LoginFlowService:
                 user.user_id,
                 str(user.auth_user_id)[:8] + "...",
             )
+        timings["session_create_ms"] = (time.perf_counter() - session_start) * 1000
+
+        # ─── Log estructurado único con todas las fases ───
+        timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+        logger.info(
+            "login_completed auth_user_id=%s "
+            "rate_limit_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+            "activation_check_ms=%.2f token_issue_ms=%.2f session_create_ms=%.2f total_ms=%.2f",
+            str(user.auth_user_id)[:8] + "...",
+            timings.get("rate_limit_ms", 0),
+            timings.get("db_prep_ms", 0),
+            timings.get("db_exec_ms", 0),
+            timings.get("password_verify_ms", 0),
+            timings.get("activation_check_ms", 0),
+            timings.get("token_issue_ms", 0),
+            timings.get("session_create_ms", 0),
+            timings["total_ms"],
+        )
 
         return {
             "message": "Login exitoso.",

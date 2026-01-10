@@ -223,24 +223,30 @@ class ProfileService:
 
     # ---------- Créditos: balance y overview ----------
 
-    async def get_credits_balance(self, user_id: int) -> int:
+    async def get_credits_balance(self, user_id: int, auth_user_id: UUID = None) -> int:
         """
         Regresa el saldo actual de créditos.
 
+        BD 2.0 SSOT: La tabla wallets y credit_transactions usan auth_user_id (UUID),
+        no user_id (int). Se requiere pasar auth_user_id para consultas correctas.
+
         Prioridad:
           1) credits_gateway (si está inyectado)
-          2) Wallet denormalizada (BD 2.0): public.wallets.balance (lookup 1 fila)
-          3) Ledger credit_transactions (suma credits_delta) - fallback
-          4) 0 (best-effort)
+          2) Wallet denormalizada (BD 2.0): public.wallets.balance por auth_user_id
+          3) 0 (fallback_zero)
 
         IMPORTANTE:
         - Cada fallback hace rollback en caso de error para evitar que el
           request quede en estado "transaction aborted" (InFailedSQLTransactionError).
+        
+        Args:
+            user_id: ID interno del usuario (int) - para gateway legacy
+            auth_user_id: UUID canónico del usuario (SSOT BD 2.0) - requerido para DB
         """
         import time
         start = time.perf_counter()
 
-        # 1) Gateway inyectado
+        # 1) Gateway inyectado (puede usar user_id int legacy)
         if self.credits_gateway is not None:
             try:
                 balance = await self.credits_gateway.get_balance(user_id)
@@ -250,59 +256,49 @@ class ProfileService:
             except Exception as e:
                 logger.warning(f"[credits_gateway] get_balance falló: {e}")
 
-        # 2) Wallet denormalizada (BD 2.0): wallets
-        try:
-            stmt = text("SELECT balance FROM wallets WHERE user_id = :uid")
-            res = await self.db.execute(stmt, {"uid": user_id})
-            row = res.first()
-            if row and row[0] is not None:
-                balance = int(row[0])
-                duration_ms = (time.perf_counter() - start) * 1000
-                if duration_ms > 500:
-                    logger.warning(f"query_slow operation=get_credits_balance user_id={user_id} duration_ms={duration_ms:.2f}")
-                else:
-                    logger.debug(f"[credits] user_id={user_id} balance={balance} source=wallets duration_ms={duration_ms:.2f}")
-                return balance
-        except Exception as e:
-            # Rollback para no envenenar la transacción del request
+        # 2) Wallet denormalizada (BD 2.0): wallets.auth_user_id
+        if auth_user_id is not None:
             try:
-                await self.db.rollback()
-            except Exception:
-                pass
-            logger.debug(f"[credits] Wallet (wallets) no disponible, fallback a ledger: {e}")
-
-        # 3) Ledger SQL: suma de credit_transactions.credits_delta (fallback)
-        try:
-            stmt = text("SELECT COALESCE(SUM(credits_delta), 0) FROM credit_transactions WHERE user_id = :uid")
-            res = await self.db.execute(stmt, {"uid": user_id})
-            row = res.first()
-            if row and row[0] is not None:
-                balance = int(row[0])
-                duration_ms = (time.perf_counter() - start) * 1000
-                if duration_ms > 500:
-                    logger.warning(f"query_slow operation=get_credits_balance user_id={user_id} duration_ms={duration_ms:.2f}")
+                stmt = text("SELECT balance FROM public.wallets WHERE auth_user_id = :uid")
+                res = await self.db.execute(stmt, {"uid": auth_user_id})
+                row = res.first()
+                if row and row[0] is not None:
+                    balance = int(row[0])
+                    duration_ms = (time.perf_counter() - start) * 1000
+                    if duration_ms > 500:
+                        logger.warning(f"query_slow operation=get_credits_balance auth_user_id={str(auth_user_id)[:8]}... duration_ms={duration_ms:.2f}")
+                    else:
+                        logger.debug(f"[credits] auth_user_id={str(auth_user_id)[:8]}... balance={balance} source=wallets duration_ms={duration_ms:.2f}")
+                    return balance
                 else:
-                    logger.debug(f"[credits] user_id={user_id} balance={balance} source=ledger duration_ms={duration_ms:.2f}")
-                return balance
-        except Exception as e:
-            try:
-                await self.db.rollback()
-            except Exception:
-                pass
-            logger.info(f"[credits] No se pudo leer credit_transactions: {e}")
+                    # Wallet no existe para este usuario - balance 0
+                    duration_ms = (time.perf_counter() - start) * 1000
+                    logger.debug(f"[credits] auth_user_id={str(auth_user_id)[:8]}... balance=0 source=wallet_not_found duration_ms={duration_ms:.2f}")
+                    return 0
+            except Exception as e:
+                # Rollback para no envenenar la transacción del request
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"[credits] Wallet query failed, fallback to zero: {e}")
+        else:
+            logger.warning(f"[credits] auth_user_id not provided, cannot query wallets (user_id={user_id})")
 
-        # 4) Default best-effort (sin datos, sin error)
+        # 3) Default fallback (sin datos o sin auth_user_id)
         duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"[credits] user_id={user_id} balance=0 source=fallback_zero duration_ms={duration_ms:.2f}")
         return 0
 
-    async def get_credits_overview(self, user_id: int) -> CreditsOverviewDTO:
+    async def get_credits_overview(self, user_id: int, auth_user_id: UUID = None) -> CreditsOverviewDTO:
         """
         Devuelve un overview simple: balance y timestamps de última recarga/consumo.
 
+        BD 2.0 SSOT: credit_transactions usa auth_user_id (UUID).
+
         Prioridad:
           1) credits_gateway (si está)
-          2) Fallback SQL sobre credit_transactions (best-effort)
+          2) Fallback SQL sobre credit_transactions por auth_user_id
           3) balance=0 sin fechas
 
         Nota:
@@ -317,22 +313,25 @@ class ProfileService:
             except Exception as e:
                 logger.warning(f"[credits_gateway] get_overview falló: {e}")
 
-        overview = CreditsOverviewDTO(balance=await self.get_credits_balance(user_id))
+        overview = CreditsOverviewDTO(balance=await self.get_credits_balance(user_id, auth_user_id=auth_user_id))
 
-        # 2) Fallback SQL (best-effort)
+        # 2) Fallback SQL (best-effort) - BD 2.0 usa auth_user_id
+        if auth_user_id is None:
+            logger.debug(f"[credits_overview] auth_user_id not provided, skipping timestamp queries")
+            return overview
+
         try:
             # Heurística: usamos operation_code por compatibilidad común
-            # (SIGNUP_BONUS, TOP_UP, CONSUME, etc.). Si tu esquema difiere, no rompe.
             stmt_last_topup = text(
                 """
                 SELECT created_at
-                FROM credit_transactions
-                WHERE user_id = :uid AND (operation_code = 'SIGNUP_BONUS' OR operation_code ILIKE '%TOP%')
+                FROM public.credit_transactions
+                WHERE auth_user_id = :uid AND (operation_code = 'SIGNUP_BONUS' OR operation_code ILIKE '%TOP%')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
             )
-            res_topup = await self.db.execute(stmt_last_topup, {"uid": user_id})
+            res_topup = await self.db.execute(stmt_last_topup, {"uid": auth_user_id})
             row_topup = res_topup.first()
             if row_topup:
                 overview.last_top_up_at = row_topup[0]
@@ -340,13 +339,13 @@ class ProfileService:
             stmt_last_consume = text(
                 """
                 SELECT created_at
-                FROM credit_transactions
-                WHERE user_id = :uid AND operation_code ILIKE '%CONSUM%'
+                FROM public.credit_transactions
+                WHERE auth_user_id = :uid AND operation_code ILIKE '%CONSUM%'
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
             )
-            res_consume = await self.db.execute(stmt_last_consume, {"uid": user_id})
+            res_consume = await self.db.execute(stmt_last_consume, {"uid": auth_user_id})
             row_consume = res_consume.first()
             if row_consume:
                 overview.last_consume_at = row_consume[0]

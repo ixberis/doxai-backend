@@ -35,10 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 def _mask_email(email: str) -> str:
-    """Enmascara email para logging seguro (primeros 3 chars + ***)."""
-    if not email or len(email) < 4:
-        return "***"
-    return email[:3] + "***"
+    """Enmascara email para logging seguro: us***@dom***.com"""
+    e = (email or "").strip().lower()
+    if not e or "@" not in e:
+        return "***@***.***"
+    local, domain = e.split("@", 1)
+    masked_local = f"{local[:2]}***" if len(local) >= 2 else "***"
+    if "." in domain:
+        dom_parts = domain.rsplit(".", 1)
+        masked_domain = f"{dom_parts[0][:3]}***.{dom_parts[1]}"
+    else:
+        masked_domain = f"{domain[:3]}***"
+    return f"{masked_local}@{masked_domain}"
 
 
 class PasswordResetService:

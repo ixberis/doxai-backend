@@ -6,8 +6,13 @@ backend/app/modules/projects/models/project_models.py
 Modelo SQLAlchemy para proyectos de usuario en DoxAI.
 Usa ProjectState (ciclo operativo) y ProjectStatus (situación de negocio).
 
+BD 2.0 SSOT:
+- auth_user_id (UUID): Columna canónica de ownership (NOT NULL)
+- user_email: Mantener para compatibilidad/búsquedas (CITEXT)
+
 Autor: Ixchel Beristáin
 Fecha: 2025-10-24
+Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
 """
 
 from uuid import uuid4
@@ -37,6 +42,9 @@ class Project(Base):
     - status (ProjectStatus): Situación de negocio/administrativa
       (in_process, etc.)
 
+    BD 2.0 SSOT:
+    - auth_user_id: UUID del usuario propietario (SSOT canónico)
+
     Timestamps especiales:
     - ready_at: se setea cuando state transiciona a 'ready'
     - archived_at: se setea cuando state transiciona a 'archived'
@@ -47,9 +55,8 @@ class Project(Base):
     # Primary Key
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
 
-    # User Relationship - user_id es UUID (igual que auth.users.id)
-    # NOTA: projects.user_id es UUID según DDL de producción
-    user_id = Column(
+    # BD 2.0 SSOT: auth_user_id es el ownership canónico (UUID)
+    auth_user_id = Column(
         UUID(as_uuid=True),
         nullable=False,
         index=True,
@@ -114,8 +121,8 @@ class Project(Base):
 
     # Composite indexes for common queries
     __table_args__ = (
-        # Mejor pasar objetos columna que strings para evitar desfaces name/key
-        Index("idx_projects_user_state", user_id, state),
+        # BD 2.0: índice compuesto usa auth_user_id
+        Index("idx_projects_auth_user_state", auth_user_id, state),
         Index("idx_projects_state_status", state, status),
         # Parcial: prioriza proyectos listos por fecha de listo
         Index(

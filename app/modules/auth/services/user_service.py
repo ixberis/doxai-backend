@@ -51,11 +51,20 @@ def _is_callable(obj: Any) -> bool:
 
 
 def _mask_email(email: str) -> str:
+    """Enmascara email para logging seguro: us***@dom***.com"""
     e = (email or "").strip().lower()
     if not e or "@" not in e:
-        return "unknown"
+        return "***@***.***"
     local, domain = e.split("@", 1)
-    return f"{local[:3]}***@{domain}" if len(local) >= 3 else f"{local[:1]}***@{domain}"
+    # Truncar local part
+    masked_local = f"{local[:2]}***" if len(local) >= 2 else "***"
+    # Truncar dominio (preservar TLD)
+    if "." in domain:
+        dom_parts = domain.rsplit(".", 1)
+        masked_domain = f"{dom_parts[0][:3]}***.{dom_parts[1]}"
+    else:
+        masked_domain = f"{domain[:3]}***"
+    return f"{masked_local}@{masked_domain}"
 
 
 class UserService:
@@ -174,32 +183,75 @@ class UserService:
 
     # ----------------------------- Lecturas ---------------------------------
 
-    async def get_by_email(self, email: str) -> Optional[AppUser]:
+    async def get_by_email(
+        self, email: str, *, return_timings: bool = False
+    ) -> Optional[AppUser] | tuple[Optional[AppUser], dict]:
         """
         Obtiene un usuario por email (case-insensitive). Devuelve None si no existe.
 
         Performance:
           - En login normalmente se usa session prestada → NO hacemos ping preventivo.
           - statement_timeout se mantiene best-effort.
+          
+        Args:
+            email: Email del usuario a buscar
+            return_timings: Si True, retorna (user, timings_dict) con:
+                - db_prep_ms: tiempo de preparación (session scope + pre_query_guards)
+                - db_exec_ms: tiempo de ejecución del query SQL
+                - db_total_ms: tiempo total de la operación
+        
+        Returns:
+            AppUser o None (si return_timings=False)
+            (AppUser o None, timings_dict) (si return_timings=True)
         """
         import time
-        start = time.perf_counter()
+        t0_start = time.perf_counter()
+        timings: dict = {}
         
         norm_email = (email or "").strip().lower()
         if not norm_email:
+            if return_timings:
+                return None, {"db_prep_ms": 0, "db_exec_ms": 0, "db_total_ms": 0}
             return None
 
+        # ─── t1: Medir tiempo de preparación (session scope + pre_query_guards) ───
+        t1_pre_session = time.perf_counter()
         async with self._session_scope() as session:
             await self._pre_query_guards(session, stmt_timeout_ms=3000)
+            t2_session_ready = time.perf_counter()
+            timings["db_prep_ms"] = (t2_session_ready - t1_pre_session) * 1000
 
+            # ─── t2→t3: Medir tiempo de ejecución SQL ───
             repo = UserRepository(session)
-            query_start = time.perf_counter()
+            t3_pre_exec = time.perf_counter()
             try:
                 user = await repo.get_by_email(norm_email)
-                log.debug("Users.get_by_email ok (email=%s)", _mask_email(norm_email))
+                t4_post_exec = time.perf_counter()
+                timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
+                timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
+                
+                log.debug(
+                    "Users.get_by_email ok email=%s db_prep_ms=%.2f db_exec_ms=%.2f",
+                    _mask_email(norm_email),
+                    timings["db_prep_ms"],
+                    timings["db_exec_ms"],
+                )
+                
+                if return_timings:
+                    return user, timings
                 return user
             except Exception as e:
-                log.exception("Users.get_by_email ERROR email=%s error=%s", _mask_email(norm_email), e)
+                t4_post_exec = time.perf_counter()
+                timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
+                timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
+                
+                log.exception(
+                    "Users.get_by_email ERROR email=%s db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
+                    _mask_email(norm_email),
+                    timings["db_prep_ms"],
+                    timings["db_exec_ms"],
+                    e,
+                )
                 raise
 
     async def exists_by_email(self, email: str) -> bool:

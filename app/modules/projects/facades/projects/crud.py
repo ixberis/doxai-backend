@@ -5,8 +5,12 @@ backend/app/modules/projects/facades/projects/crud.py
 Operaciones CRUD de proyectos: create, update, delete.
 Incluye validación de slug y whitelist de campos.
 
+BD 2.0 SSOT:
+- auth_user_id: UUID canónico de ownership (reemplaza user_id legacy)
+
 Autor: Ixchel Beristain
 Fecha: 2025-10-26
+Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
 """
 
 from uuid import UUID
@@ -35,7 +39,7 @@ def create(
     db: Session,
     audit: AuditLogger,
     *,
-    user_id: UUID,
+    user_id: UUID,  # Parámetro legacy, se mapea a auth_user_id en BD 2.0
     user_email: str,
     name: str,
     slug: str,
@@ -51,10 +55,12 @@ def create(
     - Status inicial: in_process
     - Registra acción 'created' en auditoría
     
+    BD 2.0 SSOT: user_id param se mapea a auth_user_id column.
+    
     Args:
         db: Sesión SQLAlchemy
         audit: Logger de auditoría
-        user_id: ID del usuario propietario
+        user_id: UUID del usuario propietario (se almacena como auth_user_id)
         user_email: Email del usuario propietario
         name: Nombre del proyecto
         slug: Slug único del proyecto
@@ -77,9 +83,9 @@ def create(
         if existing:
             raise SlugAlreadyExists(normalized_slug)
         
-        # Crear proyecto con valores por defecto explícitos
+        # BD 2.0 SSOT: user_id param → auth_user_id column
         project = Project(
-            user_id=user_id,
+            auth_user_id=user_id,
             user_email=user_email,
             project_name=name,
             project_slug=normalized_slug,
@@ -116,7 +122,7 @@ def update(
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,
+    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
     user_email: str,
     enforce_owner: bool = True,
     **changes
@@ -127,11 +133,13 @@ def update(
     No debe usarse para cambiar state o status (usar métodos específicos).
     Solo permite actualizar campos de la lista blanca ALLOWED_UPDATE_FIELDS.
     
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    
     Args:
         db: Sesión SQLAlchemy
         audit: Logger de auditoría
         project_id: ID del proyecto a actualizar
-        user_id: ID del usuario que realiza la actualización
+        user_id: UUID del usuario que realiza la actualización
         user_email: Email del usuario que realiza la actualización
         enforce_owner: Si True, valida que user_id sea el propietario
         **changes: Campos a actualizar (ej. project_name, project_description)
@@ -146,8 +154,8 @@ def update(
     def _work():
         project = _get_for_update(db, project_id)
         
-        # Validar propiedad si se requiere
-        if enforce_owner and project.user_id != user_id:
+        # BD 2.0 SSOT: comparar con auth_user_id
+        if enforce_owner and project.auth_user_id != user_id:
             raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
         
         # Filtrar solo campos permitidos (lista blanca)
@@ -179,7 +187,7 @@ def delete(
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,
+    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
     user_email: str,
     enforce_owner: bool = True
 ) -> bool:
@@ -189,11 +197,13 @@ def delete(
     NOTA: Para eliminación de cara al usuario, usa archive() en su lugar.
     Este método debe reservarse para limpieza administrativa.
     
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    
     Args:
         db: Sesión SQLAlchemy
         audit: Logger de auditoría
         project_id: ID del proyecto a eliminar
-        user_id: ID del usuario que realiza la eliminación
+        user_id: UUID del usuario que realiza la eliminación
         user_email: Email del usuario
         enforce_owner: Si True, valida que user_id sea el propietario
         
@@ -207,8 +217,8 @@ def delete(
     def _work():
         project = _get_for_update(db, project_id)
         
-        # Validar propiedad si se requiere
-        if enforce_owner and project.user_id != user_id:
+        # BD 2.0 SSOT: comparar con auth_user_id
+        if enforce_owner and project.auth_user_id != user_id:
             raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
         
         # Registrar acción antes de eliminar

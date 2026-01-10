@@ -5,13 +5,12 @@ backend/app/modules/projects/facades/queries/projects.py
 Consultas de proyectos: get_by_id, get_by_slug, list_by_user, etc.
 Ahora async para compatibilidad con AsyncSession.
 
-SSOT Architecture (2025-01-07):
-- auth_user_id (UUID): SSOT para ownership, coincide con projects.user_id
+BD 2.0 SSOT Architecture (2026-01-10):
+- auth_user_id (UUID): SSOT para ownership en tabla projects
 - user_email: LEGACY join key, mantener solo para compatibilidad temporal
-- user_id (int): PK interna de app_users, NO usar para filtrar projects
 
 Autor: Ixchel Beristain
-Fecha: 2025-10-26 (async 2025-12-27, SSOT 2025-01-07)
+Fecha: 2025-10-26 (async 2025-12-27, SSOT BD 2.0 2026-01-10)
 """
 
 import logging
@@ -133,11 +132,11 @@ async def list_by_auth_user_id(
     """
     Lista proyectos de un usuario por auth_user_id (UUID SSOT).
     
-    SSOT: Este es el método preferido para filtrar projects.
+    BD 2.0 SSOT: Este es el método preferido para filtrar projects.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        auth_user_id: UUID del usuario (SSOT, coincide con projects.user_id)
+        auth_user_id: UUID del usuario (SSOT canónico)
         state: Filtro opcional por estado técnico
         status: Filtro opcional por status administrativo
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -149,8 +148,8 @@ async def list_by_auth_user_id(
     """
     effective_limit = min(limit, MAX_LIMIT)
     
-    # SSOT: filtrar por projects.user_id = auth_user_id (ambos UUID)
-    query = select(Project).where(Project.user_id == auth_user_id)
+    # BD 2.0 SSOT: filtrar por projects.auth_user_id (UUID)
+    query = select(Project).where(Project.auth_user_id == auth_user_id)
     
     if state is not None:
         query = query.where(Project.state == state)
@@ -160,7 +159,7 @@ async def list_by_auth_user_id(
     
     total = None
     if include_total:
-        count_query = select(func.count(Project.id)).where(Project.user_id == auth_user_id)
+        count_query = select(func.count(Project.id)).where(Project.auth_user_id == auth_user_id)
         if state is not None:
             count_query = count_query.where(Project.state == state)
         if status is not None:
@@ -178,7 +177,7 @@ async def list_by_auth_user_id(
 
 async def list_by_user_id(
     db: AsyncSession,
-    user_id,
+    user_id: UUID,  # BD 2.0 SSOT: DEBE ser UUID, no int
     state: Optional[ProjectState] = None,
     status: Optional[ProjectStatus] = None,
     limit: int = 50,
@@ -186,11 +185,17 @@ async def list_by_user_id(
     include_total: bool = False
 ) -> List[Project] | Tuple[List[Project], int]:
     """
-    Lista proyectos de un usuario por user_id (UUID o int para tests).
+    Lista proyectos de un usuario por auth_user_id (UUID).
+    
+    BD 2.0 SSOT: Este método es un alias de list_by_auth_user_id.
+    El parámetro se llama user_id por compatibilidad con firmas legacy,
+    pero DEBE recibir un UUID (auth_user_id).
+    
+    ⚠️ DEPRECATED: Usar list_by_auth_user_id directamente para nuevas integraciones.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_id: ID del usuario (UUID en prod, int en tests)
+        user_id: UUID del usuario (SSOT auth_user_id). ❌ NO pasar int.
         state: Filtro opcional por estado técnico
         status: Filtro opcional por status administrativo
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -202,8 +207,8 @@ async def list_by_user_id(
     """
     effective_limit = min(limit, MAX_LIMIT)
     
-    # Filtrar por user_id (puede ser UUID o int en tests)
-    query = select(Project).where(Project.user_id == user_id)
+    # BD 2.0 SSOT: user_id param → auth_user_id column
+    query = select(Project).where(Project.auth_user_id == user_id)
     
     if state is not None:
         query = query.where(Project.state == state)
@@ -213,7 +218,7 @@ async def list_by_user_id(
     
     total = None
     if include_total:
-        count_query = select(func.count(Project.id)).where(Project.user_id == user_id)
+        count_query = select(func.count(Project.id)).where(Project.auth_user_id == user_id)
         if state is not None:
             count_query = count_query.where(Project.state == state)
         if status is not None:
@@ -287,7 +292,7 @@ async def list_active_projects(
     """
     Lista proyectos activos (state != ARCHIVED) de un usuario con ordenamiento.
     
-    SSOT: Preferir auth_user_id. user_email solo para compat legacy.
+    BD 2.0 SSOT: Preferir auth_user_id. user_email solo para compat legacy.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
@@ -305,13 +310,13 @@ async def list_active_projects(
     start = time.perf_counter()
     effective_limit = min(limit, MAX_LIMIT)
     
-    # SSOT: preferir auth_user_id (UUID), fallback a user_email
+    # BD 2.0 SSOT: preferir auth_user_id (UUID), fallback a user_email
     if auth_user_id is not None:
-        base_filter = (Project.user_id == auth_user_id) & (Project.state != ProjectState.ARCHIVED)
-        user_log = f"auth_user_id={auth_user_id}"
+        base_filter = (Project.auth_user_id == auth_user_id) & (Project.state != ProjectState.ARCHIVED)
+        user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     elif user_email is not None:
         base_filter = (Project.user_email == user_email) & (Project.state != ProjectState.ARCHIVED)
-        user_log = f"user_email={user_email}"
+        user_log = f"user_email={user_email[:3]}***"
         logger.debug("list_active_projects using legacy user_email filter")
     else:
         raise ValueError("Must provide auth_user_id or user_email")
@@ -362,7 +367,7 @@ async def list_closed_projects(
     """
     Lista proyectos cerrados/archivados (state == ARCHIVED) de un usuario con ordenamiento.
     
-    SSOT: Preferir auth_user_id. user_email solo para compat legacy.
+    BD 2.0 SSOT: Preferir auth_user_id. user_email solo para compat legacy.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
@@ -380,13 +385,13 @@ async def list_closed_projects(
     start = time.perf_counter()
     effective_limit = min(limit, MAX_LIMIT)
     
-    # SSOT: preferir auth_user_id (UUID), fallback a user_email
+    # BD 2.0 SSOT: preferir auth_user_id (UUID), fallback a user_email
     if auth_user_id is not None:
-        base_filter = (Project.user_id == auth_user_id) & (Project.state == ProjectState.ARCHIVED)
-        user_log = f"auth_user_id={auth_user_id}"
+        base_filter = (Project.auth_user_id == auth_user_id) & (Project.state == ProjectState.ARCHIVED)
+        user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     elif user_email is not None:
         base_filter = (Project.user_email == user_email) & (Project.state == ProjectState.ARCHIVED)
-        user_log = f"user_email={user_email}"
+        user_log = f"user_email={user_email[:3]}***"
         logger.debug("list_closed_projects using legacy user_email filter")
     else:
         raise ValueError("Must provide auth_user_id or user_email")
@@ -458,6 +463,7 @@ __all__ = [
     "get_by_slug",
     "list_by_user",
     "list_by_user_id",
+    "list_by_auth_user_id",
     "list_ready_projects",
     "list_active_projects",
     "list_closed_projects",

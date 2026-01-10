@@ -43,7 +43,7 @@ from app.modules.user_profile.schemas import (
 )
 from app.modules.user_profile.services import ProfileService
 from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_user_id
+from app.shared.auth_context import extract_user_id, extract_auth_user_id
 
 router = APIRouter(tags=["User Profile"])
 
@@ -368,34 +368,36 @@ async def get_credits_balance(
     """
     Obtiene el balance de créditos del usuario autenticado.
     
+    BD 2.0 SSOT: Usa auth_user_id (UUID) para consultar wallets.
     Timing por fases: auth_context, db_query
     
     Errores: Retorna HTTP 500 con error_code estándar (NO oculta errores).
     """
     start_total = time.perf_counter()
     
-    # Fase 1: Auth Context
+    # Fase 1: Auth Context - extraer user_id (int) y auth_user_id (UUID SSOT)
     auth_start = time.perf_counter()
     uid = extract_user_id(user)
+    auth_uid = extract_auth_user_id(user)  # BD 2.0 SSOT
     auth_ms = (time.perf_counter() - auth_start) * 1000
     
     try:
-        # Fase 2: DB Query
+        # Fase 2: DB Query (BD 2.0: usa auth_user_id para wallets)
         db_start = time.perf_counter()
-        balance = await service.get_credits_balance(user_id=uid)
+        balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
         db_ms = (time.perf_counter() - db_start) * 1000
         
         total_ms = (time.perf_counter() - start_total) * 1000
         
         if db_ms > 500:
             logger.warning(
-                "query_slow op=get_credits phase=db_query user_id=%s duration_ms=%.2f",
-                uid, db_ms
+                "query_slow op=get_credits phase=db_query auth_user_id=%s duration_ms=%.2f",
+                str(auth_uid)[:8] + "...", db_ms
             )
         
         logger.info(
-            "query_completed op=get_credits user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
-            uid, balance, auth_ms, db_ms, total_ms
+            "query_completed op=get_credits auth_user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
+            str(auth_uid)[:8] + "...", balance, auth_ms, db_ms, total_ms
         )
         
         return {
@@ -405,8 +407,8 @@ async def get_credits_balance(
     except Exception as e:
         total_ms = (time.perf_counter() - start_total) * 1000
         logger.exception(
-            "query_error op=get_credits user_id=%s duration_ms=%.2f error=%s",
-            uid, total_ms, str(e)
+            "query_error op=get_credits auth_user_id=%s duration_ms=%.2f error=%s",
+            str(auth_uid)[:8] + "..." if auth_uid else "unknown", total_ms, str(e)
         )
         # NO ocultar errores - devolver 500 con código de error estándar
         raise HTTPException(
@@ -433,29 +435,31 @@ async def get_subscription_status(
     """
     Obtiene el estado de suscripción del usuario autenticado.
     Usa créditos como proxy de suscripción.
+    BD 2.0 SSOT: Usa auth_user_id (UUID) para consultar wallets.
     """
     from app.modules.auth.enums import UserStatus
     
     start_total = time.perf_counter()
     
-    # Fase 1: Auth Context
+    # Fase 1: Auth Context - extraer user_id (int) y auth_user_id (UUID SSOT)
     auth_start = time.perf_counter()
     uid = extract_user_id(user)
+    auth_uid = extract_auth_user_id(user)  # BD 2.0 SSOT
     email = getattr(user, "user_email", None) or getattr(user, "email", None) or "unknown@example.com"
     auth_ms = (time.perf_counter() - auth_start) * 1000
     
     try:
-        # Fase 2: DB Query
+        # Fase 2: DB Query (BD 2.0: usa auth_user_id para wallets)
         db_start = time.perf_counter()
-        balance = await service.get_credits_balance(user_id=uid)
+        balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
         db_ms = (time.perf_counter() - db_start) * 1000
         
         sub_status = UserStatus.active if balance > 0 else UserStatus.not_active
         
         total_ms = (time.perf_counter() - start_total) * 1000
         logger.info(
-            "query_completed op=get_subscription user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
-            uid, balance, auth_ms, db_ms, total_ms
+            "query_completed op=get_subscription auth_user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
+            str(auth_uid)[:8] + "...", balance, auth_ms, db_ms, total_ms
         )
         
         return {
@@ -469,8 +473,8 @@ async def get_subscription_status(
     except Exception:
         total_ms = (time.perf_counter() - start_total) * 1000
         logger.exception(
-            "query_error op=get_subscription user_id=%s duration_ms=%.2f",
-            uid, total_ms
+            "query_error op=get_subscription auth_user_id=%s duration_ms=%.2f",
+            str(auth_uid)[:8] + "..." if auth_uid else "unknown", total_ms
         )
         raise HTTPException(
             status_code=500,

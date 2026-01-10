@@ -6,11 +6,15 @@ backend/app/modules/projects/schemas/project_schemas.py
 Schemas Pydantic para creación, actualización y respuesta de proyectos.
 Alineados con ProjectState/ProjectStatus y ProjectFacade.
 
+BD 2.0 SSOT:
+- auth_user_id: UUID canónico de ownership (reemplaza user_id legacy)
+
 Autor: Ixchel Beristáin
 Fecha: 28/10/2025
+Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
 """
 
-from typing import Optional, List, Union
+from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 from pydantic import Field, EmailStr, field_validator, ConfigDict
@@ -122,10 +126,10 @@ class ProjectRead(UTF8SafeModel):
     Incluye todos los campos del modelo Project alineados con
     ProjectState/ProjectStatus.
     
-    Nota: user_id es UUID en producción (auth.users.id), int en tests legacy.
+    BD 2.0 SSOT: auth_user_id es el ownership canónico (UUID).
     """
     project_id: UUID = Field(..., alias="id", description="ID único del proyecto")
-    user_id: Union[UUID, int] = Field(..., description="ID del usuario propietario (UUID en prod, int en tests)")
+    auth_user_id: UUID = Field(..., description="ID del usuario propietario (UUID SSOT)")
     user_email: EmailStr = Field(..., description="Email del propietario")
     project_name: str = Field(..., description="Nombre del proyecto")
     project_slug: str = Field(..., description="Slug único del proyecto")
@@ -143,7 +147,7 @@ class ProjectRead(UTF8SafeModel):
         json_schema_extra={
             "example": {
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
-                "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
+                "auth_user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
                 "user_email": "user@example.com",
                 "project_name": "Propuesta Técnica Q4",
                 "project_slug": "propuesta-tecnica-q4",
@@ -172,7 +176,7 @@ class ProjectResponse(UTF8SafeModel):
                 "message": "Proyecto creado exitosamente",
                 "project": {
                     "project_id": "123e4567-e89b-12d3-a456-426614174000",
-                    "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
+                    "auth_user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
                     "user_email": "user@example.com",
                     "project_name": "Mi Proyecto",
                     "project_slug": "mi-proyecto",

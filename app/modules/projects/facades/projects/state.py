@@ -5,8 +5,12 @@ backend/app/modules/projects/facades/projects/state.py
 Operaciones de cambio de estado: status, state transitions, archive.
 Incluye validación de transiciones y seteo de timestamps especiales.
 
+BD 2.0 SSOT:
+- auth_user_id: UUID canónico de ownership (reemplaza user_id legacy)
+
 Autor: Ixchel Beristain
 Fecha: 2025-10-26
+Actualizado: 2026-01-10 - BD 2.0 SSOT: comparar con auth_user_id
 """
 
 from uuid import UUID
@@ -28,7 +32,7 @@ def change_status(
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,
+    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
     user_email: str,
     new_status: ProjectStatus,
     enforce_owner: bool = True
@@ -39,11 +43,13 @@ def change_status(
     Status (administrativo/negocio) es independiente de state (técnico).
     No valida transiciones; es una propiedad de negocio libre.
     
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    
     Args:
         db: Sesión SQLAlchemy
         audit: Logger de auditoría
         project_id: ID del proyecto
-        user_id: ID del usuario que realiza el cambio
+        user_id: UUID del usuario que realiza el cambio
         user_email: Email del usuario
         new_status: Nuevo status administrativo
         enforce_owner: Si True, valida que user_id sea el propietario
@@ -58,8 +64,8 @@ def change_status(
     def _work():
         project = _get_for_update(db, project_id)
         
-        # Validar propiedad si se requiere
-        if enforce_owner and project.user_id != user_id:
+        # BD 2.0 SSOT: comparar con auth_user_id
+        if enforce_owner and project.auth_user_id != user_id:
             raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
         
         old_status = project.status
@@ -88,7 +94,7 @@ def transition_state(
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,
+    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
     user_email: str,
     to_state: ProjectState,
     enforce_owner: bool = True
@@ -103,11 +109,13 @@ def transition_state(
     4. Setea archived_at cuando to_state == archived
     5. Registra la transición en auditoría
     
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    
     Args:
         db: Sesión SQLAlchemy
         audit: Logger de auditoría
         project_id: ID del proyecto
-        user_id: ID del usuario que ejecuta la transición
+        user_id: UUID del usuario que ejecuta la transición
         user_email: Email del usuario
         to_state: Estado destino
         enforce_owner: Si True, valida que user_id sea el propietario
@@ -123,8 +131,8 @@ def transition_state(
     def _work():
         project = _get_for_update(db, project_id)
         
-        # Validar propiedad si se requiere
-        if enforce_owner and project.user_id != user_id:
+        # BD 2.0 SSOT: comparar con auth_user_id
+        if enforce_owner and project.auth_user_id != user_id:
             raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
         
         from_state = project.state
@@ -184,7 +192,7 @@ def archive(
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,
+    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
     user_email: str,
     enforce_owner: bool = True
 ) -> Project:
@@ -194,11 +202,13 @@ def archive(
     Wrapper sobre transition_state que mueve el proyecto a state=archived.
     Recomendado para eliminación de cara al usuario.
     
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    
     Args:
         db: Sesión SQLAlchemy
         audit: Logger de auditoría
         project_id: ID del proyecto a archivar
-        user_id: ID del usuario que archiva
+        user_id: UUID del usuario que archiva
         user_email: Email del usuario
         enforce_owner: Si True, valida que user_id sea el propietario
         

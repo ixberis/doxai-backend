@@ -99,15 +99,17 @@ async def get_project_by_id(
 ):
     """
     Devuelve un proyecto por su ID, validando pertenencia del usuario.
+    BD 2.0 SSOT: ownership se valida contra auth_user_id (UUID).
     """
     uid, _ = extract_user_id_and_email(user)
     project = await q.get_project_by_id(project_id)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
-    project_user_id = project.get("user_id") if isinstance(project, dict) else getattr(project, "user_id", None)
+    # BD 2.0 SSOT: comparar con auth_user_id (UUID)
+    project_owner = project.get("auth_user_id") if isinstance(project, dict) else getattr(project, "auth_user_id", None)
     # Normalizar a string para comparación (puede venir como UUID o str)
-    if str(project_user_id) != str(uid):
+    if str(project_owner) != str(uid):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
     return _coerce_to_project_read(project)
@@ -126,15 +128,17 @@ def get_project_by_slug(
 ):
     """
     Devuelve un proyecto por su slug, validando pertenencia del usuario.
+    BD 2.0 SSOT: ownership se valida contra auth_user_id (UUID).
     """
     uid, _ = extract_user_id_and_email(user)
     project = q.get_project_by_slug(slug)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
-    project_user_id = project.get("user_id") if isinstance(project, dict) else getattr(project, "user_id", None)
+    # BD 2.0 SSOT: comparar con auth_user_id (UUID)
+    project_owner = project.get("auth_user_id") if isinstance(project, dict) else getattr(project, "auth_user_id", None)
     # Normalizar a string para comparación (puede venir como UUID o str)
-    if str(project_user_id) != str(uid):
+    if str(project_owner) != str(uid):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
     return _coerce_to_project_read(project)

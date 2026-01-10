@@ -6,8 +6,12 @@ backend/app/modules/projects/schemas/project_query_schemas.py
 Schemas Pydantic para consultas y filtros de proyectos.
 Alineados con ProjectQueryFacade.
 
+BD 2.0 SSOT:
+- auth_user_id: UUID canónico de ownership (reemplaza user_id legacy)
+
 Autor: DoxAI
 Fecha: 2025-10-25
+Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
 """
 
 from typing import Optional
@@ -26,8 +30,9 @@ class ProjectListByUserQuery(UTF8SafeModel):
     Filtros para listar proyectos de un usuario.
     
     Alineado con ProjectQueryFacade.list_by_user().
+    BD 2.0 SSOT: auth_user_id es el ownership canónico.
     """
-    user_id: UUID = Field(..., description="ID del usuario")
+    auth_user_id: UUID = Field(..., description="ID del usuario (UUID SSOT)")
     state: Optional[ProjectState] = Field(
         None,
         description="Filtrar por estado operacional específico"
@@ -55,7 +60,7 @@ class ProjectListByUserQuery(UTF8SafeModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
+                "auth_user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
                 "state": "ready",
                 "status": "in_process",
                 "limit": 50,
@@ -71,10 +76,11 @@ class ProjectListReadyQuery(UTF8SafeModel):
     Filtros para listar proyectos en estado 'ready'.
     
     Alineado con ProjectQueryFacade.list_ready_projects().
+    BD 2.0 SSOT: auth_user_id es el ownership canónico.
     """
-    user_id: Optional[UUID] = Field(
+    auth_user_id: Optional[UUID] = Field(
         None,
-        description="Filtrar por usuario específico (opcional)"
+        description="Filtrar por usuario específico (opcional, UUID SSOT)"
     )
     limit: int = Field(
         default=50,
@@ -95,7 +101,7 @@ class ProjectListReadyQuery(UTF8SafeModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
+                "auth_user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
                 "limit": 50,
                 "offset": 0,
                 "include_total": True

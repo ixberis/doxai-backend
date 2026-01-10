@@ -55,7 +55,7 @@ def get_project_by_slug(db: Session, project_slug: str) -> Optional[Project]:
 
 def list_projects_by_user(
     db: Session,
-    user_id: UUID,
+    auth_user_id: UUID,
     *,
     limit: int = 50,
     offset: int = 0,
@@ -63,9 +63,11 @@ def list_projects_by_user(
     """
     Lista proyectos de un usuario, ordenados por creación descendente.
 
+    BD 2.0 SSOT: auth_user_id (UUID) es el ownership canónico.
+
     Args:
         db: Sesión de base de datos.
-        user_id: ID del usuario dueño de los proyectos.
+        auth_user_id: UUID del usuario propietario (SSOT).
         limit: Máximo de resultados a devolver.
         offset: Desplazamiento para paginación.
 
@@ -74,7 +76,7 @@ def list_projects_by_user(
     """
     q = (
         db.query(Project)
-        .filter(Project.user_id == user_id)
+        .filter(Project.auth_user_id == auth_user_id)
         .order_by(desc(Project.created_at))
         .offset(offset)
         .limit(limit)
