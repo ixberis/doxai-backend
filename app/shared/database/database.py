@@ -49,7 +49,6 @@ except Exception:  # pragma: no cover
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import QueuePool
 
 from app.shared.config import settings
 
@@ -215,14 +214,14 @@ else:
         connect_args["ssl"] = ssl_context
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Fase C: QueuePool explícito con parámetros configurables
-    # - Elimina NullPool para reutilizar conexiones hacia PgBouncer
+    # Fase C: Pool interno del async engine con parámetros configurables
+    # - El async engine usa AsyncAdaptedQueuePool por defecto (no se puede
+    #   especificar poolclass=QueuePool explícitamente)
     # - pool_pre_ping=True valida conexión antes de checkout
     # - Compatibilidad PgBouncer: statement_cache_size=0
     # ══════════════════════════════════════════════════════════════════════════
     engine = create_async_engine(
         ASYNC_DSN,
-        poolclass=QueuePool,  # Explícito (Ajuste B)
         pool_size=DB_POOL_SIZE,
         max_overflow=DB_MAX_OVERFLOW,
         pool_timeout=DB_POOL_TIMEOUT,
@@ -233,11 +232,16 @@ else:
         connect_args=connect_args,
     )
 
+    # Verificación objetiva del pool class real (no asumir por nombre)
+    actual_pool = engine.sync_engine.pool
+    pool_class_name = actual_pool.__class__.__name__
     logger.info(
-        f"[DB] Engine creado con QueuePool: pool_size={DB_POOL_SIZE}, "
-        f"max_overflow={DB_MAX_OVERFLOW}, pool_timeout={DB_POOL_TIMEOUT}s, "
-        f"pool_recycle={DB_POOL_RECYCLE}s, pool_pre_ping={DB_POOL_PRE_PING}"
+        f"[DB] Pool active: class={pool_class_name} "
+        f"pool_size={DB_POOL_SIZE} max_overflow={DB_MAX_OVERFLOW} "
+        f"pool_timeout={DB_POOL_TIMEOUT} recycle={DB_POOL_RECYCLE} pre_ping={DB_POOL_PRE_PING}"
     )
+    if pool_class_name == "NullPool":
+        logger.warning("[DB] ⚠️ NullPool detected - connection reuse DISABLED")
 
     SessionLocal = async_sessionmaker(
         bind=engine,
