@@ -5,10 +5,14 @@ backend/app/modules/projects/facades/project_query_facade.py
 Facade público para consultas y listados de proyectos, archivos y auditoría.
 Ahora async para compatibilidad con AsyncSession.
 
+BD 2.0 SSOT (2026-01-10):
+- Todas las funciones de ownership usan auth_user_id (UUID)
+- NO existe columna user_email en projects
+- Eliminados métodos legacy que usaban user_email
+
 Autor: Ixchel Beristain
 Fecha: 2025-10-26 (async 2025-12-27)
-Actualizado: 2026-01-09 - SSOT: aceptar auth_user_id (UUID) + fallback legacy user_email
-Actualizado: 2026-01-09 - Normalización defensiva de rows: evitar tuples/listas (Project, extra)
+Actualizado: 2026-01-10 - BD 2.0 SSOT: eliminar user_email, solo auth_user_id
 """
 
 from __future__ import annotations
@@ -35,7 +39,10 @@ from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
 class ProjectQueryFacade:
     """
     Facade público para consultas de solo lectura sobre proyectos.
-    Ahora async.
+    
+    BD 2.0 SSOT:
+    - Todas las funciones de ownership requieren auth_user_id (UUID)
+    - NO hay soporte para user_email (columna no existe en BD 2.0)
     """
 
     MAX_LIMIT = queries.projects.MAX_LIMIT
@@ -59,17 +66,13 @@ class ProjectQueryFacade:
         """
         # Caso: tuple/list (project, extra)
         if isinstance(row, (list, tuple)) and len(row) >= 1:
-            # Si es exactamente 2 (el caso reportado), tomamos el primero.
             if len(row) == 2:
                 return row[0]
-            # Si es una lista de dicts/objs (más de 2), no adivinamos:
-            # regresamos tal cual y dejamos que capas superiores manejen/logueen.
             return row
 
         # Caso: SQLAlchemy Row / RowMapping
         mapping = getattr(row, "_mapping", None)
         if mapping is not None:
-            # Si el query seleccionó entidad Project explícitamente, suele venir como key Project o 'Project'
             if Project in mapping:
                 return mapping[Project]
             if "Project" in mapping:
@@ -77,7 +80,6 @@ class ProjectQueryFacade:
             if "project" in mapping:
                 return mapping["project"]
 
-            # Si hay exactamente dos valores y uno parece Project, tomar ese
             try:
                 values = list(mapping.values())
                 if len(values) == 2:
@@ -85,7 +87,6 @@ class ProjectQueryFacade:
                         return values[0]
                     if isinstance(values[1], Project):
                         return values[1]
-                # fallback: si el primer valor es dict/Project, preferirlo
                 if values and (isinstance(values[0], (dict, Project))):
                     return values[0]
             except Exception:
@@ -103,11 +104,9 @@ class ProjectQueryFacade:
         if not items:
             return items
 
-        # Si al menos un elemento es tuple/list len==2, normalizamos todos
         if any(isinstance(x, (list, tuple)) and len(x) == 2 for x in items):
             return [self._strip_project_row(x) for x in items]
 
-        # Si viene como Row con _mapping multi-columna, también normalizamos
         if any(getattr(x, "_mapping", None) is not None for x in items):
             return [self._strip_project_row(x) for x in items]
 
@@ -115,17 +114,16 @@ class ProjectQueryFacade:
 
     # ===== CONSULTAS DE PROYECTOS =====
 
-    async def get_by_id(self, project_id: int) -> Optional[Project]:
+    async def get_by_id(self, project_id: UUID) -> Optional[Project]:
         return await queries.get_project_by_id(self.db, project_id)
 
     async def get_by_slug(self, slug: str) -> Optional[Project]:
         return await queries.get_project_by_slug(self.db, slug)
 
-    async def list_by_user(
+    async def list_by_auth_user_id(
         self,
-        user_email: Optional[str] = None,
+        auth_user_id: UUID,
         *,
-        user_id=None,
         state: Optional[ProjectState] = None,
         status: Optional[ProjectStatus] = None,
         limit: int = 50,
@@ -133,45 +131,35 @@ class ProjectQueryFacade:
         include_total: bool = False,
     ) -> List[Project] | Tuple[List[Project], int]:
         """
-        Lista proyectos de un usuario con filtros opcionales.
-
-        Note:
-            user_id es para compatibilidad con tests; en prod usar user_email.
+        Lista proyectos de un usuario por auth_user_id (UUID SSOT).
+        
+        BD 2.0: Este es el ÚNICO método válido para listar por usuario.
         """
-        if user_id is not None:
-            return await queries.list_projects_by_user_id(
-                db=self.db,
-                user_id=user_id,
-                state=state,
-                status=status,
-                limit=limit,
-                offset=offset,
-                include_total=include_total,
-            )
-
-        if user_email is not None:
-            return await queries.list_projects_by_user(
-                db=self.db,
-                user_email=user_email,
-                state=state,
-                status=status,
-                limit=limit,
-                offset=offset,
-                include_total=include_total,
-            )
-
-        raise ValueError("Debe proporcionar user_email o user_id")
+        return await queries.list_projects_by_auth_user_id(
+            db=self.db,
+            auth_user_id=auth_user_id,
+            state=state,
+            status=status,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
 
     async def list_ready_projects(
         self,
-        user_email: Optional[str] = None,
+        auth_user_id: Optional[UUID] = None,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> List[Project] | Tuple[List[Project], int]:
+        """
+        Lista proyectos en estado 'ready'.
+        
+        BD 2.0 SSOT: Filtro opcional por auth_user_id (UUID).
+        """
         return await queries.list_ready_projects(
             db=self.db,
-            user_email=user_email,
+            auth_user_id=auth_user_id,
             limit=limit,
             offset=offset,
             include_total=include_total,
@@ -180,40 +168,27 @@ class ProjectQueryFacade:
     async def list_active_projects(
         self,
         *,
-        auth_user_id: Optional[UUID] = None,
-        user_email: Optional[str] = None,
+        auth_user_id: UUID,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> Tuple[List[Project], int]:
-        if auth_user_id is None and not user_email:
-            raise ValueError("Debe proporcionar auth_user_id o user_email")
-
-        try:
-            result = await queries.list_active_projects(
-                db=self.db,
-                auth_user_id=auth_user_id,
-                user_email=user_email,
-                order_by=order_by,
-                asc=asc,
-                limit=limit,
-                offset=offset,
-                include_total=include_total,
-            )
-        except TypeError:
-            if not user_email:
-                raise
-            result = await queries.list_active_projects(
-                db=self.db,
-                user_email=user_email,
-                order_by=order_by,
-                asc=asc,
-                limit=limit,
-                offset=offset,
-                include_total=include_total,
-            )
+        """
+        Lista proyectos activos (state != ARCHIVED) de un usuario.
+        
+        BD 2.0 SSOT: REQUIERE auth_user_id (UUID).
+        """
+        result = await queries.list_active_projects(
+            db=self.db,
+            auth_user_id=auth_user_id,
+            order_by=order_by,
+            asc=asc,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
 
         if isinstance(result, tuple):
             items, total = result
@@ -221,48 +196,33 @@ class ProjectQueryFacade:
             items = result
             total = len(items)
 
-        # ✅ Normalizar items para evitar filas compuestas (project, extra)
         items = self._normalize_project_items(items)
-
         return items, total
 
     async def list_closed_projects(
         self,
         *,
-        auth_user_id: Optional[UUID] = None,
-        user_email: Optional[str] = None,
+        auth_user_id: UUID,
         order_by: str = "updated_at",
         asc: bool = False,
         limit: int = 50,
         offset: int = 0,
         include_total: bool = False,
     ) -> Tuple[List[Project], int]:
-        if auth_user_id is None and not user_email:
-            raise ValueError("Debe proporcionar auth_user_id o user_email")
-
-        try:
-            result = await queries.list_closed_projects(
-                db=self.db,
-                auth_user_id=auth_user_id,
-                user_email=user_email,
-                order_by=order_by,
-                asc=asc,
-                limit=limit,
-                offset=offset,
-                include_total=include_total,
-            )
-        except TypeError:
-            if not user_email:
-                raise
-            result = await queries.list_closed_projects(
-                db=self.db,
-                user_email=user_email,
-                order_by=order_by,
-                asc=asc,
-                limit=limit,
-                offset=offset,
-                include_total=include_total,
-            )
+        """
+        Lista proyectos cerrados/archivados (state == ARCHIVED) de un usuario.
+        
+        BD 2.0 SSOT: REQUIERE auth_user_id (UUID).
+        """
+        result = await queries.list_closed_projects(
+            db=self.db,
+            auth_user_id=auth_user_id,
+            order_by=order_by,
+            asc=asc,
+            limit=limit,
+            offset=offset,
+            include_total=include_total,
+        )
 
         if isinstance(result, tuple):
             items, total = result
@@ -270,20 +230,23 @@ class ProjectQueryFacade:
             items = result
             total = len(items)
 
-        # ✅ Normalizar items para evitar filas compuestas (project, extra)
         items = self._normalize_project_items(items)
-
         return items, total
 
-    async def count_projects_by_user(
+    async def count_projects_by_auth_user_id(
         self,
-        user_email: str,
+        auth_user_id: UUID,
         state: Optional[ProjectState] = None,
         status: Optional[ProjectStatus] = None,
     ) -> int:
-        return await queries.count_projects_by_user(
+        """
+        Cuenta proyectos de un usuario.
+        
+        BD 2.0 SSOT: Usa auth_user_id (UUID).
+        """
+        return await queries.count_projects_by_auth_user_id(
             db=self.db,
-            user_email=user_email,
+            auth_user_id=auth_user_id,
             state=state,
             status=status,
         )
@@ -377,6 +340,3 @@ class ProjectQueryFacade:
 
 
 __all__ = ["ProjectQueryFacade"]
-# Fin del archivo backend/app/modules/projects/facades/project_query_facade.py
-
-

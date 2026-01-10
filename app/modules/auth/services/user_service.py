@@ -142,62 +142,57 @@ class UserService:
 
     async def _ping_db(self, session: AsyncSession, timeout_ms: int = 2000) -> None:
         """
-        Verifica que la conexión esté viva y que no haya bloqueo general.
-        Usa SET LOCAL statement_timeout y luego SELECT 1.
+        Verifica que la conexión esté viva ejecutando SELECT 1.
+        
+        NOTA (BD 2.0 / PgBouncer):
+        NO usamos SET LOCAL statement_timeout aquí. Con PgBouncer en transaction pooling,
+        SET LOCAL no es confiable porque la transacción puede no estar explícitamente iniciada.
+        El timeout global se aplica a nivel de sesión en database.py (_configure_session)
+        usando SET SESSION, que es persistente durante toda la conexión lógica.
         """
-        try:
-            await session.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
-        except Exception as e:
-            # No es fatal si no es Postgres o no permite SET LOCAL
-            log.debug("No se pudo aplicar statement_timeout local en ping: %s", e)
-
         try:
             await session.execute(text("SELECT 1"))
         except Exception as e:
             log.error("Ping DB FALLÓ: %s", e)
             raise
 
-    async def _apply_stmt_timeout(self, session: AsyncSession, timeout_ms: int = 3000) -> None:
-        """
-        Aplica SET LOCAL statement_timeout para la consulta principal.
-        
-        Nota: SET LOCAL solo tiene efecto dentro de una transacción explícita.
-        En PgBouncer transaction pooling sin BEGIN, esto puede ser no-op.
-        Para garantizar efecto, el caller puede usar `async with session.begin():`.
-        """
-        try:
-            await session.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
-            log.debug("statement_timeout local aplicado: %d ms", timeout_ms)
-        except Exception as e:
-            log.debug("No se pudo aplicar statement_timeout local a la consulta: %s", e)
-
     async def _pre_query_guards(
         self,
         session: AsyncSession,
         *,
-        stmt_timeout_ms: int,
+        stmt_timeout_ms: int,  # Se mantiene el parámetro por compatibilidad de API
         ping_timeout_ms: int = 2000,
     ) -> None:
         """
         Guards previos a query:
           - Ping solo cuando NO usamos sesión prestada (para evitar overhead en login).
-          - statement_timeout siempre best-effort.
+        
+        NOTA (BD 2.0 / PgBouncer - decisión deliberada):
+        NO se aplica SET LOCAL statement_timeout por query. Razones:
+        1. PgBouncer en transaction pooling no garantiza que SET LOCAL tenga efecto
+           si no hay una transacción explícita (BEGIN).
+        2. Genera falsa sensación de control sobre timeouts.
+        3. El timeout real y determinista se aplica a nivel de sesión via SET SESSION
+           en database.py (_configure_session) con DB_SESSION_STATEMENT_TIMEOUT_MS.
+        
+        El parámetro stmt_timeout_ms se mantiene para compatibilidad de API pero
+        no tiene efecto. Si se necesita un timeout más corto para una query específica,
+        considerar usar asyncio.timeout() o asyncio.wait_for() en el caller.
         """
         if not self._using_borrowed_session():
             await self._ping_db(session, timeout_ms=ping_timeout_ms)
-        await self._apply_stmt_timeout(session, timeout_ms=stmt_timeout_ms)
 
     # ----------------------------- Lecturas ---------------------------------
 
     async def get_by_email(
-        self, email: str, *, return_timings: bool = False
+        self, email: str, *, return_timings: bool = False, timeout_seconds: float = 5.0
     ) -> Optional[AppUser] | tuple[Optional[AppUser], dict]:
         """
         Obtiene un usuario por email (case-insensitive). Devuelve None si no existe.
 
-        Performance:
-          - En login normalmente se usa session prestada → NO hacemos ping preventivo.
-          - statement_timeout se mantiene best-effort.
+        Timeouts (defensa en profundidad):
+          - asyncio.timeout() garantiza timeout determinista (no depende de PgBouncer).
+          - SET SESSION statement_timeout es best-effort adicional.
           
         Args:
             email: Email del usuario a buscar
@@ -206,12 +201,17 @@ class UserService:
                 - db_prep_ms: tiempo de preparación (session scope + pre_query_guards)
                 - db_exec_ms: tiempo de ejecución del query SQL
                 - db_total_ms: tiempo total de la operación
+            timeout_seconds: Timeout máximo para la operación completa (default: 5s)
         
         Returns:
             AppUser o None (si return_timings=False)
             (AppUser o None, timings_dict) (si return_timings=True)
+            
+        Raises:
+            asyncio.TimeoutError: Si la operación excede timeout_seconds
         """
         import time
+        import asyncio
         t0_start = time.perf_counter()
         timings: dict = {}
         
@@ -221,54 +221,56 @@ class UserService:
                 return None, {"conn_checkout_ms": 0, "db_prep_ms": 0, "db_exec_ms": 0, "db_total_ms": 0}
             return None
 
-        # ─── t1: Medir tiempo de preparación (session scope + pre_query_guards) ───
-        t1_pre_session = time.perf_counter()
-        async with self._session_scope() as session:
-            # ─── Fase C: Medir conn_checkout_ms (tiempo de obtener conexión del pool) ───
-            # Siempre forzar checkout para medir latencia real del pool
-            t_checkout_start = time.perf_counter()
-            await session.connection()  # fuerza checkout de conexión del pool
-            t_checkout_end = time.perf_counter()
-            timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
-            
-            await self._pre_query_guards(session, stmt_timeout_ms=3000)
-            t2_session_ready = time.perf_counter()
-            timings["db_prep_ms"] = (t2_session_ready - t1_pre_session) * 1000
+        # Timeout determinista con asyncio (no depende de SET SESSION)
+        async with asyncio.timeout(timeout_seconds):
+            # ─── t1: Medir tiempo de preparación (session scope + pre_query_guards) ───
+            t1_pre_session = time.perf_counter()
+            async with self._session_scope() as session:
+                # ─── Fase C: Medir conn_checkout_ms (tiempo de obtener conexión del pool) ───
+                # Siempre forzar checkout para medir latencia real del pool
+                t_checkout_start = time.perf_counter()
+                await session.connection()  # fuerza checkout de conexión del pool
+                t_checkout_end = time.perf_counter()
+                timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
+                
+                await self._pre_query_guards(session, stmt_timeout_ms=3000)
+                t2_session_ready = time.perf_counter()
+                timings["db_prep_ms"] = (t2_session_ready - t1_pre_session) * 1000
 
-            # ─── t2→t3: Medir tiempo de ejecución SQL ───
-            repo = UserRepository(session)
-            t3_pre_exec = time.perf_counter()
-            try:
-                user = await repo.get_by_email(norm_email)
-                t4_post_exec = time.perf_counter()
-                timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
-                timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
-                
-                log.debug(
-                    "Users.get_by_email ok email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f",
-                    _mask_email(norm_email),
-                    timings.get("conn_checkout_ms", 0),
-                    timings["db_prep_ms"],
-                    timings["db_exec_ms"],
-                )
-                
-                if return_timings:
-                    return user, timings
-                return user
-            except Exception as e:
-                t4_post_exec = time.perf_counter()
-                timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
-                timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
-                
-                log.exception(
-                    "Users.get_by_email ERROR email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
-                    _mask_email(norm_email),
-                    timings.get("conn_checkout_ms", 0),
-                    timings["db_prep_ms"],
-                    timings["db_exec_ms"],
-                    e,
-                )
-                raise
+                # ─── t2→t3: Medir tiempo de ejecución SQL ───
+                repo = UserRepository(session)
+                t3_pre_exec = time.perf_counter()
+                try:
+                    user = await repo.get_by_email(norm_email)
+                    t4_post_exec = time.perf_counter()
+                    timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
+                    timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
+                    
+                    log.debug(
+                        "Users.get_by_email ok email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f",
+                        _mask_email(norm_email),
+                        timings.get("conn_checkout_ms", 0),
+                        timings["db_prep_ms"],
+                        timings["db_exec_ms"],
+                    )
+                    
+                    if return_timings:
+                        return user, timings
+                    return user
+                except Exception as e:
+                    t4_post_exec = time.perf_counter()
+                    timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
+                    timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
+                    
+                    log.exception(
+                        "Users.get_by_email ERROR email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
+                        _mask_email(norm_email),
+                        timings.get("conn_checkout_ms", 0),
+                        timings["db_prep_ms"],
+                        timings["db_exec_ms"],
+                        e,
+                    )
+                    raise
 
     async def exists_by_email(self, email: str) -> bool:
         """

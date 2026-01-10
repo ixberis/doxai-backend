@@ -56,13 +56,13 @@ class Project(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
 
     # BD 2.0 SSOT: auth_user_id es el ownership canónico (UUID)
+    # NO hay columna user_email en la tabla projects de BD 2.0.
+    # Si se necesita el email, se hace JOIN con app_users via auth_user_id.
     auth_user_id = Column(
         UUID(as_uuid=True),
         nullable=False,
         index=True,
     )
-    # Usamos String en ORM; la columna real es CITEXT en PostgreSQL
-    user_email = Column(String(255), nullable=False, index=True)
 
     # Nota: Audit trail (created_by/updated_by) se maneja en tablas de log,
     # no en la tabla projects (diseño por eventos/logs).

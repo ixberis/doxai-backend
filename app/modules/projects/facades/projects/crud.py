@@ -84,9 +84,9 @@ def create(
             raise SlugAlreadyExists(normalized_slug)
         
         # BD 2.0 SSOT: user_id param → auth_user_id column
+        # NO se almacena user_email en projects (BD 2.0 canónica)
         project = Project(
             auth_user_id=user_id,
-            user_email=user_email,
             project_name=name,
             project_slug=normalized_slug,
             project_description=description,

@@ -5,13 +5,17 @@ backend/app/modules/projects/routes/queries.py
 Rutas de solo lectura: listados de proyectos, auditoría y eventos de archivos.
 Ahora async para compatibilidad con AsyncSession.
 
-SSOT Architecture (2025-01-07):
-- auth_user_id (UUID): SSOT para ownership, coincide con projects.user_id
-- user_email: LEGACY fallback, solo para usuarios sin auth_user_id (loggea warning)
-- user_id (int): PK interna de app_users, NO usar para filtrar projects
+BD 2.0 SSOT Architecture (2026-01-10):
+- auth_user_id (UUID): ÚNICO identificador de ownership en projects
+- user_email: NO EXISTE en projects (columna eliminada en BD 2.0)
+- Para obtener email, hacer JOIN con app_users via auth_user_id
+
+IMPORTANTE:
+NO hay fallback a user_email porque la columna projects.user_email
+NO EXISTE en la base de datos BD 2.0.
 
 Autor: Ixchel Beristain
-Fecha de actualización: 2025-01-07 - SSOT auth_user_id + Timing por fases
+Fecha de actualización: 2026-01-10 - BD 2.0 SSOT: eliminar user_email
 """
 import time
 import logging
@@ -39,8 +43,7 @@ from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
 from app.modules.auth.services import get_current_user
 from app.shared.auth_context import (
     extract_user_id,
-    extract_user_email,
-    extract_auth_user_id,  # SSOT UUID (puede no usarse directo aquí)
+    extract_auth_user_id,
 )
 
 router = APIRouter(tags=["projects:queries"])
@@ -75,29 +78,31 @@ def _log_legacy_alias_warning(ordenar_por: str, operation: str, mapped_to: str):
         )
 
 
-def _get_user_filter_context(user) -> tuple:
+def _get_auth_user_id(user) -> UUID:
     """
-    Extrae contexto de filtrado del usuario para projects.
+    Extrae auth_user_id del usuario autenticado.
 
-    SSOT: Preferir auth_user_id (UUID). Fallback a user_email solo para legacy.
+    BD 2.0 SSOT: auth_user_id es REQUERIDO. No hay fallback a email.
 
-    Returns:
-        (auth_user_id, user_email, is_legacy) - auth_user_id o None, email o None, bool
+    Raises:
+        HTTPException 401: Si el usuario no tiene auth_user_id
     """
-    auth_user_id = getattr(user, "auth_user_id", None)
-    email = extract_user_email(user)
-
-    if auth_user_id is not None:
-        return (auth_user_id, email, False)
-
-    if email:
-        logger.warning(
-            "legacy_user_email_filter_used user_email=%s - usuario sin auth_user_id",
-            email[:3] + "***" if email else "unknown",
+    auth_user_id = extract_auth_user_id(user)
+    
+    if auth_user_id is None:
+        logger.error(
+            "auth_user_id_missing user_type=%s - BD 2.0 requiere auth_user_id",
+            type(user).__name__,
         )
-        return (None, email, True)
-
-    return (None, None, True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "Missing auth_user_id in auth context",
+                "error_code": "AUTH_MISSING_UUID"
+            }
+        )
+    
+    return auth_user_id
 
 
 def _normalize_project_item(item: Any) -> Any:
@@ -163,7 +168,7 @@ def _project_read_validate(item: Any) -> ProjectRead:
 )
 async def list_projects_for_user(
     state: Optional[str] = None,
-    status: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     include_total: bool = Query(False),
@@ -172,22 +177,17 @@ async def list_projects_for_user(
 ):
     start_time = time.perf_counter()
 
-    # Fase: Auth Context
+    # Fase: Auth Context (BD 2.0 SSOT)
     auth_start = time.perf_counter()
-    email = extract_user_email(user)
-    if not email:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Missing email in auth context", "error_code": "AUTH_MISSING_EMAIL"}
-        )
+    auth_user_id = _get_auth_user_id(user)
     auth_ms = (time.perf_counter() - auth_start) * 1000
 
-    # Fase: DB Query
+    # Fase: DB Query (BD 2.0: solo auth_user_id)
     db_start = time.perf_counter()
-    items_or_tuple = await q.list_projects_by_user(
-        user_email=email,
+    items_or_tuple = await q.list_projects_by_auth_user_id(
+        auth_user_id=auth_user_id,
         state=state,
-        status=status,
+        status=status_filter,
         limit=limit,
         offset=offset,
         include_total=include_total,
@@ -206,10 +206,11 @@ async def list_projects_for_user(
     ser_ms = (time.perf_counter() - ser_start) * 1000
 
     total_ms = (time.perf_counter() - start_time) * 1000
+    user_log = str(auth_user_id)[:8] + "..."
 
     logger.info(
         "query_completed op=list_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d",
-        email, auth_ms, db_ms, ser_ms, total_ms, len(items)
+        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items)
     )
 
     return ProjectListResponse(
@@ -239,15 +240,9 @@ async def list_active_projects(
 ):
     start_time = time.perf_counter()
 
-    # Fase: Auth Context (SSOT)
+    # Fase: Auth Context (BD 2.0 SSOT)
     auth_start = time.perf_counter()
-    auth_user_id, email, is_legacy = _get_user_filter_context(user)
-
-    if auth_user_id is None and email is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Missing auth_user_id and email in auth context", "error_code": "AUTH_MISSING_IDENTITY"}
-        )
+    auth_user_id = _get_auth_user_id(user)
     auth_ms = (time.perf_counter() - auth_start) * 1000
 
     # Fase: Validation
@@ -263,11 +258,10 @@ async def list_active_projects(
     mapped_column = SORT_COLUMN_WHITELIST[ordenar_por]
     _log_legacy_alias_warning(ordenar_por, "list_active_projects", mapped_column)
 
-    # Fase: DB Query (SSOT: preferir auth_user_id)
+    # Fase: DB Query (BD 2.0: solo auth_user_id, NO user_email)
     db_start = time.perf_counter()
     items_or_tuple = await q.list_active_projects(
         auth_user_id=auth_user_id,
-        user_email=email if is_legacy else None,
         order_by=mapped_column,
         asc=asc,
         limit=limit,
@@ -276,7 +270,7 @@ async def list_active_projects(
     )
     db_ms = (time.perf_counter() - db_start) * 1000
 
-    # Fase: Serialization (RETORNO FLEXIBLE)
+    # Fase: Serialization
     ser_start = time.perf_counter()
     if isinstance(items_or_tuple, tuple):
         items, total = items_or_tuple
@@ -288,22 +282,17 @@ async def list_active_projects(
     ser_ms = (time.perf_counter() - ser_start) * 1000
 
     total_ms = (time.perf_counter() - start_time) * 1000
-    user_log = str(auth_user_id)[:8] + "..." if auth_user_id else email
+    user_log = str(auth_user_id)[:8] + "..."
 
     if db_ms > 500:
         logger.warning(
-            "query_slow op=list_active_projects phase=db_query user=%s duration_ms=%.2f rows=%d legacy=%s",
-            user_log, db_ms, len(items), is_legacy
-        )
-    if ser_ms > 500:
-        logger.warning(
-            "query_slow op=list_active_projects phase=serialization user=%s duration_ms=%.2f rows=%d",
-            user_log, ser_ms, len(items)
+            "query_slow op=list_active_projects phase=db_query user=%s duration_ms=%.2f rows=%d",
+            user_log, db_ms, len(items)
         )
 
     logger.info(
-        "query_completed op=list_active_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d legacy=%s",
-        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items), is_legacy
+        "query_completed op=list_active_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d",
+        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items)
     )
 
     return ProjectListResponse(
@@ -333,15 +322,9 @@ async def list_closed_projects(
 ):
     start_time = time.perf_counter()
 
-    # Fase: Auth Context (SSOT)
+    # Fase: Auth Context (BD 2.0 SSOT)
     auth_start = time.perf_counter()
-    auth_user_id, email, is_legacy = _get_user_filter_context(user)
-
-    if auth_user_id is None and email is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Missing auth_user_id and email in auth context", "error_code": "AUTH_MISSING_IDENTITY"}
-        )
+    auth_user_id = _get_auth_user_id(user)
     auth_ms = (time.perf_counter() - auth_start) * 1000
 
     # Fase: Validation
@@ -357,11 +340,10 @@ async def list_closed_projects(
     mapped_column = SORT_COLUMN_WHITELIST[ordenar_por]
     _log_legacy_alias_warning(ordenar_por, "list_closed_projects", mapped_column)
 
-    # Fase: DB Query (SSOT: preferir auth_user_id)
+    # Fase: DB Query (BD 2.0: solo auth_user_id, NO user_email)
     db_start = time.perf_counter()
     items_or_tuple = await q.list_closed_projects(
         auth_user_id=auth_user_id,
-        user_email=email if is_legacy else None,
         order_by=mapped_column,
         asc=asc,
         limit=limit,
@@ -370,7 +352,7 @@ async def list_closed_projects(
     )
     db_ms = (time.perf_counter() - db_start) * 1000
 
-    # Fase: Serialization (RETORNO FLEXIBLE)
+    # Fase: Serialization
     ser_start = time.perf_counter()
     if isinstance(items_or_tuple, tuple):
         items, total = items_or_tuple
@@ -382,22 +364,17 @@ async def list_closed_projects(
     ser_ms = (time.perf_counter() - ser_start) * 1000
 
     total_ms = (time.perf_counter() - start_time) * 1000
-    user_log = str(auth_user_id)[:8] + "..." if auth_user_id else email
+    user_log = str(auth_user_id)[:8] + "..."
 
     if db_ms > 500:
         logger.warning(
-            "query_slow op=list_closed_projects phase=db_query user=%s duration_ms=%.2f rows=%d legacy=%s",
-            user_log, db_ms, len(items), is_legacy
-        )
-    if ser_ms > 500:
-        logger.warning(
-            "query_slow op=list_closed_projects phase=serialization user=%s duration_ms=%.2f rows=%d",
-            user_log, ser_ms, len(items)
+            "query_slow op=list_closed_projects phase=db_query user=%s duration_ms=%.2f rows=%d",
+            user_log, db_ms, len(items)
         )
 
     logger.info(
-        "query_completed op=list_closed_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d legacy=%s",
-        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items), is_legacy
+        "query_completed op=list_closed_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d",
+        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items)
     )
 
     return ProjectListResponse(
@@ -423,10 +400,11 @@ async def list_ready_projects(
     user=Depends(get_current_user),
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
-    email = extract_user_email(user)
+    # BD 2.0 SSOT: usar auth_user_id
+    auth_user_id = _get_auth_user_id(user)
 
     result = await q.list_ready_projects(
-        user_email=email,
+        auth_user_id=auth_user_id,
         limit=limit,
         offset=offset,
         include_total=include_total,

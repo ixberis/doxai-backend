@@ -2,12 +2,18 @@
 """
 backend/app/modules/projects/facades/queries/projects.py
 
-Consultas de proyectos: get_by_id, get_by_slug, list_by_user, etc.
+Consultas de proyectos: get_by_id, get_by_slug, list_by_auth_user_id, etc.
 Ahora async para compatibilidad con AsyncSession.
 
 BD 2.0 SSOT Architecture (2026-01-10):
-- auth_user_id (UUID): SSOT para ownership en tabla projects
-- user_email: LEGACY join key, mantener solo para compatibilidad temporal
+- auth_user_id (UUID): SSOT ÚNICO para ownership en tabla projects
+- NO existe columna user_email en projects (eliminada en BD 2.0)
+- Si se necesita email del usuario, hacer JOIN con app_users via auth_user_id
+
+IMPORTANTE:
+Las funciones legacy que usaban user_email han sido eliminadas porque
+la columna projects.user_email NO EXISTE en BD 2.0. Usar únicamente
+funciones con auth_user_id.
 
 Autor: Ixchel Beristain
 Fecha: 2025-10-26 (async 2025-12-27, SSOT BD 2.0 2026-01-10)
@@ -63,63 +69,6 @@ async def get_by_slug(db: AsyncSession, slug: str) -> Optional[Project]:
     return result.scalar_one_or_none()
 
 
-async def list_by_user(
-    db: AsyncSession,
-    user_email: str,
-    state: Optional[ProjectState] = None,
-    status: Optional[ProjectStatus] = None,
-    limit: int = 50,
-    offset: int = 0,
-    include_total: bool = False
-) -> List[Project] | Tuple[List[Project], int]:
-    """
-    Lista proyectos de un usuario con filtros opcionales.
-    
-    LEGACY: Usa user_email como join key. Preferir list_by_auth_user_id para SSOT.
-    
-    Args:
-        db: Sesión AsyncSession SQLAlchemy
-        user_email: Email del usuario propietario (filtro CITEXT)
-        state: Filtro opcional por estado técnico
-        status: Filtro opcional por status administrativo
-        limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
-        offset: Desplazamiento para paginación (default: 0)
-        include_total: Si True, devuelve (items, total_count)
-        
-    Returns:
-        Lista de proyectos o tupla (proyectos, total) si include_total=True
-    """
-    # Imponer límite máximo
-    effective_limit = min(limit, MAX_LIMIT)
-    
-    # LEGACY: filtrar por user_email (str)
-    query = select(Project).where(Project.user_email == user_email)
-    
-    if state is not None:
-        query = query.where(Project.state == state)
-    
-    if status is not None:
-        query = query.where(Project.status == status)
-    
-    # Si se requiere total, calcularlo antes del limit/offset
-    total = None
-    if include_total:
-        count_query = select(func.count(Project.id)).where(Project.user_email == user_email)
-        if state is not None:
-            count_query = count_query.where(Project.state == state)
-        if status is not None:
-            count_query = count_query.where(Project.status == status)
-        total = await db.scalar(count_query) or 0
-    
-    query = query.order_by(Project.created_at.desc())
-    query = query.offset(offset).limit(effective_limit)
-    
-    result = await db.execute(query)
-    items = list(result.scalars().all())
-    
-    return (items, total) if include_total else items
-
-
 async def list_by_auth_user_id(
     db: AsyncSession,
     auth_user_id: UUID,
@@ -132,7 +81,7 @@ async def list_by_auth_user_id(
     """
     Lista proyectos de un usuario por auth_user_id (UUID SSOT).
     
-    BD 2.0 SSOT: Este es el método preferido para filtrar projects.
+    BD 2.0 SSOT: Este es el ÚNICO método válido para filtrar projects por usuario.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
@@ -175,68 +124,14 @@ async def list_by_auth_user_id(
     return (items, total) if include_total else items
 
 
-async def list_by_user_id(
-    db: AsyncSession,
-    user_id: UUID,  # BD 2.0 SSOT: DEBE ser UUID, no int
-    state: Optional[ProjectState] = None,
-    status: Optional[ProjectStatus] = None,
-    limit: int = 50,
-    offset: int = 0,
-    include_total: bool = False
-) -> List[Project] | Tuple[List[Project], int]:
-    """
-    Lista proyectos de un usuario por auth_user_id (UUID).
-    
-    BD 2.0 SSOT: Este método es un alias de list_by_auth_user_id.
-    El parámetro se llama user_id por compatibilidad con firmas legacy,
-    pero DEBE recibir un UUID (auth_user_id).
-    
-    ⚠️ DEPRECATED: Usar list_by_auth_user_id directamente para nuevas integraciones.
-    
-    Args:
-        db: Sesión AsyncSession SQLAlchemy
-        user_id: UUID del usuario (SSOT auth_user_id). ❌ NO pasar int.
-        state: Filtro opcional por estado técnico
-        status: Filtro opcional por status administrativo
-        limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
-        offset: Desplazamiento para paginación (default: 0)
-        include_total: Si True, devuelve (items, total_count)
-        
-    Returns:
-        Lista de proyectos o tupla (proyectos, total) si include_total=True
-    """
-    effective_limit = min(limit, MAX_LIMIT)
-    
-    # BD 2.0 SSOT: user_id param → auth_user_id column
-    query = select(Project).where(Project.auth_user_id == user_id)
-    
-    if state is not None:
-        query = query.where(Project.state == state)
-    
-    if status is not None:
-        query = query.where(Project.status == status)
-    
-    total = None
-    if include_total:
-        count_query = select(func.count(Project.id)).where(Project.auth_user_id == user_id)
-        if state is not None:
-            count_query = count_query.where(Project.state == state)
-        if status is not None:
-            count_query = count_query.where(Project.status == status)
-        total = await db.scalar(count_query) or 0
-    
-    query = query.order_by(Project.created_at.desc())
-    query = query.offset(offset).limit(effective_limit)
-    
-    result = await db.execute(query)
-    items = list(result.scalars().all())
-    
-    return (items, total) if include_total else items
+# Alias para compatibilidad con firmas legacy
+# DEPRECATED: Usar list_by_auth_user_id directamente
+list_by_user_id = list_by_auth_user_id
 
 
 async def list_ready_projects(
     db: AsyncSession,
-    user_email: Optional[str] = None,
+    auth_user_id: Optional[UUID] = None,
     limit: int = 50,
     offset: int = 0,
     include_total: bool = False
@@ -244,9 +139,11 @@ async def list_ready_projects(
     """
     Lista proyectos en estado 'ready'.
     
+    BD 2.0 SSOT: Filtro por auth_user_id (UUID), NO por user_email.
+    
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_email: Filtro opcional por email de usuario
+        auth_user_id: Filtro opcional por UUID de usuario (SSOT)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
         offset: Desplazamiento para paginación (default: 0)
         include_total: Si True, devuelve (items, total_count)
@@ -254,20 +151,18 @@ async def list_ready_projects(
     Returns:
         Lista de proyectos listos o tupla (proyectos, total) si include_total=True
     """
-    # Imponer límite máximo
     effective_limit = min(limit, MAX_LIMIT)
     
     query = select(Project).where(Project.state == ProjectState.ready)
     
-    if user_email is not None:
-        query = query.where(Project.user_email == user_email)
+    if auth_user_id is not None:
+        query = query.where(Project.auth_user_id == auth_user_id)
     
-    # Si se requiere total, calcularlo antes del limit/offset
     total = None
     if include_total:
         count_query = select(func.count(Project.id)).where(Project.state == ProjectState.ready)
-        if user_email is not None:
-            count_query = count_query.where(Project.user_email == user_email)
+        if auth_user_id is not None:
+            count_query = count_query.where(Project.auth_user_id == auth_user_id)
         total = await db.scalar(count_query) or 0
     
     query = query.order_by(Project.ready_at.desc())
@@ -281,8 +176,7 @@ async def list_ready_projects(
 
 async def list_active_projects(
     db: AsyncSession,
-    auth_user_id: UUID = None,
-    user_email: str = None,
+    auth_user_id: UUID,
     order_by: str = "updated_at",
     asc: bool = False,
     limit: int = 50,
@@ -292,12 +186,12 @@ async def list_active_projects(
     """
     Lista proyectos activos (state != ARCHIVED) de un usuario con ordenamiento.
     
-    BD 2.0 SSOT: Preferir auth_user_id. user_email solo para compat legacy.
+    BD 2.0 SSOT: REQUIERE auth_user_id (UUID). No hay fallback a user_email
+    porque la columna no existe en BD 2.0.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        auth_user_id: UUID del usuario (SSOT, preferido)
-        user_email: Email del usuario (legacy, solo si auth_user_id no está disponible)
+        auth_user_id: UUID del usuario (SSOT, REQUERIDO)
         order_by: Columna para ordenar (updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -310,21 +204,14 @@ async def list_active_projects(
     start = time.perf_counter()
     effective_limit = min(limit, MAX_LIMIT)
     
-    # BD 2.0 SSOT: preferir auth_user_id (UUID), fallback a user_email
-    if auth_user_id is not None:
-        base_filter = (Project.auth_user_id == auth_user_id) & (Project.state != ProjectState.ARCHIVED)
-        user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
-    elif user_email is not None:
-        base_filter = (Project.user_email == user_email) & (Project.state != ProjectState.ARCHIVED)
-        user_log = f"user_email={user_email[:3]}***"
-        logger.debug("list_active_projects using legacy user_email filter")
-    else:
-        raise ValueError("Must provide auth_user_id or user_email")
+    # BD 2.0 SSOT: solo auth_user_id, NO user_email
+    base_filter = (Project.auth_user_id == auth_user_id) & (Project.state != ProjectState.ARCHIVED)
+    user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     
     # Query con ordenamiento
     query = select(Project).where(base_filter)
     
-    # Mapear columna de ordenamiento
+    # Mapear columna de ordenamiento (con fallback seguro)
     order_column = getattr(Project, order_by, Project.updated_at)
     query = query.order_by(order_column.asc() if asc else order_column.desc())
     query = query.offset(offset).limit(effective_limit)
@@ -356,8 +243,7 @@ async def list_active_projects(
 
 async def list_closed_projects(
     db: AsyncSession,
-    auth_user_id: UUID = None,
-    user_email: str = None,
+    auth_user_id: UUID,
     order_by: str = "updated_at",
     asc: bool = False,
     limit: int = 50,
@@ -367,12 +253,12 @@ async def list_closed_projects(
     """
     Lista proyectos cerrados/archivados (state == ARCHIVED) de un usuario con ordenamiento.
     
-    BD 2.0 SSOT: Preferir auth_user_id. user_email solo para compat legacy.
+    BD 2.0 SSOT: REQUIERE auth_user_id (UUID). No hay fallback a user_email
+    porque la columna no existe en BD 2.0.
     
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        auth_user_id: UUID del usuario (SSOT, preferido)
-        user_email: Email del usuario (legacy, solo si auth_user_id no está disponible)
+        auth_user_id: UUID del usuario (SSOT, REQUERIDO)
         order_by: Columna para ordenar (updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
@@ -385,21 +271,14 @@ async def list_closed_projects(
     start = time.perf_counter()
     effective_limit = min(limit, MAX_LIMIT)
     
-    # BD 2.0 SSOT: preferir auth_user_id (UUID), fallback a user_email
-    if auth_user_id is not None:
-        base_filter = (Project.auth_user_id == auth_user_id) & (Project.state == ProjectState.ARCHIVED)
-        user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
-    elif user_email is not None:
-        base_filter = (Project.user_email == user_email) & (Project.state == ProjectState.ARCHIVED)
-        user_log = f"user_email={user_email[:3]}***"
-        logger.debug("list_closed_projects using legacy user_email filter")
-    else:
-        raise ValueError("Must provide auth_user_id or user_email")
+    # BD 2.0 SSOT: solo auth_user_id, NO user_email
+    base_filter = (Project.auth_user_id == auth_user_id) & (Project.state == ProjectState.ARCHIVED)
+    user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     
     # Query con ordenamiento
     query = select(Project).where(base_filter)
     
-    # Mapear columna de ordenamiento
+    # Mapear columna de ordenamiento (con fallback seguro)
     order_column = getattr(Project, order_by, Project.updated_at)
     query = query.order_by(order_column.asc() if asc else order_column.desc())
     query = query.offset(offset).limit(effective_limit)
@@ -429,25 +308,27 @@ async def list_closed_projects(
     return items, total
 
 
-async def count_projects_by_user(
+async def count_projects_by_auth_user_id(
     db: AsyncSession,
-    user_email: str,
+    auth_user_id: UUID,
     state: Optional[ProjectState] = None,
     status: Optional[ProjectStatus] = None
 ) -> int:
     """
     Cuenta proyectos de un usuario con filtros opcionales.
     
+    BD 2.0 SSOT: Usa auth_user_id (UUID), NO user_email.
+    
     Args:
         db: Sesión AsyncSession SQLAlchemy
-        user_email: Email del usuario
+        auth_user_id: UUID del usuario (SSOT)
         state: Filtro opcional por estado
         status: Filtro opcional por status
         
     Returns:
         Número de proyectos que cumplen los criterios
     """
-    query = select(func.count(Project.id)).where(Project.user_email == user_email)
+    query = select(func.count(Project.id)).where(Project.auth_user_id == auth_user_id)
     
     if state is not None:
         query = query.where(Project.state == state)
@@ -458,15 +339,20 @@ async def count_projects_by_user(
     return await db.scalar(query) or 0
 
 
+# Alias para compatibilidad
+# DEPRECATED: Usar count_projects_by_auth_user_id
+count_projects_by_user = count_projects_by_auth_user_id
+
+
 __all__ = [
     "get_by_id",
     "get_by_slug",
-    "list_by_user",
-    "list_by_user_id",
     "list_by_auth_user_id",
+    "list_by_user_id",  # Alias deprecated
     "list_ready_projects",
     "list_active_projects",
     "list_closed_projects",
-    "count_projects_by_user",
+    "count_projects_by_auth_user_id",
+    "count_projects_by_user",  # Alias deprecated
     "MAX_LIMIT",
 ]

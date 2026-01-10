@@ -102,7 +102,7 @@ async def validate_project_file(
     uid, uemail = extract_user_id_and_email(user)
     file = await svc.validate_file(
         file_id=file_id,
-        user_id=uid,
+        auth_user_id=uid,
         user_email=uemail
     )
     return {"success": True, "file_id": str(file.id)}
@@ -121,7 +121,7 @@ async def move_project_file(
     uid, uemail = extract_user_id_and_email(user)
     file = await svc.move_file(
         file_id=file_id,
-        user_id=uid,
+        auth_user_id=uid,
         user_email=uemail,
         new_path=payload.new_path
     )
@@ -140,7 +140,7 @@ async def delete_project_file(
     uid, uemail = extract_user_id_and_email(user)
     ok = await svc.delete_file(
         file_id=file_id,
-        user_id=uid,
+        auth_user_id=uid,
         user_email=uemail
     )
     return {"success": bool(ok)}

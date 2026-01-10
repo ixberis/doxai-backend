@@ -21,6 +21,15 @@ Notas:
 - Se añaden timeouts a nivel de conexión (asyncpg: timeout, command_timeout).
 - Se aplica SET SESSION statement_timeout al abrir cada sesión (configurable).
 - QueuePool con pool_pre_ping=True valida conexiones antes de reusar.
+
+DECISIÓN TÉCNICA (PgBouncer + BD 2.0):
+- NO se usa SET LOCAL statement_timeout por query individual.
+- PgBouncer en transaction pooling no garantiza que SET LOCAL tenga efecto
+  si no hay una transacción explícita (BEGIN).
+- SET SESSION es confiable porque PgBouncer respeta settings de sesión dentro
+  de una conexión lógica.
+- Si se necesita timeout más corto para queries específicas, usar asyncio.timeout()
+  en el caller, NO SET LOCAL.
 """
 
 import os
@@ -253,8 +262,25 @@ else:
 
 async def _configure_session(session: AsyncSession) -> None:
     """
-    Aplica configuraciones por sesión:
+    Aplica configuraciones por sesión (best-effort):
     - SET SESSION statement_timeout para limitar consultas "largas" en esta sesión.
+    
+    DECISIÓN TÉCNICA (PgBouncer + BD 2.0):
+    - SET SESSION es best-effort, NO garantía absoluta con PgBouncer.
+    - PgBouncer puede reciclar conexiones, reseteando configuraciones de sesión.
+    - Para timeouts deterministas en endpoints críticos (login, projects list),
+      usar asyncio.timeout() o asyncio.wait_for() en el caller.
+    
+    Razón de usar SET SESSION (no SET LOCAL):
+    - SET LOCAL solo tiene efecto dentro de una transacción explícita (BEGIN).
+    - Con PgBouncer en transaction pooling, las queries sin BEGIN explícito
+      ignoran SET LOCAL silenciosamente.
+    - SET SESSION tiene mejor probabilidad de ser respetado, pero no es 100%.
+    
+    Estrategia de defensa en profundidad:
+    1. SET SESSION como primera capa (best-effort)
+    2. asyncio.timeout() en callers críticos como segunda capa (determinista)
+    3. Pool timeout (pool_timeout) como última línea de defensa
     """
     if SKIP_DB_INIT:
         return
