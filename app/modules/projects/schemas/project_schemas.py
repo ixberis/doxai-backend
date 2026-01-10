@@ -17,7 +17,7 @@ Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
-from pydantic import Field, EmailStr, field_validator, ConfigDict
+from pydantic import Field, field_validator, ConfigDict
 
 from app.shared.utils.base_models import UTF8SafeModel
 from app.modules.projects.enums.project_state_enum import ProjectState
@@ -130,7 +130,6 @@ class ProjectRead(UTF8SafeModel):
     """
     project_id: UUID = Field(..., alias="id", description="ID único del proyecto")
     auth_user_id: UUID = Field(..., description="ID del usuario propietario (UUID SSOT)")
-    user_email: EmailStr = Field(..., description="Email del propietario")
     project_name: str = Field(..., description="Nombre del proyecto")
     project_slug: str = Field(..., description="Slug único del proyecto")
     project_description: Optional[str] = Field(None, description="Descripción")
@@ -148,7 +147,6 @@ class ProjectRead(UTF8SafeModel):
             "example": {
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
                 "auth_user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
-                "user_email": "user@example.com",
                 "project_name": "Propuesta Técnica Q4",
                 "project_slug": "propuesta-tecnica-q4",
                 "project_description": "Análisis de propuesta",
@@ -177,7 +175,6 @@ class ProjectResponse(UTF8SafeModel):
                 "project": {
                     "project_id": "123e4567-e89b-12d3-a456-426614174000",
                     "auth_user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
-                    "user_email": "user@example.com",
                     "project_name": "Mi Proyecto",
                     "project_slug": "mi-proyecto",
                     "project_description": "Descripción del proyecto",

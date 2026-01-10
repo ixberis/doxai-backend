@@ -314,11 +314,10 @@ class InMemoryProjectsQueryService:
             "archived_at": None,
         }
 
-    async def list_projects_by_user(
+    async def list_projects_by_auth_user_id(
         self,
-        auth_user_id: Optional[UUID] = None,
+        auth_user_id: UUID,
         *,
-        user_email: Optional[str] = None,
         state: Optional[str] = None,
         status: Optional[str] = None,
         include_total: bool = False,
@@ -326,15 +325,11 @@ class InMemoryProjectsQueryService:
         offset: int = 0,
     ):
         """
-        Lista proyectos del usuario.
+        Lista proyectos del usuario por auth_user_id (UUID).
         Retorna: (items, total) si include_total=True, else items
-        BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id.
+        BD 2.0 SSOT: auth_user_id (UUID) es el único identificador.
         """
-        items = self._projects[:]
-        if user_email is not None:
-            items = [p for p in items if p.get("user_email") == user_email]
-        elif auth_user_id is not None:
-            items = [p for p in items if p["auth_user_id"] == auth_user_id]
+        items = [p for p in self._projects if p["auth_user_id"] == auth_user_id]
         if state is not None:
             items = [p for p in items if p["state"] == state]
         if status is not None:

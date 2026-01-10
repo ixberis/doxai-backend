@@ -21,7 +21,7 @@ from app.modules.projects.routes.deps import get_projects_command_service
 from app.modules.projects.enums import ProjectStatus, ProjectState
 from app.modules.projects.schemas import ProjectRead, ProjectResponse
 from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_user_id_and_email
+from app.shared.auth_context import extract_auth_user_id_and_email
 
 router = APIRouter(tags=["projects:lifecycle"])
 
@@ -68,7 +68,7 @@ async def change_status(
     """
     Cambia el status administrativo del proyecto. Requiere propiedad.
     """
-    uid, uemail = extract_user_id_and_email(user)
+    auth_uid, uemail = extract_auth_user_id_and_email(user)
     
     # Normalizar y mapear slug a enum
     slug = _norm_slug(status_slug)
@@ -82,7 +82,7 @@ async def change_status(
     
     project = await svc.change_status(
         project_id,
-        user_id=uid,
+        auth_user_id=auth_uid,
         user_email=uemail,
         new_status=new_status,
     )
@@ -103,7 +103,7 @@ async def transition_state(
     """
     Transiciona el estado técnico del proyecto. Requiere propiedad.
     """
-    uid, uemail = extract_user_id_and_email(user)
+    auth_uid, uemail = extract_auth_user_id_and_email(user)
     
     # Normalizar y mapear slug a enum
     slug = _norm_slug(state_slug)
@@ -114,7 +114,7 @@ async def transition_state(
     
     project = await svc.transition_state(
         project_id,
-        user_id=uid,
+        auth_user_id=auth_uid,
         user_email=uemail,
         to_state=to_state,
     )
@@ -134,10 +134,10 @@ async def archive_project(
     """
     Archiva (soft delete) un proyecto. Requiere propiedad.
     """
-    uid, uemail = extract_user_id_and_email(user)
+    auth_uid, uemail = extract_auth_user_id_and_email(user)
     project = await svc.archive(
         project_id,
-        user_id=uid,
+        auth_user_id=auth_uid,
         user_email=uemail,
     )
     return ProjectResponse(success=True, message="Proyecto archivado", project=_coerce_to_project_read(project))
