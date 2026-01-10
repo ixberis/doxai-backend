@@ -12,6 +12,7 @@ Optimizations (2026-01-10):
 
 Author: DoxAI
 Updated: 2026-01-10 - Async Redis + LUA script optimization
+         2026-01-10 - Reduced log verbosity for production (RATE_LIMIT_DEBUG flag)
 """
 from __future__ import annotations
 
@@ -26,6 +27,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Environment flag to enable verbose rate limit debug logs (default: off in production)
+RATE_LIMIT_DEBUG = os.getenv("RATE_LIMIT_DEBUG", "0").lower() in ("1", "true", "yes")
 
 # Try to import redis.asyncio (redis-py >= 4.2.0)
 try:
@@ -376,7 +380,8 @@ class RateLimitService:
             
             elapsed_ms = (time.perf_counter() - start) * 1000
             
-            if logger.isEnabledFor(logging.DEBUG):
+            # Only log debug details if RATE_LIMIT_DEBUG is explicitly enabled
+            if RATE_LIMIT_DEBUG and logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "rate_limit_debug op=check %s redis_ms=%.2f roundtrips=%d "
                     "current_count=%d ttl=%d allowed=%s",

@@ -144,11 +144,8 @@ class UserService:
         """
         Verifica que la conexión esté viva ejecutando SELECT 1.
         
-        NOTA (BD 2.0 / PgBouncer):
-        NO usamos SET LOCAL statement_timeout aquí. Con PgBouncer en transaction pooling,
-        SET LOCAL no es confiable porque la transacción puede no estar explícitamente iniciada.
         El timeout global se aplica a nivel de sesión en database.py (_configure_session)
-        usando SET SESSION, que es persistente durante toda la conexión lógica.
+        usando SET SESSION, que es persistente durante toda la conexión.
         """
         try:
             await session.execute(text("SELECT 1"))
@@ -167,13 +164,10 @@ class UserService:
         Guards previos a query:
           - Ping solo cuando NO usamos sesión prestada (para evitar overhead en login).
         
-        NOTA (BD 2.0 / PgBouncer - decisión deliberada):
-        NO se aplica SET LOCAL statement_timeout por query. Razones:
-        1. PgBouncer en transaction pooling no garantiza que SET LOCAL tenga efecto
-           si no hay una transacción explícita (BEGIN).
-        2. Genera falsa sensación de control sobre timeouts.
-        3. El timeout real y determinista se aplica a nivel de sesión via SET SESSION
-           en database.py (_configure_session) con DB_SESSION_STATEMENT_TIMEOUT_MS.
+        NOTA (BD 2.0 - decisión deliberada):
+        NO se aplica SET LOCAL statement_timeout por query. El timeout real y 
+        determinista se aplica a nivel de sesión via SET SESSION en database.py 
+        (_configure_session) con DB_SESSION_STATEMENT_TIMEOUT_MS.
         
         El parámetro stmt_timeout_ms se mantiene para compatibilidad de API pero
         no tiene efecto. Si se necesita un timeout más corto para una query específica,
@@ -191,8 +185,8 @@ class UserService:
         Obtiene un usuario por email (case-insensitive). Devuelve None si no existe.
 
         Timeouts (defensa en profundidad):
-          - asyncio.timeout() garantiza timeout determinista (no depende de PgBouncer).
-          - SET SESSION statement_timeout es best-effort adicional.
+          - asyncio.timeout() garantiza timeout determinista.
+          - SET SESSION statement_timeout es capa adicional (configurado en database.py).
           
         Args:
             email: Email del usuario a buscar

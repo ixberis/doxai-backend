@@ -226,9 +226,11 @@ class AuthService:
     # ------------------------------------------------------------------ #
     # Login y refresh de tokens
     # ------------------------------------------------------------------ #
-    async def login(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
+    async def login(
+        self, data: Mapping[str, Any] | Any, *, request: Any = None
+    ) -> Dict[str, Any]:
         payload = as_dict(data)
-        return await self._login_flow.login(payload)
+        return await self._login_flow.login(payload, request=request)
 
     async def refresh_tokens(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         return await self._login_flow.refresh_tokens(data)

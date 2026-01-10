@@ -19,6 +19,17 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 
+def _format_timing(value) -> str:
+    """
+    Safely format a timing value for logging.
+    Never breaks - returns str(v) on any error.
+    """
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 class TimingMiddleware(BaseHTTPMiddleware):
     """
     Middleware que registra tiempos de respuesta por endpoint.
@@ -41,13 +52,8 @@ class TimingMiddleware(BaseHTTPMiddleware):
         method = request.method
         start_time = time.perf_counter()
         
-        # Log inicio (solo para rutas relevantes)
-        if path.startswith("/api"):
-            logger.info(
-                "route_started method=%s path=%s",
-                method,
-                path,
-            )
+        # Note: route_started logs removed to reduce volume (Railway rate limits)
+        # Only route_completed is logged now
         
         try:
             response = await call_next(request)
@@ -55,16 +61,31 @@ class TimingMiddleware(BaseHTTPMiddleware):
             # Calcular duración
             duration_ms = (time.perf_counter() - start_time) * 1000
             
-            # Log fin con duración
+            # Log fin con duración (solo para API routes)
             if path.startswith("/api"):
+                # WARN for slow requests (>1s), INFO otherwise
                 log_level = logging.WARNING if duration_ms > 1000 else logging.INFO
+                
+                # Extract breakdown timings from request.state (primary source)
+                # Robust formatting: never break logging due to unexpected types
+                extra_timings = ""
+                
+                db_exec = getattr(request.state, "db_exec_ms", None)
+                rate_limit = getattr(request.state, "rate_limit_total_ms", None)
+                
+                if db_exec is not None:
+                    extra_timings += f" db_exec_ms={_format_timing(db_exec)}"
+                if rate_limit is not None:
+                    extra_timings += f" rate_limit_total_ms={_format_timing(rate_limit)}"
+                
                 logger.log(
                     log_level,
-                    "route_completed method=%s path=%s status=%d duration_ms=%.2f",
+                    "route_completed method=%s path=%s status=%d duration_ms=%.2f%s",
                     method,
                     path,
                     response.status_code,
                     duration_ms,
+                    extra_timings,
                 )
             
             # Agregar header para debugging

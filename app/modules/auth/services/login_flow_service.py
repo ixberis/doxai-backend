@@ -162,7 +162,9 @@ class LoginFlowService:
         
         return delay
 
-    async def login(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
+    async def login(
+        self, data: Mapping[str, Any] | Any, *, request: Optional[Any] = None
+    ) -> Dict[str, Any]:
         """
         Autentica al usuario y retorna tokens.
 
@@ -193,6 +195,10 @@ class LoginFlowService:
         ip_address = payload.get("ip_address", "unknown")
         user_agent = payload.get("user_agent")
         
+        # Use request from parameter (preferred) or fallback to payload (legacy)
+        # Pop _request from payload to prevent serialization/logging leaks
+        _request = request or payload.pop("_request", None)
+        
         # Mask email para logs (evita datos sensibles)
         email_masked = email[:3] + "***" if len(email) > 3 else "***"
 
@@ -219,6 +225,9 @@ class LoginFlowService:
             # Calculate total before raising
             timings["rate_limit_ip_ms"] = 0
             timings["rate_limit_total_ms"] = timings["rate_limit_email_ms"]
+            # Set request.state for timing_middleware (even on 429)
+            if _request is not None:
+                _request.state.rate_limit_total_ms = timings["rate_limit_total_ms"]
             raise RateLimitExceeded(
                 retry_after=email_result.retry_after,
                 detail="Demasiados intentos de inicio de sesión. Intente más tarde.",
@@ -238,6 +247,9 @@ class LoginFlowService:
         
         if not ip_result.allowed:
             AuditService.log_login_blocked(email=email, ip_address=ip_address)
+            # Set request.state for timing_middleware (even on 429)
+            if _request is not None:
+                _request.state.rate_limit_total_ms = timings["rate_limit_total_ms"]
             raise RateLimitExceeded(
                 retry_after=ip_result.retry_after,
                 detail="Demasiados intentos desde esta dirección IP. Intente más tarde.",
@@ -504,6 +516,11 @@ class LoginFlowService:
             timings.get("session_create_ms", 0),
             timings["total_ms"],
         )
+
+        # Set request.state for timing_middleware breakdown
+        if _request is not None:
+            _request.state.db_exec_ms = timings.get("db_exec_ms", 0)
+            _request.state.rate_limit_total_ms = timings.get("rate_limit_total_ms", 0)
 
         return {
             "message": "Login exitoso.",

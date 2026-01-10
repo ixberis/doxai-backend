@@ -86,9 +86,11 @@ class AuthFacade:
 
     # ---------------------- Login / Tokens ---------------------- #
 
-    async def login(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
+    async def login(
+        self, data: Mapping[str, Any] | Any, *, request: Any = None
+    ) -> Dict[str, Any]:
         """Flujo de login de usuario."""
-        return await self._service.login(data)
+        return await self._service.login(data, request=request)
 
     async def refresh_token(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """Flujo de refresco de tokens."""

@@ -74,7 +74,8 @@ async def login(
     data = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     data.update(meta)
     
-    return await facade.login(data)
+    # Pass request as separate parameter (not in payload to avoid serialization leaks)
+    return await facade.login(data, request=request)
 
 
 # --------------------- REFRESH TOKEN --------------------- #

@@ -3,14 +3,17 @@ from __future__ import annotations
 """
 backend/app/shared/database/database.py
 
-SQLAlchemy + asyncpg detrás de PgBouncer (6543), sin prepared/statement cache.
-TLS habilitado. Pool cliente (QueuePool) para reutilizar conexiones hacia PgBouncer.
+SQLAlchemy + asyncpg con conexión directa a PostgreSQL (puerto 5432).
+TLS habilitado con verificación. Pool del lado del cliente (AsyncAdaptedQueuePool)
+para reutilizar conexiones y reducir latencia.
 
-Fase C: Se reemplaza NullPool por QueuePool para eliminar el churn de conexiones
-y reducir latencia de login de ~10s a <1s.
+Configuración actual (enero 2026):
+- Conexión directa: db.<project_ref>.supabase.co:5432
+- IPv4 add-on habilitado (compatible con Railway)
+- Pool del cliente: AsyncAdaptedQueuePool (SQLAlchemy async)
 
 Provee:
-- engine (create_async_engine con QueuePool)
+- engine (create_async_engine con pool adaptado)
 - SessionLocal (async_sessionmaker)
 - Base (DeclarativeBase con naming convention para Alembic)
 - Dependencias FastAPI: get_async_session / get_db
@@ -20,16 +23,13 @@ Provee:
 Notas:
 - Se añaden timeouts a nivel de conexión (asyncpg: timeout, command_timeout).
 - Se aplica SET SESSION statement_timeout al abrir cada sesión (configurable).
-- QueuePool con pool_pre_ping=True valida conexiones antes de reusar.
+- Pool con pool_pre_ping=True valida conexiones antes de reusar.
 
-DECISIÓN TÉCNICA (PgBouncer + BD 2.0):
-- NO se usa SET LOCAL statement_timeout por query individual.
-- PgBouncer en transaction pooling no garantiza que SET LOCAL tenga efecto
-  si no hay una transacción explícita (BEGIN).
-- SET SESSION es confiable porque PgBouncer respeta settings de sesión dentro
-  de una conexión lógica.
-- Si se necesita timeout más corto para queries específicas, usar asyncio.timeout()
-  en el caller, NO SET LOCAL.
+DECISIÓN TÉCNICA (Postgres Direct + BD 2.0):
+- NO se usa SET LOCAL statement_timeout por query individual (por consistencia).
+- SET SESSION aplica configuración a nivel de sesión.
+- Para timeouts específicos en endpoints críticos, usar asyncio.timeout() en el caller.
+- statement_cache_size=0 se mantiene por compatibilidad con posibles proxies intermediarios.
 """
 
 import os
@@ -119,8 +119,8 @@ else:
     # ── Parámetros (valores desde settings) normalizados a str
     DB_USER = _to_str_setting(getattr(settings, "db_user", None))
     DB_PASSWORD = _to_str_setting(getattr(settings, "db_password", None))
-    DB_HOST = _to_str_setting(getattr(settings, "db_host", None))          # aws-0-us-east-2.pooler.supabase.com
-    DB_PORT = _to_str_setting(getattr(settings, "db_port", None))          # 6543 (PgBouncer)
+    DB_HOST = _to_str_setting(getattr(settings, "db_host", None))          # db.<project_ref>.supabase.co
+    DB_PORT = _to_str_setting(getattr(settings, "db_port", None))          # 5432 (Direct)
     DB_NAME = _to_str_setting(getattr(settings, "db_name", None))
 
     DB_ECHO_SQL = bool(getattr(settings, "db_echo_sql", False))
@@ -140,7 +140,7 @@ else:
     DB_SESSION_STATEMENT_TIMEOUT_MS = int(getattr(settings, "db_session_statement_timeout_ms", 5000))
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Fase C: Pool cliente (QueuePool) hacia PgBouncer
+    # Pool del cliente (AsyncAdaptedQueuePool) hacia Postgres Direct
     # ══════════════════════════════════════════════════════════════════════════
     # - pool_size: conexiones permanentes en el pool del cliente
     # - max_overflow: conexiones adicionales temporales bajo carga
@@ -154,7 +154,7 @@ else:
     DB_POOL_RECYCLE: int = int(getattr(settings, "db_pool_recycle", 1800))
     DB_POOL_PRE_PING: bool = bool(getattr(settings, "db_pool_pre_ping", True))
 
-    # DSN asyncpg para PgBouncer/Supabase (puerto 6543)
+    # DSN asyncpg para Postgres Direct (puerto 5432)
     ASYNC_DSN = (
         f"postgresql+asyncpg://"
         f"{quote_plus(DB_USER)}:"
@@ -164,7 +164,7 @@ else:
 
     log_level = logger.debug if DB_ECHO_SQL else logger.info
     log_level(
-        f"[DB] Conectando a PgBouncer → {DB_HOST}:{DB_PORT}/{DB_NAME} "
+        f"[DB] Conectando a Postgres Direct → {DB_HOST}:{DB_PORT}/{DB_NAME} "
         f"(asyncpg, echo={DB_ECHO_SQL}, tls={DB_TLS_ENABLED}, tls_verify={DB_TLS_VERIFY}, "
         f"pool_size={DB_POOL_SIZE}, max_overflow={DB_MAX_OVERFLOW}, pool_pre_ping={DB_POOL_PRE_PING})"
     )
@@ -172,12 +172,12 @@ else:
 
     def build_ssl_context() -> ssl.SSLContext:
         """
-        Crea un SSLContext para conexiones TLS a Postgres.
+        Crea un SSLContext para conexiones TLS a Postgres Direct.
 
         Reglas:
           - Si DB_TLS_VERIFY = False:
               * usa contexto no verificado (CERT_NONE), sin hostname checks
-              * útil para entornos donde el chain aparece como self-signed (PgBouncer/mitm/inspección)
+              * útil para entornos donde se requiere conexión sin verificación
           - Si DB_TLS_VERIFY = True:
               * verificación estricta con CA bundle estable (certifi si está disponible)
               * fallback a truststore si existe; o create_default_context si no
@@ -205,11 +205,13 @@ else:
     ssl_context = build_ssl_context() if DB_TLS_ENABLED else None
 
 
-    # ── Engine con QueuePool (pool cliente hacia PgBouncer)
+    # ── Engine con AsyncAdaptedQueuePool (pool cliente hacia Postgres Direct)
     def _prepared_statement_name_func() -> str:
         return f"__asyncpg_{uuid4().hex[:8]}__"
 
 
+    # NOTA: statement_cache_size=0 se mantiene por compatibilidad con proxies intermediarios
+    # y como medida de seguridad ante cambios futuros de infraestructura.
     connect_args = {
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
@@ -223,11 +225,11 @@ else:
         connect_args["ssl"] = ssl_context
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Fase C: Pool interno del async engine con parámetros configurables
+    # Pool interno del async engine con parámetros configurables
     # - El async engine usa AsyncAdaptedQueuePool por defecto (no se puede
     #   especificar poolclass=QueuePool explícitamente)
     # - pool_pre_ping=True valida conexión antes de checkout
-    # - Compatibilidad PgBouncer: statement_cache_size=0
+    # - statement_cache_size=0 mantenido por compatibilidad (decisión actual)
     # ══════════════════════════════════════════════════════════════════════════
     engine = create_async_engine(
         ASYNC_DSN,
@@ -262,23 +264,16 @@ else:
 
 async def _configure_session(session: AsyncSession) -> None:
     """
-    Aplica configuraciones por sesión (best-effort):
+    Aplica configuraciones por sesión:
     - SET SESSION statement_timeout para limitar consultas "largas" en esta sesión.
     
-    DECISIÓN TÉCNICA (PgBouncer + BD 2.0):
-    - SET SESSION es best-effort, NO garantía absoluta con PgBouncer.
-    - PgBouncer puede reciclar conexiones, reseteando configuraciones de sesión.
+    DECISIÓN TÉCNICA (Postgres Direct + BD 2.0):
+    - SET SESSION aplica el timeout a nivel de sesión de forma confiable.
     - Para timeouts deterministas en endpoints críticos (login, projects list),
-      usar asyncio.timeout() o asyncio.wait_for() en el caller.
-    
-    Razón de usar SET SESSION (no SET LOCAL):
-    - SET LOCAL solo tiene efecto dentro de una transacción explícita (BEGIN).
-    - Con PgBouncer en transaction pooling, las queries sin BEGIN explícito
-      ignoran SET LOCAL silenciosamente.
-    - SET SESSION tiene mejor probabilidad de ser respetado, pero no es 100%.
+      usar asyncio.timeout() o asyncio.wait_for() en el caller como capa adicional.
     
     Estrategia de defensa en profundidad:
-    1. SET SESSION como primera capa (best-effort)
+    1. SET SESSION como primera capa (configuración de sesión)
     2. asyncio.timeout() en callers críticos como segunda capa (determinista)
     3. Pool timeout (pool_timeout) como última línea de defensa
     """
@@ -363,12 +358,12 @@ async def check_database_health(timeout_s: float = 3.0, sql: str = "SELECT 1") -
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DB identity diagnostics for Railway/Supabase mismatch
+# DB identity diagnostics for Railway/Supabase
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # PROPÓSITO:
 #   Diagnóstico temporal para identificar la DB real a la que está conectada la
-#   app cuando hay sospechas de mismatch entre Railway y Supabase/PgBouncer.
+#   app cuando hay sospechas de mismatch entre Railway y Supabase (Direct).
 #
 # USO:
 #   - Por defecto NO se ejecuta (evita ruido en logs de producción).

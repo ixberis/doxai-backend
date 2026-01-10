@@ -41,7 +41,12 @@ from typing import Optional, List, Tuple
 
 from starlette.requests import Request
 
+from app.shared.utils.log_throttle import log_once_every
+
 logger = logging.getLogger(__name__)
+
+# Environment flag to enable verbose IP security logs (default: off in production)
+IP_SECURITY_DEBUG = os.getenv("IP_SECURITY_DEBUG", "0").lower() in ("1", "true", "yes")
 
 
 # =============================================================================
@@ -233,9 +238,16 @@ def get_client_ip(request: Request) -> str:
         # Verificar si el request viene de un proxy confiable
         if socket_host and not _is_from_trusted_proxy(socket_host):
             # Request NO viene de proxy confiable → ignorar XFF (anti-spoofing)
-            logger.debug(
-                f"[IP-SECURITY] Ignoring proxy headers: {socket_host} not in TRUSTED_PROXY_CIDRS"
-            )
+            # Rate-limited log: max 1 per minute per IP to avoid spam
+            if IP_SECURITY_DEBUG:
+                log_once_every(
+                    f"ip_security_ignored:{socket_host}",
+                    60.0,  # 1 minute
+                    logger,
+                    logging.DEBUG,
+                    "[IP-SECURITY] Ignoring proxy headers: %s not in TRUSTED_PROXY_CIDRS",
+                    socket_host,
+                )
             # Usar socket_host directamente
             if _is_valid_ip(socket_host):
                 return socket_host
@@ -254,10 +266,11 @@ def get_client_ip(request: Request) -> str:
                     f"[IP-VALIDATION] X-Forwarded-For present but no valid IPs "
                     f"(invalid_count={invalid_count}, samples={invalid_samples})"
                 )
-            elif invalid_count > 0:
+            elif invalid_count > 0 and IP_SECURITY_DEBUG:
                 logger.debug(
-                    f"[IP-VALIDATION] X-Forwarded-For had {invalid_count} invalid entries "
-                    f"before valid IP (samples={invalid_samples})"
+                    "[IP-VALIDATION] X-Forwarded-For had %d invalid entries before valid IP (samples=%s)",
+                    invalid_count,
+                    invalid_samples,
                 )
             
             if valid_ip:

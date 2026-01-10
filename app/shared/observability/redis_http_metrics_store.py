@@ -227,7 +227,13 @@ class RedisHttpMetricsStore:
             # TypeError: older redis-py without GET option
             # ResponseError: server doesn't support SET ... GET
             # Fallback to GETSET (deprecated but widely supported)
-            logger.debug("RedisHttpMetricsStore: falling back to GETSET for %s (%s)", key, type(e).__name__)
+            # Rate-limited warning: 1/5min to avoid spam but maintain visibility
+            from app.shared.utils.log_throttle import log_once_every
+            log_once_every(
+                "redis_metrics_getset_fallback", 300,
+                logger, logging.WARNING,
+                "RedisHttpMetricsStore: falling back to GETSET (older Redis): %s", str(e)
+            )
             
             try:
                 old_value = await self._redis.getset(key, "0")
@@ -257,7 +263,7 @@ class RedisHttpMetricsStore:
         try:
             await self._redis.incrby(key, delta)
             await self._redis.expire(key, self.key_ttl)
-            logger.debug("RedisHttpMetricsStore: rolled back delta=%d to key=%s", delta, key)
+            # Note: Rollback logged at INFO level in flush() summary, not per-key
         except Exception as e:
             logger.error(
                 "RedisHttpMetricsStore: CRITICAL - failed to rollback delta=%d to key=%s: %s. "
@@ -284,7 +290,13 @@ class RedisHttpMetricsStore:
         
         # Acquire lock to prevent concurrent flushes (e.g., periodic + shutdown)
         if self._flush_lock.locked():
-            logger.debug("RedisHttpMetricsStore: flush already in progress, skipping")
+            # Rate-limited log: flush already in progress (1/min)
+            from app.shared.utils.log_throttle import log_once_every
+            log_once_every(
+                "redis_metrics_flush_in_progress", 60,
+                logger, logging.DEBUG,
+                "RedisHttpMetricsStore: flush already in progress, skipping"
+            )
             return
         
         async with self._flush_lock:
@@ -318,7 +330,7 @@ class RedisHttpMetricsStore:
                     to_flush[agg_key]["http_5xx_count"] += delta
             
             if not to_flush:
-                logger.debug("RedisHttpMetricsStore: nothing to flush")
+                # Silently skip - no need to log "nothing to flush" on every interval
                 return
             
             # Step 2: Write to Postgres
@@ -416,7 +428,7 @@ class DisabledHttpMetricsStore:
         pass
     
     async def start(self):
-        logger.debug("DisabledHttpMetricsStore: metrics disabled, not starting")
+        # Silently skip - metrics disabled, no need to log
     
     async def stop(self):
         pass

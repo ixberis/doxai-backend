@@ -101,6 +101,8 @@ class RateLimitDep:
     
     async def __call__(self, request: Request) -> RateLimitResult:
         """Execute rate limit check."""
+        import time
+        
         # Skip rate limiting for OPTIONS requests (CORS preflight)
         # CORSMiddleware handles these; rate limiting them breaks preflight
         if request.method == "OPTIONS":
@@ -127,13 +129,23 @@ class RateLimitDep:
                 retry_after=0,
             )
         
-        result = limiter.check_and_consume(
+        # Time the rate limit check (run sync I/O in threadpool to avoid blocking)
+        from starlette.concurrency import run_in_threadpool
+        
+        rl_start = time.perf_counter()
+        result = await run_in_threadpool(
+            limiter.check_and_consume,
             endpoint=self.endpoint,
             key_type=self.key_type,
             identifier=identifier,
             limit=self.limit,
             window_sec=self.window_sec,
         )
+        rl_ms = (time.perf_counter() - rl_start) * 1000
+        
+        # Accumulate rate_limit_total_ms on request.state (may be called multiple times)
+        current_total = getattr(request.state, "rate_limit_total_ms", None) or 0
+        request.state.rate_limit_total_ms = current_total + rl_ms
         
         if not result.allowed:
             logger.warning(
