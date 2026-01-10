@@ -202,20 +202,45 @@ class LoginFlowService:
                 detail="Email y contraseña son obligatorios.",
             )
 
-        # ─── Fase: Rate Limiting (async, 1-roundtrip LUA) ───
-        rate_start = time.perf_counter()
+        # ─── Fase: Rate Limiting (async, 1-roundtrip LUA each) ───
+        # P0: Separate email and IP rate limit timing for observability
+        
+        # 1. Check email rate limit
+        email_rl_start = time.perf_counter()
         email_result = await self._rate_limiter.check_and_consume_async(
             endpoint="auth:login",
             key_type="email",
             identifier=email,
         )
-        timings["rate_limit_ms"] = (time.perf_counter() - rate_start) * 1000
+        timings["rate_limit_email_ms"] = (time.perf_counter() - email_rl_start) * 1000
         
         if not email_result.allowed:
             AuditService.log_login_blocked(email=email, ip_address=ip_address)
+            # Calculate total before raising
+            timings["rate_limit_ip_ms"] = 0
+            timings["rate_limit_total_ms"] = timings["rate_limit_email_ms"]
             raise RateLimitExceeded(
                 retry_after=email_result.retry_after,
                 detail="Demasiados intentos de inicio de sesión. Intente más tarde.",
+            )
+        
+        # 2. Check IP rate limit (separate roundtrip)
+        ip_rl_start = time.perf_counter()
+        ip_result = await self._rate_limiter.check_and_consume_async(
+            endpoint="auth:login",
+            key_type="ip",
+            identifier=ip_address,
+        )
+        timings["rate_limit_ip_ms"] = (time.perf_counter() - ip_rl_start) * 1000
+        
+        # Calculate total (email + IP only, NO backoff, NO DB, NO logging)
+        timings["rate_limit_total_ms"] = timings["rate_limit_email_ms"] + timings["rate_limit_ip_ms"]
+        
+        if not ip_result.allowed:
+            AuditService.log_login_blocked(email=email, ip_address=ip_address)
+            raise RateLimitExceeded(
+                retry_after=ip_result.retry_after,
+                detail="Demasiados intentos desde esta dirección IP. Intente más tarde.",
             )
         
         # NOTE: Backoff se aplica DESPUÉS de verificar credenciales, solo en fallos
@@ -237,9 +262,12 @@ class LoginFlowService:
             timings["total_ms"] = (time.perf_counter() - start_total) * 1000
             logger.warning(
                 "login_failed reason=user_not_found email=%s "
-                "rate_limit_ms=%.2f backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f total_ms=%.2f",
+                "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
+                "backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f total_ms=%.2f",
                 email_masked,
-                timings.get("rate_limit_ms", 0),
+                timings.get("rate_limit_email_ms", 0),
+                timings.get("rate_limit_ip_ms", 0),
+                timings.get("rate_limit_total_ms", 0),
                 timings.get("backoff_ms", 0),
                 timings.get("db_prep_ms", 0),
                 timings.get("db_exec_ms", 0),
@@ -302,9 +330,12 @@ class LoginFlowService:
             timings["total_ms"] = (time.perf_counter() - start_total) * 1000
             logger.warning(
                 "login_failed reason=invalid_credentials email=%s "
-                "rate_limit_ms=%.2f backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f total_ms=%.2f",
+                "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
+                "backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f total_ms=%.2f",
                 email_masked,
-                timings.get("rate_limit_ms", 0),
+                timings.get("rate_limit_email_ms", 0),
+                timings.get("rate_limit_ip_ms", 0),
+                timings.get("rate_limit_total_ms", 0),
                 timings.get("backoff_ms", 0),
                 timings.get("db_prep_ms", 0),
                 timings.get("db_exec_ms", 0),
@@ -346,10 +377,13 @@ class LoginFlowService:
             timings["total_ms"] = (time.perf_counter() - start_total) * 1000
             logger.warning(
                 "login_failed reason=account_not_activated email=%s "
-                "rate_limit_ms=%.2f backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+                "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
+                "backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
                 "activation_check_ms=%.2f total_ms=%.2f",
                 email_masked,
-                timings.get("rate_limit_ms", 0),
+                timings.get("rate_limit_email_ms", 0),
+                timings.get("rate_limit_ip_ms", 0),
+                timings.get("rate_limit_total_ms", 0),
                 timings.get("backoff_ms", 0),
                 timings.get("db_prep_ms", 0),
                 timings.get("db_exec_ms", 0),
@@ -379,8 +413,8 @@ class LoginFlowService:
                 },
             )
 
-        # Login exitoso - reset rate limit counters (async)
-        await self._reset_rate_limit_counters_async(ip_address, email)
+        # Login exitoso - reset rate limit counters (async) with timing
+        await self._reset_rate_limit_counters_async(ip_address, email, timings)
 
         # ═══════════════════════════════════════════════════════════════════════
         # SSOT: Garantizar que usuario tiene auth_user_id (fix legacy)
@@ -453,10 +487,14 @@ class LoginFlowService:
         timings["total_ms"] = (time.perf_counter() - start_total) * 1000
         logger.info(
             "login_completed auth_user_id=%s "
-            "rate_limit_ms=%.2f conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+            "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_reset_ms=%.2f rate_limit_total_ms=%.2f "
+            "conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
             "activation_check_ms=%.2f token_issue_ms=%.2f session_create_ms=%.2f total_ms=%.2f",
             str(user.auth_user_id)[:8] + "...",
-            timings.get("rate_limit_ms", 0),
+            timings.get("rate_limit_email_ms", 0),
+            timings.get("rate_limit_ip_ms", 0),
+            timings.get("rate_limit_reset_ms", 0),
+            timings.get("rate_limit_total_ms", 0),
             timings.get("conn_checkout_ms", 0),
             timings.get("db_prep_ms", 0),
             timings.get("db_exec_ms", 0),
@@ -482,13 +520,21 @@ class LoginFlowService:
             },
         }
 
-    async def _reset_rate_limit_counters_async(self, ip_address: str, email: str) -> None:
-        """Reset rate limit counters on successful login (async)."""
+    async def _reset_rate_limit_counters_async(
+        self, ip_address: str, email: str, timings: Dict[str, float]
+    ) -> None:
+        """
+        Reset rate limit counters on successful login (async).
+        Records reset timing separately from check timing.
+        """
+        reset_start = time.perf_counter()
         try:
             await self._rate_limiter.reset_key_async("auth:login", "email", email)
             await self._rate_limiter.reset_key_async("auth:login", "ip", ip_address)
         except Exception as e:
             logger.warning("rate_limit_reset_failed error=%s", str(e))
+        finally:
+            timings["rate_limit_reset_ms"] = (time.perf_counter() - reset_start) * 1000
 
     async def refresh_tokens(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """

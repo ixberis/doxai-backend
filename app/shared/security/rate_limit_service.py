@@ -182,13 +182,14 @@ class RateLimitService:
             )
             RateLimitService._salt_warning_logged = True
         
-        # Log initialization
+        # Log initialization once per process with PID
+        pid = os.getpid()
         if self._redis_url and REDIS_ASYNC_AVAILABLE:
-            logger.info("RateLimitService: async Redis configured (lazy connect)")
+            logger.info("RateLimitService: async Redis configured (lazy connect) pid=%d", pid)
         elif not self._redis_url:
-            logger.info("RateLimitService: REDIS_URL not configured, using in-memory storage")
+            logger.info("RateLimitService: REDIS_URL not configured, using in-memory storage pid=%d", pid)
         elif not REDIS_ASYNC_AVAILABLE:
-            logger.warning("RateLimitService: redis.asyncio not available, using in-memory storage")
+            logger.warning("RateLimitService: redis.asyncio not available, using in-memory storage pid=%d", pid)
     
     @property
     def is_enabled(self) -> bool:
@@ -250,7 +251,10 @@ class RateLimitService:
                 )
                 
                 self._async_connected = True
-                logger.info("RateLimitService: async Redis connected, LUA script loaded")
+                logger.info(
+                    "RateLimitService: async Redis connected, LUA script loaded pid=%d",
+                    os.getpid()
+                )
                 return True
                 
             except Exception as e:
