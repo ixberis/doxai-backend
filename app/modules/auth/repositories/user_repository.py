@@ -60,34 +60,33 @@ class UserRepository:
 
     async def get_by_email(self, email: str) -> Optional[AppUser]:
         """
-        Obtiene un usuario por email (normalizado en minúsculas).
+        Obtiene un usuario por email.
+        Usa comparación directa para aprovechar índice CITEXT (case-insensitive).
         Devuelve None si no existe.
         """
-        norm_email = (email or "").strip().lower()
+        norm_email = (email or "").strip().lower()  # Higiene de input, no afecta CITEXT
         if not norm_email:
             return None
 
-        stmt = select(AppUser).where(
-            func.lower(AppUser.user_email) == norm_email
-        )
+        # Comparación directa: CITEXT maneja case-insensitivity a nivel DB
+        stmt = select(AppUser).where(AppUser.user_email == norm_email)
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def exists_by_email(self, email: str) -> bool:
         """
         Indica si ya existe un usuario con el email dado.
+        Usa EXISTS para cortar en el primer match (más eficiente que COUNT).
         Útil para validaciones de registro.
         """
-        norm_email = (email or "").strip().lower()
+        norm_email = (email or "").strip().lower()  # Higiene de input
         if not norm_email:
             return False
 
-        stmt = select(func.count()).select_from(AppUser).where(
-            func.lower(AppUser.user_email) == norm_email
-        )
+        # EXISTS corta en primer match, aprovecha índice CITEXT
+        stmt = select(select(1).where(AppUser.user_email == norm_email).exists())
         result = await self._db.execute(stmt)
-        count = result.scalar_one() or 0
-        return count > 0
+        return bool(result.scalar())
 
     async def list_by_status(
         self,

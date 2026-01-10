@@ -71,12 +71,12 @@ def extract_user_id(user: Any) -> int:
     Raises:
         HTTPException 401: Si no hay user_id válido en el contexto
     """
-    # Intentar obtener user_id del objeto
-    user_id = getattr(user, "user_id", None)
+    # Intentar obtener user_id del objeto (legacy) o auth_user_id (BD 2.0 SSOT)
+    user_id = getattr(user, "user_id", None) or getattr(user, "auth_user_id", None)
     
-    # Si es dict, buscar en keys
+    # Si es dict, buscar en keys (priorizar auth_user_id para BD 2.0)
     if user_id is None and isinstance(user, dict):
-        user_id = user.get("user_id")
+        user_id = user.get("auth_user_id") or user.get("user_id")
     
     # Validar que existe
     if user_id is None:

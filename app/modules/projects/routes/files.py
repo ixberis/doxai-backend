@@ -56,7 +56,7 @@ async def list_project_files(
 ):
     """Lista archivos del proyecto. Siempre devuelve total."""
     uid, _ = extract_user_id_and_email(user)
-    items, total = await q.list_files(project_id=project_id, user_id=uid, limit=limit, offset=offset, include_total=True)
+    items, total = await q.list_files(project_id=project_id, auth_user_id=uid, limit=limit, offset=offset, include_total=True)
     # items son dicts, no necesitan conversión
     return {
         "success": True,
@@ -79,7 +79,7 @@ async def add_project_file(
     uid, uemail = extract_user_id_and_email(user)
     file = await svc.add_file(
         project_id=project_id,
-        user_id=uid,
+        auth_user_id=uid,
         user_email=uemail,
         path=payload.path,
         filename=payload.filename,
