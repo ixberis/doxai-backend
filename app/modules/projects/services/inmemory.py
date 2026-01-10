@@ -73,45 +73,63 @@ class DummyFacade:
         Nota: auth_user_id y user_email son Optional[UUID] y Optional[EmailStr] en el schema
         (ProjectFileEventLogRead líneas 54-60), por lo que None es válido para eventos
         generados por el sistema.
+        
+        IMPORTANTE: Todos los campos requeridos por ProjectFileEventLogRead deben estar
+        presentes, incluyendo project_file_name_snapshot y project_file_path_snapshot.
         """
         now = datetime.now(timezone.utc)
         base_project_id = UUID("00000000-0000-0000-0000-000000000001")
         base_file_id = UUID("11111111-1111-1111-1111-111111111111")
 
         # Usar solo event_types válidos del enum: uploaded, validated, moved, deleted
-        # Incluir todos los campos requeridos por ProjectFileEventLogRead schema
+        # Incluir TODOS los campos requeridos por ProjectFileEventLogRead schema
         self._events = [
             {
                 "id": UUID("33333333-3333-3333-3333-333333333331"),
                 "project_id": base_project_id,
-                "file_id": base_file_id,
+                "project_file_id": base_file_id,
+                "project_file_id_snapshot": base_file_id,
                 "event_type": ProjectFileEvent.UPLOADED.value,
                 "event_details": "File uploaded",
-                "event_metadata": {},
-                "auth_user_id": None,  # BD 2.0 SSOT
-                "user_email": None,
+                "user_id": None,  # Optional en schema
+                "user_email": None,  # Optional en schema
+                # Campos requeridos por ProjectFileEventLogRead
+                "project_file_name_snapshot": "document_v1.pdf",
+                "project_file_path_snapshot": "/projects/001/documents/document_v1.pdf",
+                "project_file_size_kb_snapshot": Decimal("1024.50"),
+                "project_file_checksum_snapshot": "abc123def456",
                 "created_at": now - timedelta(hours=3),
             },
             {
                 "id": UUID("33333333-3333-3333-3333-333333333332"),
                 "project_id": base_project_id,
-                "file_id": base_file_id,
+                "project_file_id": base_file_id,
+                "project_file_id_snapshot": base_file_id,
                 "event_type": ProjectFileEvent.VALIDATED.value,
                 "event_details": "File validated",
-                "event_metadata": {},
-                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
+                "user_id": self.default_auth_user_id,
                 "user_email": "test@example.com",
+                # Campos requeridos por ProjectFileEventLogRead
+                "project_file_name_snapshot": "document_v1.pdf",
+                "project_file_path_snapshot": "/projects/001/documents/document_v1.pdf",
+                "project_file_size_kb_snapshot": Decimal("1024.50"),
+                "project_file_checksum_snapshot": "abc123def456",
                 "created_at": now - timedelta(hours=2),
             },
             {
                 "id": UUID("33333333-3333-3333-3333-333333333333"),
                 "project_id": base_project_id,
-                "file_id": base_file_id,
+                "project_file_id": base_file_id,
+                "project_file_id_snapshot": base_file_id,
                 "event_type": ProjectFileEvent.MOVED.value,
-                "event_details": "File moved",
-                "event_metadata": {"old_path": "/a", "new_path": "/b"},
-                "auth_user_id": self.default_auth_user_id,  # BD 2.0 SSOT
+                "event_details": {"old_path": "/a", "new_path": "/b"},
+                "user_id": self.default_auth_user_id,
                 "user_email": "test@example.com",
+                # Campos requeridos por ProjectFileEventLogRead
+                "project_file_name_snapshot": "document_v1.pdf",
+                "project_file_path_snapshot": "/projects/001/documents/document_v1.pdf",
+                "project_file_size_kb_snapshot": Decimal("1024.50"),
+                "project_file_checksum_snapshot": "abc123def456",
                 "created_at": now - timedelta(hours=1),
             },
         ]

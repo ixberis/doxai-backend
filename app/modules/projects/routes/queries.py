@@ -105,6 +105,33 @@ def _get_auth_user_id(user) -> UUID:
     return auth_user_id
 
 
+def _get_user_filter_context(user: Any) -> tuple[Optional[UUID], Optional[str], bool]:
+    """
+    Extrae auth_user_id y email del usuario, determinando si es legacy.
+    
+    BD 2.0 SSOT: auth_user_id es el identificador canónico.
+    - Si auth_user_id existe → is_legacy=False (usuario moderno)
+    - Si auth_user_id es None → is_legacy=True (usuario legacy, usar email como fallback)
+    
+    Args:
+        user: Objeto usuario con atributos auth_user_id y user_email
+        
+    Returns:
+        Tuple de (auth_user_id, email, is_legacy)
+    """
+    auth_user_id = getattr(user, 'auth_user_id', None)
+    email = getattr(user, 'user_email', None)
+    is_legacy = auth_user_id is None
+    
+    if is_legacy:
+        logger.warning(
+            "legacy_user_email_filter_used email=%s",
+            email
+        )
+    
+    return auth_user_id, email, is_legacy
+
+
 def _normalize_project_item(item: Any) -> Any:
     """
     Normaliza un item devuelto por queries para que ProjectRead pueda validarlo.
