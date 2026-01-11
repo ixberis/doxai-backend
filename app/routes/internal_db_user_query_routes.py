@@ -42,10 +42,10 @@ router = APIRouter(prefix="/_internal/db", tags=["internal-diagnostics"])
         "Solo para diagnóstico de latencia."
     ),
     response_model=None,
-    dependencies=[Depends(InternalServiceAuth())],
 )
 async def db_user_by_email_ping(
     request: Request,
+    _auth: InternalServiceAuth,
     email: Annotated[str, Query(description="Email a buscar (se normalizará: strip + lower)")],
     explain_analyze: Annotated[bool, Query(description="Si true, ejecuta EXPLAIN ANALYZE y devuelve el plan")] = False,
     db: AsyncSession = Depends(get_async_session),
@@ -139,10 +139,10 @@ async def db_user_by_email_ping(
         "NO hace password verify, NO emite JWT, NO registra sesión."
     ),
     response_model=None,
-    dependencies=[Depends(InternalServiceAuth())],
 )
 async def login_path_simulation(
     request: Request,
+    _auth: InternalServiceAuth,
     email: Annotated[str, Query(description="Email a buscar")],
     skip_rate_limit: Annotated[bool, Query(description="Si true, omite rate limit (solo mide DB)")] = False,
     db: AsyncSession = Depends(get_async_session),

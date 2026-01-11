@@ -629,6 +629,64 @@ def _log_critical_routes():
 _log_critical_routes()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOG INTERNAL DB ROUTES (diagnóstico obligatorio para /_internal/db/*)
+# ═══════════════════════════════════════════════════════════════════════════════
+def _log_internal_db_routes():
+    """
+    Loguea TODAS las rutas que contienen '/_internal/db' al startup.
+    Siempre activo para verificar runtime en Railway (no depende de OpenAPI).
+    
+    Recorre recursivamente todos los routers anidados para capturar paths completos.
+    """
+    from starlette.routing import Mount, Route
+    from fastapi.routing import APIRoute
+    
+    internal_db_routes = []
+    
+    def _collect_routes(routes, prefix=""):
+        for route in routes:
+            if isinstance(route, APIRoute):
+                # FastAPI APIRoute: concatenar prefix actual + route.path
+                full_path = f"{prefix}{route.path}".replace("//", "/")
+                if "/_internal/db" in full_path:
+                    methods = ",".join(sorted(route.methods - {"HEAD", "OPTIONS"}))
+                    internal_db_routes.append((full_path, methods, route.name or "?"))
+            elif isinstance(route, Mount):
+                # Starlette Mount (incluyendo APIRouter montado)
+                mount_prefix = f"{prefix}{route.path}".replace("//", "/")
+                if hasattr(route, "routes"):
+                    _collect_routes(route.routes, mount_prefix)
+                # También revisar si es un APIRouter con .app
+                if hasattr(route, "app") and hasattr(route.app, "routes"):
+                    _collect_routes(route.app.routes, mount_prefix)
+            elif hasattr(route, "routes"):
+                # Router genérico con sub-routes
+                sub_prefix = f"{prefix}{getattr(route, 'path', '')}".replace("//", "/")
+                _collect_routes(route.routes, sub_prefix)
+    
+    _collect_routes(app.routes)
+    
+    # Log siempre, incluso si está vacío (para diagnóstico)
+    logger.info("=" * 70)
+    logger.info("🔧 INTERNAL DB ROUTES CHECK (/_internal/db/*)")
+    logger.info("=" * 70)
+    
+    if internal_db_routes:
+        for path, methods, name in sorted(internal_db_routes):
+            logger.info(f"  internal_db_route_mounted path={path} methods={methods} name={name}")
+        logger.info(f"  Total: {len(internal_db_routes)} routes")
+    else:
+        logger.error("❌ NO INTERNAL DB ROUTES FOUND! Possible causes:")
+        logger.error("   - Import error in master_routes.py (check logs above)")
+        logger.error("   - Router not included in api/public layers")
+        logger.error("   - internal_db_user_query_routes.py has syntax error")
+    
+    logger.info("=" * 70)
+
+_log_internal_db_routes()
+
+
 # Health básicos de conveniencia (no duplican /health de health_routes.py)
 @app.get("/")
 async def root():

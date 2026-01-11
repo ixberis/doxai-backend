@@ -307,12 +307,15 @@ try:
 
     # Montar en AMBAS capas para acceso consistente:
     # - /api/_internal/db/user-by-email (con prefix /api)
+    # - /api/_internal/db/login-path-simulation (con prefix /api)
     # - /_internal/db/user-by-email (sin prefix, root)
+    # - /_internal/db/login-path-simulation (sin prefix, root)
     _include_once(api, internal_db_user_query_router, "internal-db-user-query", _mounted_api)
     _include_once(public, internal_db_user_query_router, "internal-db-user-query", _mounted_public)
-    logger.info("✅ Endpoint interno de DB user-by-email montado (api + public)")
+    logger.info("✅ Endpoints internos DB user-by-email + login-path-simulation montados (api + public)")
 except Exception as e:
-    logger.debug("Endpoint interno de DB user-by-email no montado: %s", e)
+    # Diagnóstico temporal: usar error con exc_info para ver causa sin stacktrace completo
+    logger.error("❌ Endpoints DB user-query NO montados: %s", e, exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
