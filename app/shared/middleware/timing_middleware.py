@@ -196,7 +196,8 @@ class TimingMiddleware(BaseHTTPMiddleware):
                     extra_timings += f" db_exec_ms={_format_timing(db_exec_ms)}"
                 if rate_limit_ms > 0:
                     extra_timings += f" rate_limit_total_ms={_format_timing(rate_limit_ms)}"
-                if db_dep_total_ms > 0:
+                # Solo loggear db_dep_total_ms si > 1ms (evita ruido de 0.00 en canonical mode)
+                if db_dep_total_ms > 1.0:
                     extra_timings += f" db_dep_total_ms={_format_timing(db_dep_total_ms)}"
                 
                 extra_timings += f" mw_pre_call_next_ms={_format_timing(mw_pre_call_next_ms)}"

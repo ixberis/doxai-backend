@@ -257,13 +257,17 @@ class ProfileService:
                 logger.warning(f"[credits_gateway] get_balance falló: {e}")
 
         # 2) Wallet denormalizada (BD 2.0): wallets.auth_user_id
+        # Optimización 2026-01-11: Usa idx_wallets_auth_user_id (Index Scan)
         if auth_user_id is not None:
             try:
-                stmt = text("SELECT balance FROM public.wallets WHERE auth_user_id = :uid")
-                res = await self.db.execute(stmt, {"uid": auth_user_id})
-                row = res.first()
-                if row and row[0] is not None:
-                    balance = int(row[0])
+                # SSOT: billing.models no importa services/routers (evita circular)
+                from app.modules.billing.models import Wallet
+                from app.shared.queries.wallet_balance import build_wallet_balance_statement
+                stmt = build_wallet_balance_statement(auth_user_id, Wallet)
+                res = await self.db.execute(stmt)
+                balance_value = res.scalar_one_or_none()
+                if balance_value is not None:
+                    balance = int(balance_value)
                     duration_ms = (time.perf_counter() - start) * 1000
                     if duration_ms > 500:
                         logger.warning(f"query_slow operation=get_credits_balance auth_user_id={str(auth_user_id)[:8]}... duration_ms={duration_ms:.2f}")

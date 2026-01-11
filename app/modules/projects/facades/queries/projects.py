@@ -189,6 +189,11 @@ async def list_active_projects(
     BD 2.0 SSOT: REQUIERE auth_user_id (UUID). No hay fallback a user_email
     porque la columna no existe en BD 2.0.
     
+    Optimización 2026-01-11:
+    - Usa ORM con filtros que aprovechan idx_projects_auth_user_active_updated
+    - ORDER BY utiliza el índice ordenado (updated_at DESC incluido en índice)
+    - Sin COUNT separado cuando include_total=False
+    
     Args:
         db: Sesión AsyncSession SQLAlchemy
         auth_user_id: UUID del usuario (SSOT, REQUERIDO)
@@ -205,13 +210,15 @@ async def list_active_projects(
     effective_limit = min(limit, MAX_LIMIT)
     
     # BD 2.0 SSOT: solo auth_user_id, NO user_email
+    # Aprovecha idx_projects_auth_user_active_updated (auth_user_id, state, updated_at DESC)
     base_filter = (Project.auth_user_id == auth_user_id) & (Project.state != ProjectState.ARCHIVED)
     user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     
-    # Query con ordenamiento
+    # Query principal - el índice cubre (auth_user_id, state, updated_at DESC)
     query = select(Project).where(base_filter)
     
     # Mapear columna de ordenamiento (con fallback seguro)
+    # Nota: updated_at es la opción óptima porque está en el índice
     order_column = getattr(Project, order_by, Project.updated_at)
     query = query.order_by(order_column.asc() if asc else order_column.desc())
     query = query.offset(offset).limit(effective_limit)
@@ -219,7 +226,7 @@ async def list_active_projects(
     result = await db.execute(query)
     items = list(result.scalars().all())
     
-    # Solo ejecutar COUNT si se requiere
+    # Solo ejecutar COUNT si se requiere (evita query extra innecesaria)
     if include_total:
         count_query = select(func.count(Project.id)).where(base_filter)
         total = await db.scalar(count_query) or 0

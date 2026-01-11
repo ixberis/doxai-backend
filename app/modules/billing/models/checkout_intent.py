@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-backend/app/modules/billing/models.py
+backend/app/modules/billing/models/checkout_intent.py
 
 Modelo ORM para la tabla checkout_intents.
 

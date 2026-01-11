@@ -80,24 +80,12 @@ class UserRepository:
         import time
         from sqlalchemy import text
         from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+        from app.shared.queries.auth_lookup import AUTH_LOOKUP_SQL
         
         timings: dict = {}
         
-        # SQL mínimo: solo columnas necesarias para auth context
-        core_sql = text("""
-            SELECT
-                user_id,
-                auth_user_id,
-                user_email,
-                user_role,
-                user_status,
-                user_is_activated,
-                deleted_at
-            FROM public.app_users
-            WHERE auth_user_id = :auth_user_id
-              AND deleted_at IS NULL
-            LIMIT 1
-        """)
+        # Usa constante exportable para facilitar testing
+        core_sql = text(AUTH_LOOKUP_SQL.strip())
         
         t_exec_start = time.perf_counter()
         result = await self._db.execute(core_sql, {"auth_user_id": auth_user_id})
