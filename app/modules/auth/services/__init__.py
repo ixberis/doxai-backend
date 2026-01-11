@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,7 @@ _bearer = HTTPBearer(auto_error=True)
 
 
 async def get_current_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
 ):
@@ -58,7 +59,7 @@ async def get_current_user(
     from app.modules.auth.services.user_service import UserService
 
     # `get_current_user_id` retorna el `sub` del token (string)
-    sub: str = await get_current_user_id(creds=creds, db=db)
+    sub: str = await get_current_user_id(request=request, creds=creds, db=db)
 
     # Canónico: usar sesión prestada explícitamente
     user_service = UserService.with_session(db)
