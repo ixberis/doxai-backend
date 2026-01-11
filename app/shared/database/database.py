@@ -254,6 +254,13 @@ else:
     if pool_class_name == "NullPool":
         logger.warning("[DB] ⚠️ NullPool detected - connection reuse DISABLED")
 
+    # ── Registrar statement counter global (para diagnóstico A/B) ──
+    try:
+        from app.shared.database.statement_counter import setup_statement_counter
+        setup_statement_counter(engine.sync_engine)
+    except Exception as e:
+        logger.debug(f"[DB] Statement counter not registered: {e}")
+
     SessionLocal = async_sessionmaker(
         bind=engine,
         expire_on_commit=False,

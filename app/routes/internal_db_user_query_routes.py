@@ -48,6 +48,8 @@ async def db_user_by_email_ping(
     _auth: InternalServiceAuth,
     email: Annotated[str, Query(description="Email a buscar (se normalizará: strip + lower)")],
     explain_analyze: Annotated[bool, Query(description="Si true, ejecuta EXPLAIN ANALYZE y devuelve el plan")] = False,
+    compare_modes: Annotated[bool, Query(description="Si true, ejecuta AMBOS modos (ORM y Core) para comparar")] = False,
+    capture_sql: Annotated[bool, Query(description="Si true, captura SQL de cada statement (máx 10, solo debug)")] = False,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -57,12 +59,16 @@ async def db_user_by_email_ping(
     - loop_lag_ms: event loop lag (await asyncio.sleep(0) before DB calls)
     - conn_checkout_ms: tiempo de obtener conexión del pool (await session.connection())
     - raw_sql_exec_ms: tiempo de SELECT crudo via text() + fetchone (sin ORM/repo)
-    - repo_exec_ms: tiempo de repo.get_by_email (ORM path)
-    - total_ms: tiempo total del handler
-    - found: bool indicando si se encontró el usuario
+    - repo_orm/repo_core: tiempos desglosados por modo
+    - statements_total: total de statements SQL ejecutados en el request
+    - statements_captured: lista de SQL truncado (si capture_sql=true)
     - diagnosis: análisis de cuál es el cuello de botella
     """
     import asyncio
+    from app.shared.database.statement_counter import start_counting, stop_counting
+    
+    # ─── INICIO: Scope del statement counter para todo el request ───
+    counter = start_counting(capture_sql=capture_sql)
     
     total_start = time.perf_counter()
     
@@ -70,6 +76,7 @@ async def db_user_by_email_ping(
     norm_email = (email or "").strip().lower()
     
     if not norm_email:
+        stop_counting()  # Limpiar contador antes de salir
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email es requerido",
@@ -86,6 +93,9 @@ async def db_user_by_email_ping(
         conn = await db.connection()
         conn_checkout_ms = (time.perf_counter() - conn_start) * 1000
         
+        # Guardar count después de conn_checkout (incluye pre_ping si aplica)
+        statements_after_conn = counter.count
+        
         # ─── 3. Medir raw SQL (text() + fetchone, sin ORM/repo) ───
         raw_sql = text("""
             SELECT user_id, auth_user_id, user_email
@@ -99,21 +109,47 @@ async def db_user_by_email_ping(
         raw_result = await db.execute(raw_sql, {"email": norm_email})
         raw_row = raw_result.fetchone()
         raw_sql_exec_ms = (time.perf_counter() - raw_start) * 1000
+        statements_after_raw = counter.count
         
-        # ─── 4. Medir repo/ORM path (UserService.get_by_email) ───
-        user_service = UserService.with_session(db)
+        # ─── 4. Medir repo con instrumentación A/B ───
+        from app.modules.auth.repositories.user_repository import UserRepository
         
-        repo_start = time.perf_counter()
-        result = await user_service.get_by_email(norm_email, return_timings=True)
-        user, db_timings = result
-        repo_exec_ms = (time.perf_counter() - repo_start) * 1000
+        repo_direct = UserRepository(db)
         
-        # Extraer tiempos internos del servicio para comparar
-        service_conn_ms = db_timings.get("conn_checkout_ms", 0)
-        service_exec_ms = db_timings.get("db_exec_ms", 0)
+        # ORM mode
+        statements_before_orm = counter.count
+        repo_orm_start = time.perf_counter()
+        user_orm, orm_timings = await repo_direct.get_by_email_timed(norm_email, use_core=False)
+        repo_orm_exec_ms = (time.perf_counter() - repo_orm_start) * 1000
+        orm_statements = counter.count - statements_before_orm
+        
+        # ─── 5. Comparar modo Core si se solicita ───
+        core_comparison = None
+        core_timings = {}
+        core_statements = 0
+        if compare_modes:
+            statements_before_core = counter.count
+            repo_core_start = time.perf_counter()
+            user_core, core_timings = await repo_direct.get_by_email_timed(norm_email, use_core=True)
+            repo_core_exec_ms = (time.perf_counter() - repo_core_start) * 1000
+            core_statements = counter.count - statements_before_core
+            
+            core_comparison = {
+                "mode": "core",
+                "returns": "UserDTO",
+                "total_exec_ms": round(repo_core_exec_ms, 2),
+                "execute_ms": round(core_timings.get("execute_ms", 0), 2),
+                "fetch_ms": round(core_timings.get("fetch_ms", 0), 2),
+                "consume_ms": round(core_timings.get("consume_ms", 0), 2),
+                "statements_executed": core_statements,
+                "found": user_core is not None,
+            }
+        
+        # ─── FIN: Detener contador y obtener estadísticas finales ───
+        final_counter = stop_counting()
         
         # Setear en request.state para timing_middleware
-        request.state.db_exec_ms = repo_exec_ms
+        request.state.db_exec_ms = repo_orm_exec_ms
         
         total_ms = (time.perf_counter() - total_start) * 1000
         
@@ -122,32 +158,76 @@ async def db_user_by_email_ping(
             loop_lag_ms=loop_lag_ms,
             conn_checkout_ms=conn_checkout_ms,
             raw_sql_exec_ms=raw_sql_exec_ms,
-            repo_exec_ms=repo_exec_ms,
-            service_exec_ms=service_exec_ms,
+            repo_exec_ms=repo_orm_exec_ms,
+            service_exec_ms=orm_timings.get("execute_ms", 0),
             total_ms=total_ms,
         )
+        
+        # ─── Construir respuesta con statement breakdown ───
+        statements_breakdown = {
+            "after_conn_checkout": statements_after_conn,
+            "raw_sql": statements_after_raw - statements_after_conn,
+            "orm_query": orm_statements,
+        }
+        if compare_modes:
+            statements_breakdown["core_query"] = core_statements
         
         response_data = {
             "loop_lag_ms": round(loop_lag_ms, 2),
             "conn_checkout_ms": round(conn_checkout_ms, 2),
             "raw_sql_exec_ms": round(raw_sql_exec_ms, 2),
-            "repo_exec_ms": round(repo_exec_ms, 2),
-            "service_internal": {
-                "conn_checkout_ms": round(service_conn_ms, 2),
-                "db_exec_ms": round(service_exec_ms, 2),
+            "repo_orm": {
+                "mode": "orm",
+                "returns": "AppUser",
+                "total_exec_ms": round(repo_orm_exec_ms, 2),
+                "execute_ms": round(orm_timings.get("execute_ms", 0), 2),
+                "fetch_ms": round(orm_timings.get("fetch_ms", 0), 2),
+                "consume_ms": round(orm_timings.get("consume_ms", 0), 2),
+                "statements_executed": orm_statements,
             },
+            "statements_total": final_counter.count if final_counter else 0,
+            "statements_breakdown": statements_breakdown,
             "total_ms": round(total_ms, 2),
-            "found": user is not None,
-            "user_id": getattr(user, "user_id", None) if user else None,
-            "auth_user_id": str(getattr(user, "auth_user_id", None)) if user and getattr(user, "auth_user_id", None) else None,
+            "found": user_orm is not None,
+            "user_id": getattr(user_orm, "user_id", None) if user_orm else None,
+            "auth_user_id": str(getattr(user_orm, "auth_user_id", None)) if user_orm and getattr(user_orm, "auth_user_id", None) else None,
             "diagnosis": diagnosis,
-            "note": (
-                "loop_lag_ms=event loop responsiveness, "
-                "conn_checkout_ms=pool checkout (first await connection()), "
-                "raw_sql_exec_ms=raw text() SELECT, "
-                "repo_exec_ms=full UserService.get_by_email"
-            ),
         }
+        
+        # Incluir SQL capturado si se solicitó
+        if capture_sql and final_counter and final_counter.statements:
+            response_data["statements_captured"] = final_counter.statements[:10]  # Máx 10
+            if len(final_counter.statements) > 10:
+                response_data["statements_truncated"] = True
+        
+        if core_comparison:
+            response_data["repo_core"] = core_comparison
+            # Comparar overhead ORM vs Core con desglose completo
+            orm_execute = orm_timings.get("execute_ms", 0)
+            orm_fetch = orm_timings.get("fetch_ms", 0)
+            orm_consume = orm_timings.get("consume_ms", 0)
+            core_execute = core_timings.get("execute_ms", 0)
+            core_fetch = core_timings.get("fetch_ms", 0)
+            core_consume = core_timings.get("consume_ms", 0)
+            
+            response_data["mode_comparison"] = {
+                "execute_delta_ms": round(orm_execute - core_execute, 2),
+                "fetch_delta_ms": round(orm_fetch - core_fetch, 2),
+                "consume_delta_ms": round(orm_consume - core_consume, 2),
+                "total_delta_ms": round(repo_orm_exec_ms - repo_core_exec_ms, 2),
+                "orm_statements": orm_statements,
+                "core_statements": core_statements,
+                "breakdown": {
+                    "orm": {"execute": round(orm_execute, 2), "fetch": round(orm_fetch, 2), "consume": round(orm_consume, 2), "total": round(repo_orm_exec_ms, 2), "statements": orm_statements},
+                    "core": {"execute": round(core_execute, 2), "fetch": round(core_fetch, 2), "consume": round(core_consume, 2), "total": round(repo_core_exec_ms, 2), "statements": core_statements},
+                },
+                "verdict": (
+                    "ORM overhead in execute" if (orm_execute - core_execute) > 100
+                    else "ORM overhead in fetch" if (orm_fetch - core_fetch) > 100
+                    else "Similar performance" if abs(repo_orm_exec_ms - repo_core_exec_ms) < 50
+                    else f"ORM slower by {round(repo_orm_exec_ms - repo_core_exec_ms, 1)}ms"
+                ),
+            }
         
         # ─── EXPLAIN ANALYZE opcional ───
         if explain_analyze:
@@ -157,6 +237,8 @@ async def db_user_by_email_ping(
         return response_data
         
     except Exception as e:
+        # Asegurar limpieza del contador en caso de error
+        stop_counting()
         total_ms = (time.perf_counter() - total_start) * 1000
         logger.exception(
             "db_user_by_email_ping_failed: %s (elapsed=%.2fms)",

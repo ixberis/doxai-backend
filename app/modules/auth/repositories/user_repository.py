@@ -58,20 +58,166 @@ class UserRepository:
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # get_by_email: Versión ORM (producción)
+    # ─────────────────────────────────────────────────────────────────────────
     async def get_by_email(self, email: str) -> Optional[AppUser]:
         """
-        Obtiene un usuario por email.
+        Obtiene un usuario por email usando ORM.
         Usa comparación directa para aprovechar índice CITEXT (case-insensitive).
-        Devuelve None si no existe.
+        
+        Args:
+            email: Email del usuario a buscar
+            
+        Returns:
+            AppUser o None
         """
-        norm_email = (email or "").strip().lower()  # Higiene de input, no afecta CITEXT
+        norm_email = (email or "").strip().lower()
         if not norm_email:
             return None
 
-        # Comparación directa: CITEXT maneja case-insensitivity a nivel DB
         stmt = select(AppUser).where(AppUser.user_email == norm_email)
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # get_by_email_core: Versión Core (para login optimizado)
+    # ─────────────────────────────────────────────────────────────────────────
+    async def get_by_email_core(self, email: str) -> Optional["UserDTO"]:
+        """
+        Obtiene un usuario por email usando SQLAlchemy Core (sin ORM).
+        Devuelve UserDTO en lugar de AppUser para evitar overhead ORM.
+        
+        Args:
+            email: Email del usuario a buscar
+            
+        Returns:
+            UserDTO o None
+        """
+        from sqlalchemy import text
+        from app.modules.auth.schemas.user_dto import UserDTO
+        
+        norm_email = (email or "").strip().lower()
+        if not norm_email:
+            return None
+
+        core_sql = text("""
+            SELECT user_id, auth_user_id, user_email, user_name, user_password_hash, 
+                   user_status, user_created_at, user_updated_at, deleted_at,
+                   welcome_email_status, welcome_email_sent_at, welcome_email_attempts,
+                   welcome_email_claimed_at, welcome_email_last_error
+            FROM public.app_users 
+            WHERE user_email = :email
+            LIMIT 1
+        """)
+        
+        result = await self._db.execute(core_sql, {"email": norm_email})
+        row_mapping = result.mappings().first()
+        
+        if row_mapping:
+            return UserDTO.from_mapping(dict(row_mapping))
+        return None
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # get_by_email_timed: Versión con instrumentación A/B (solo diagnóstico)
+    # ─────────────────────────────────────────────────────────────────────────
+    async def get_by_email_timed(
+        self, 
+        email: str, 
+        *, 
+        use_core: bool = False,
+    ) -> tuple[Optional[AppUser] | Optional["UserDTO"], dict]:
+        """
+        Versión instrumentada para diagnóstico A/B.
+        NO usar en producción - solo para endpoints internos de diagnóstico.
+        
+        Args:
+            email: Email del usuario a buscar
+            use_core: Si True, usa Core mode (devuelve UserDTO)
+            
+        Returns:
+            Tupla (user|DTO o None, timings_dict)
+        """
+        import time
+        import logging
+        from sqlalchemy import text
+        from app.modules.auth.schemas.user_dto import UserDTO
+        from app.shared.database.statement_counter import get_counter
+        
+        logger = logging.getLogger(__name__)
+        
+        timings: dict = {
+            "mode": "core" if use_core else "orm",
+            "statements_executed": 0,
+        }
+        
+        norm_email = (email or "").strip().lower()
+        if not norm_email:
+            return None, {"execute_ms": 0, "fetch_ms": 0, "consume_ms": 0, "total_ms": 0, "mode": timings["mode"], "statements_executed": 0}
+
+        # Capturar contador antes de ejecutar
+        counter_before = get_counter()
+        count_start = counter_before.count if counter_before else 0
+        
+        if use_core:
+            # ─── MODO CORE ───
+            core_sql = text("""
+                SELECT user_id, auth_user_id, user_email, user_name, user_password_hash, 
+                       user_status, user_created_at, user_updated_at, deleted_at,
+                       welcome_email_status, welcome_email_sent_at, welcome_email_attempts,
+                       welcome_email_claimed_at, welcome_email_last_error
+                FROM public.app_users 
+                WHERE user_email = :email
+                LIMIT 1
+            """)
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                masked_email = norm_email[:3] + "***" if len(norm_email) > 3 else "***"
+                logger.debug("repo.get_by_email_timed CORE | email=%s", masked_email)
+            
+            t_exec_start = time.perf_counter()
+            result = await self._db.execute(core_sql, {"email": norm_email})
+            t_exec_end = time.perf_counter()
+            timings["execute_ms"] = (t_exec_end - t_exec_start) * 1000
+            
+            t_fetch_start = time.perf_counter()
+            row_mapping = result.mappings().first()
+            t_fetch_end = time.perf_counter()
+            timings["fetch_ms"] = (t_fetch_end - t_fetch_start) * 1000
+            
+            t_consume_start = time.perf_counter()
+            user = UserDTO.from_mapping(dict(row_mapping)) if row_mapping else None
+            t_consume_end = time.perf_counter()
+            timings["consume_ms"] = (t_consume_end - t_consume_start) * 1000
+            
+        else:
+            # ─── MODO ORM ───
+            stmt = select(AppUser).where(AppUser.user_email == norm_email)
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                masked_email = norm_email[:3] + "***" if len(norm_email) > 3 else "***"
+                logger.debug("repo.get_by_email_timed ORM | email=%s", masked_email)
+            
+            t_exec_start = time.perf_counter()
+            result = await self._db.execute(stmt)
+            t_exec_end = time.perf_counter()
+            timings["execute_ms"] = (t_exec_end - t_exec_start) * 1000
+            
+            t_fetch_start = time.perf_counter()
+            user = result.scalar_one_or_none()
+            t_fetch_end = time.perf_counter()
+            timings["fetch_ms"] = (t_fetch_end - t_fetch_start) * 1000
+            
+            timings["consume_ms"] = 0.0
+        
+        # Capturar contador después
+        counter_after = get_counter()
+        count_end = counter_after.count if counter_after else 0
+        timings["statements_executed"] = count_end - count_start
+        
+        timings["total_ms"] = timings["execute_ms"] + timings["fetch_ms"] + timings["consume_ms"]
+        
+        return user, timings
 
     async def exists_by_email(self, email: str) -> bool:
         """

@@ -179,99 +179,128 @@ class UserService:
     # ----------------------------- Lecturas ---------------------------------
 
     async def get_by_email(
-        self, email: str, *, return_timings: bool = False, timeout_seconds: float = 5.0
-    ) -> Optional[AppUser] | tuple[Optional[AppUser], dict]:
+        self, email: str, *, timeout_seconds: float = 5.0
+    ) -> Optional[AppUser]:
         """
         Obtiene un usuario por email (case-insensitive). Devuelve None si no existe.
+        Versión limpia para producción - sin instrumentación.
 
-        Timeouts (defensa en profundidad):
-          - asyncio.timeout() garantiza timeout determinista.
-          - SET SESSION statement_timeout es capa adicional (configurado en database.py).
-          
         Args:
             email: Email del usuario a buscar
-            return_timings: Si True, retorna (user, timings_dict) con:
-                - conn_checkout_ms: tiempo de checkout de conexión del pool
-                - db_prep_ms: tiempo de preparación (session scope + pre_query_guards)
-                - db_exec_ms: tiempo de ejecución del query SQL (SOLO el SELECT)
-                - db_total_ms: tiempo total de la operación
             timeout_seconds: Timeout máximo para la operación completa (default: 5s)
         
         Returns:
-            AppUser o None (si return_timings=False)
-            (AppUser o None, timings_dict) (si return_timings=True)
+            AppUser o None
             
         Raises:
             asyncio.TimeoutError: Si la operación excede timeout_seconds
         """
+        import asyncio
+        
+        norm_email = (email or "").strip().lower()
+        if not norm_email:
+            return None
+
+        async with asyncio.timeout(timeout_seconds):
+            async with self._session_scope() as session:
+                await self._pre_query_guards(session, stmt_timeout_ms=3000)
+                repo = UserRepository(session)
+                return await repo.get_by_email(norm_email)
+    
+    async def get_by_email_core(
+        self, email: str, *, timeout_seconds: float = 5.0
+    ) -> Optional["UserDTO"]:
+        """
+        Obtiene un usuario por email usando Core mode (sin ORM).
+        Devuelve UserDTO para validación de password en login optimizado.
+
+        Args:
+            email: Email del usuario a buscar
+            timeout_seconds: Timeout máximo para la operación completa (default: 5s)
+        
+        Returns:
+            UserDTO o None
+        """
+        import asyncio
+        from app.modules.auth.schemas.user_dto import UserDTO
+        
+        norm_email = (email or "").strip().lower()
+        if not norm_email:
+            return None
+
+        async with asyncio.timeout(timeout_seconds):
+            async with self._session_scope() as session:
+                await self._pre_query_guards(session, stmt_timeout_ms=3000)
+                repo = UserRepository(session)
+                return await repo.get_by_email_core(norm_email)
+    
+    async def get_by_email_timed(
+        self, email: str, *, use_core: bool = False, timeout_seconds: float = 5.0
+    ) -> tuple[Optional[AppUser] | Optional["UserDTO"], dict]:
+        """
+        Versión instrumentada para diagnóstico A/B.
+        NO usar en producción - solo para endpoints internos.
+
+        Args:
+            email: Email del usuario a buscar
+            use_core: Si True, usa Core mode (devuelve UserDTO)
+            timeout_seconds: Timeout máximo para la operación completa
+        
+        Returns:
+            Tupla (user|DTO o None, timings_dict)
+        """
         import time
         import asyncio
+        
         t0_start = time.perf_counter()
         timings: dict = {}
         
         norm_email = (email or "").strip().lower()
         if not norm_email:
-            if return_timings:
-                return None, {"conn_checkout_ms": 0, "db_prep_ms": 0, "db_exec_ms": 0, "db_total_ms": 0}
-            return None
+            return None, {"conn_checkout_ms": 0, "db_prep_ms": 0, "db_exec_ms": 0, "db_total_ms": 0}
 
-        # Timeout determinista con asyncio (no depende de SET SESSION)
         async with asyncio.timeout(timeout_seconds):
-            # ─── t1: Medir tiempo de preparación (session scope) ───
             t1_pre_session = time.perf_counter()
             async with self._session_scope() as session:
-                t_session_acquired = time.perf_counter()
-                
-                # ─── Fase A: Medir conn_checkout_ms SIEMPRE ───
-                # Incluso con borrowed session, session.connection() puede incurrir latencia
-                # (reconexión pool, pre_ping, etc). Siempre medir el tiempo real.
+                # Medir conn_checkout_ms
                 t_checkout_start = time.perf_counter()
-                await session.connection()  # fuerza checkout / verifica conexión lista
+                await session.connection()
                 t_checkout_end = time.perf_counter()
                 timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
                 timings["borrowed_session"] = self._using_borrowed_session()
                 
-                # ─── Fase B: Pre-query guards (solo ping si NO borrowed) ───
+                # Pre-query guards
                 await self._pre_query_guards(session, stmt_timeout_ms=3000)
                 t2_session_ready = time.perf_counter()
                 timings["db_prep_ms"] = (t2_session_ready - t1_pre_session) * 1000
 
-                # ─── Fase C: Medir SOLO el tiempo de ejecución SQL ───
+                # Ejecutar query con instrumentación
                 repo = UserRepository(session)
                 t3_pre_exec = time.perf_counter()
-                try:
-                    user = await repo.get_by_email(norm_email)
-                    t4_post_exec = time.perf_counter()
-                    timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
-                    timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
-                    
-                    log.debug(
-                        "Users.get_by_email ok email=%s borrowed=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f",
-                        _mask_email(norm_email),
-                        timings.get("borrowed_session", False),
-                        timings.get("conn_checkout_ms", 0),
-                        timings["db_prep_ms"],
-                        timings["db_exec_ms"],
-                    )
-                    
-                    if return_timings:
-                        return user, timings
-                    return user
-                except Exception as e:
-                    t4_post_exec = time.perf_counter()
-                    timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
-                    timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
-                    
-                    log.exception(
-                        "Users.get_by_email ERROR email=%s borrowed=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
-                        _mask_email(norm_email),
-                        timings.get("borrowed_session", False),
-                        timings.get("conn_checkout_ms", 0),
-                        timings["db_prep_ms"],
-                        timings["db_exec_ms"],
-                        type(e).__name__,
-                    )
-                    raise
+                
+                user, repo_timings = await repo.get_by_email_timed(norm_email, use_core=use_core)
+                
+                t4_post_exec = time.perf_counter()
+                timings["db_exec_ms"] = (t4_post_exec - t3_pre_exec) * 1000
+                timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
+                
+                # Propagar timings del repo
+                timings["repo_execute_ms"] = repo_timings.get("execute_ms", 0)
+                timings["repo_fetch_ms"] = repo_timings.get("fetch_ms", 0)
+                timings["repo_consume_ms"] = repo_timings.get("consume_ms", 0)
+                timings["repo_internal_total_ms"] = repo_timings.get("total_ms", 0)
+                timings["repo_mode"] = repo_timings.get("mode", "orm")
+                timings["repo_statements_executed"] = repo_timings.get("statements_executed", 0)
+                
+                log.debug(
+                    "Users.get_by_email_timed ok email=%s mode=%s borrowed=%s db_exec_ms=%.2f",
+                    _mask_email(norm_email),
+                    timings["repo_mode"],
+                    timings.get("borrowed_session", False),
+                    timings["db_exec_ms"],
+                )
+                
+                return user, timings
 
     async def exists_by_email(self, email: str) -> bool:
         """
