@@ -34,13 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects import postgresql
 
 from app.shared.database.database import get_async_session
-from app.modules.auth.dependencies import require_internal_service_token
+from app.shared.internal_auth import InternalServiceAuth
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/_internal/db", tags=["internal-db-diagnostics"])
-
-InternalServiceAuth = Depends(require_internal_service_token)
 
 # Flag para habilitar/deshabilitar endpoint
 _DIAGNOSTICS_ENABLED = os.getenv("DB_MODEL_DIAGNOSTICS", "0") == "1"
