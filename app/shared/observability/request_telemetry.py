@@ -163,6 +163,13 @@ class RequestTelemetry:
                 request.state.redis_ms = self.timings.get("redis_ms", 0)
                 # Full timings for observability (NOT serialized to response)
                 request.state.request_timings = self.timings.copy()
+                
+                # ═══════════════════════════════════════════════════════════════
+                # NEW: Set route_handler_ms for gap analysis in timing_middleware
+                # This is the total time spent in the route handler (measured by telemetry)
+                # ═══════════════════════════════════════════════════════════════
+                request.state.route_handler_ms = self.timings.get("total_ms", 0)
+                
             except Exception as e:
                 logger.debug("Failed to set request.state: %s", str(e))
         
