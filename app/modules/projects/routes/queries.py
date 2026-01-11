@@ -39,8 +39,10 @@ from app.modules.projects.schemas.project_file_event_log_schemas import (
 )
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
 
-# Dependencias
-from app.modules.auth.services import get_current_user
+# Dependencias - SSOT: get_current_user_ctx (Core) para rutas optimizadas
+# get_current_user (ORM) solo para rutas legacy que requieren objeto AppUser completo
+from app.modules.auth.services import get_current_user_ctx, get_current_user
+from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 from app.shared.auth_context import (
     extract_user_id,
     extract_auth_user_id,
@@ -263,7 +265,7 @@ async def list_active_projects(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     include_total: bool = Query(False),
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
     from app.shared.observability.request_telemetry import RequestTelemetry
@@ -271,9 +273,9 @@ async def list_active_projects(
     telemetry = RequestTelemetry.create("projects.active-projects")
     
     try:
-        # Fase: Auth Context (BD 2.0 SSOT)
-        with telemetry.measure("auth_ms"):
-            auth_user_id = _get_auth_user_id(user)
+        # BD 2.0 SSOT: auth_user_id ya resuelto por get_current_user_ctx (Core)
+        # NO se necesita fase auth extra - ctx ya está disponible con timings en request.state
+        auth_user_id = ctx.auth_user_id
 
         # Fase: Validation (pre_ms)
         with telemetry.measure("pre_ms"):

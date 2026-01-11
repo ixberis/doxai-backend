@@ -42,7 +42,9 @@ from app.modules.user_profile.schemas import (
     SubscriptionStatusResponse,
 )
 from app.modules.user_profile.services import ProfileService
-from app.modules.auth.services import get_current_user
+# SSOT: get_current_user_ctx (Core) para rutas optimizadas, get_current_user (ORM) para retrocompatibilidad
+from app.modules.auth.services import get_current_user, get_current_user_ctx
+from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 from app.shared.auth_context import extract_user_id, extract_auth_user_id
 
 router = APIRouter(tags=["User Profile"])
@@ -363,38 +365,40 @@ async def update_user_profile_alias(
 )
 async def get_credits_balance(
     request: Request,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
     service: ProfileService = Depends(get_profile_service),
 ):
     """
     Obtiene el balance de créditos del usuario autenticado.
     
     BD 2.0 SSOT: Usa auth_user_id (UUID) para consultar wallets.
-    Timing por fases: auth_context, db_query (with RequestTelemetry).
+    OPTIMIZADO: Usa get_current_user_ctx (Core) en lugar de get_current_user (ORM).
     
     Errores: Retorna HTTP 500 con error_code estándar (NO oculta errores).
     """
     from app.shared.observability.request_telemetry import RequestTelemetry
     
     telemetry = RequestTelemetry.create("profile.credits")
-    auth_uid = None  # Initialize for safe access in except block
+    
+    # Variables para safe access en except blocks
+    uid = None
+    auth_uid = None
     
     try:
-        # Fase 1: Auth Context - extraer user_id (int) y auth_user_id (UUID SSOT)
-        with telemetry.measure("auth_ms"):
-            uid = extract_user_id(user)
-            auth_uid = extract_auth_user_id(user)  # BD 2.0 SSOT
+        # BD 2.0 SSOT: auth_user_id ya resuelto por get_current_user_ctx (Core)
+        uid = ctx.user_id
+        auth_uid = ctx.auth_user_id
         
-        # Fase 2: DB Query (BD 2.0: usa auth_user_id para wallets)
+        # Fase: DB Query (BD 2.0: usa auth_user_id para wallets)
         with telemetry.measure("db_ms"):
             balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
         
-        # Fase 3: Serialization (minimal for this route)
+        # Fase: Serialization (minimal for this route)
         with telemetry.measure("ser_ms"):
             response = {"credits_balance": balance}
         
         # Set flags for observability (no PII)
-        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}..." if auth_uid else "unknown")
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}...")
         telemetry.set_flag("balance", balance)
         
         telemetry.finalize(request, status_code=200, result="success")
