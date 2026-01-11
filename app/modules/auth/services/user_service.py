@@ -410,6 +410,53 @@ class UserService:
                     e,
                 )
                 raise
+    
+    async def get_by_auth_user_id_core_ctx(
+        self, auth_user_id: Any, *, timeout_seconds: float = 5.0
+    ) -> tuple[Optional["AuthContextDTO"], dict]:
+        """
+        Recupera contexto de usuario por auth_user_id usando Core SQL MÍNIMO.
+        Optimizado para dependencies de autenticación (get_current_user).
+        
+        Solo 1 statement, sin ORM, sin eager loading.
+        
+        Args:
+            auth_user_id: UUID del usuario (string o UUID)
+            timeout_seconds: Timeout máximo para la operación
+            
+        Returns:
+            Tupla (AuthContextDTO o None, timings_dict)
+        """
+        import asyncio
+        from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+        
+        # Normalizar a UUID si viene como string
+        if isinstance(auth_user_id, str):
+            try:
+                auth_user_id = PyUUID(auth_user_id)
+            except ValueError:
+                log.warning("Users.get_by_auth_user_id_core_ctx: auth_user_id inválido: %r", auth_user_id)
+                return None, {"error": "invalid_uuid"}
+
+        async with asyncio.timeout(timeout_seconds):
+            async with self._session_scope() as session:
+                # NO ping para sesiones prestadas (reduce latencia)
+                repo = UserRepository(session)
+                try:
+                    ctx, timings = await repo.get_by_auth_user_id_core_ctx(auth_user_id)
+                    log.debug(
+                        "Users.get_by_auth_user_id_core_ctx ok auth_user_id=%s exec_ms=%.2f",
+                        str(auth_user_id)[:8] + "...",
+                        timings.get("execute_ms", 0),
+                    )
+                    return ctx, timings
+                except Exception as e:
+                    log.exception(
+                        "Users.get_by_auth_user_id_core_ctx ERROR auth_user_id=%s error=%s",
+                        str(auth_user_id)[:8] + "...",
+                        e,
+                    )
+                    raise
 
     # ----------------------------- Escrituras -------------------------------
 

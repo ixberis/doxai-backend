@@ -57,6 +57,66 @@ class UserRepository:
         stmt = select(AppUser).where(AppUser.auth_user_id == auth_user_id)
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # get_by_auth_user_id_core_ctx: Versión Core MÍNIMA para auth dependencies
+    # ─────────────────────────────────────────────────────────────────────────
+    async def get_by_auth_user_id_core_ctx(
+        self, auth_user_id: UUID
+    ) -> tuple[Optional["AuthContextDTO"], dict]:
+        """
+        Obtiene contexto de usuario por auth_user_id usando Core SQL MÍNIMO.
+        Optimizado para dependencies de autenticación (get_current_user).
+        
+        Solo 1 statement, sin ORM, sin eager loading.
+        Devuelve AuthContextDTO con solo los campos necesarios para auth.
+        
+        Args:
+            auth_user_id: UUID del usuario
+            
+        Returns:
+            Tupla (AuthContextDTO o None, timings_dict)
+        """
+        import time
+        from sqlalchemy import text
+        from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+        
+        timings: dict = {}
+        
+        # SQL mínimo: solo columnas necesarias para auth context
+        core_sql = text("""
+            SELECT
+                user_id,
+                auth_user_id,
+                user_email,
+                user_role,
+                user_status,
+                user_is_activated,
+                deleted_at
+            FROM public.app_users
+            WHERE auth_user_id = :auth_user_id
+              AND deleted_at IS NULL
+            LIMIT 1
+        """)
+        
+        t_exec_start = time.perf_counter()
+        result = await self._db.execute(core_sql, {"auth_user_id": auth_user_id})
+        t_exec_end = time.perf_counter()
+        timings["execute_ms"] = (t_exec_end - t_exec_start) * 1000
+        
+        t_fetch_start = time.perf_counter()
+        row_mapping = result.mappings().first()
+        t_fetch_end = time.perf_counter()
+        timings["fetch_ms"] = (t_fetch_end - t_fetch_start) * 1000
+        
+        t_consume_start = time.perf_counter()
+        dto = AuthContextDTO.from_mapping(dict(row_mapping)) if row_mapping else None
+        t_consume_end = time.perf_counter()
+        timings["consume_ms"] = (t_consume_end - t_consume_start) * 1000
+        
+        timings["total_ms"] = timings["execute_ms"] + timings["fetch_ms"] + timings["consume_ms"]
+        
+        return dto, timings
 
     # ─────────────────────────────────────────────────────────────────────────
     # get_by_email: Versión ORM (producción)

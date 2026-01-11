@@ -107,6 +107,8 @@ class RequestTelemetry:
         
         MUST be called in all exit paths (success, error, exception).
         
+        Incorporates auth_timings from request.state.auth_timings if present.
+        
         Args:
             request: FastAPI Request object (can be None)
             status_code: HTTP status code
@@ -123,6 +125,23 @@ class RequestTelemetry:
         
         # Calculate total
         self.timings["total_ms"] = (time.perf_counter() - self.start_time) * 1000
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # Incorporate auth_timings from dependency (if present)
+        # ═══════════════════════════════════════════════════════════════════════
+        if request is not None:
+            try:
+                auth_timings = getattr(request.state, "auth_timings", None)
+                if auth_timings and isinstance(auth_timings, dict):
+                    # Copy auth timing fields as flags (not _ms to avoid skewing accounted)
+                    self.flags["auth_dep_total_ms"] = auth_timings.get("auth_dep_total_ms", 0)
+                    self.flags["auth_jwt_decode_ms"] = auth_timings.get("jwt_decode_ms", 0)
+                    self.flags["auth_user_lookup_ms"] = auth_timings.get("user_lookup_ms", 0)
+                    self.flags["auth_db_ms"] = auth_timings.get("auth_db_ms", 0)
+                    self.flags["auth_mode"] = auth_timings.get("auth_mode", "unknown")
+                    self.flags["auth_path"] = auth_timings.get("auth_path", "unknown")
+            except Exception as e:
+                logger.debug("Failed to read auth_timings: %s", str(e))
         
         # Calculate accounted dynamically: sum all keys ending with _ms except meta keys
         meta_keys = {"total_ms", "accounted_ms", "overhead_ms"}
@@ -195,9 +214,24 @@ class RequestTelemetry:
             timing_str,
         )
         
-        # Add flags if any
-        if self.flags:
-            flags_str = " ".join(f"{k}={v}" for k, v in self.flags.items())
+        # Build flags string (includes auth timings)
+        flag_parts = []
+        
+        # Auth timings first (these explain the gap)
+        auth_dep_ms = self.flags.get("auth_dep_total_ms", 0)
+        if auth_dep_ms and auth_dep_ms > 0:
+            flag_parts.append(f"auth_dep_total_ms={auth_dep_ms:.1f}")
+            flag_parts.append(f"auth_lookup_ms={self.flags.get('auth_user_lookup_ms', 0):.1f}")
+            flag_parts.append(f"auth_mode={self.flags.get('auth_mode', 'unknown')}")
+        
+        # Other flags
+        for k, v in self.flags.items():
+            if k.startswith("auth_"):
+                continue  # Already handled above
+            flag_parts.append(f"{k}={v}")
+        
+        if flag_parts:
+            flags_str = " ".join(flag_parts)
             log_msg += " %s"
             log_args = (*log_args, flags_str)
         
