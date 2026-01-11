@@ -222,20 +222,14 @@ class UserService:
             async with self._session_scope() as session:
                 t_session_acquired = time.perf_counter()
                 
-                # ─── Fase A: Medir conn_checkout_ms ───
-                # OPTIMIZACIÓN: Si usamos borrowed session, el checkout ya ocurrió
-                # Solo forzar checkout si NO es borrowed session (para medir latencia real)
-                if self._using_borrowed_session():
-                    # Sesión prestada: checkout ya ocurrió en get_async_session
-                    timings["conn_checkout_ms"] = 0
-                    timings["borrowed_session"] = True
-                else:
-                    # Sesión propia: medir checkout real
-                    t_checkout_start = time.perf_counter()
-                    await session.connection()  # fuerza checkout de conexión del pool
-                    t_checkout_end = time.perf_counter()
-                    timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
-                    timings["borrowed_session"] = False
+                # ─── Fase A: Medir conn_checkout_ms SIEMPRE ───
+                # Incluso con borrowed session, session.connection() puede incurrir latencia
+                # (reconexión pool, pre_ping, etc). Siempre medir el tiempo real.
+                t_checkout_start = time.perf_counter()
+                await session.connection()  # fuerza checkout / verifica conexión lista
+                t_checkout_end = time.perf_counter()
+                timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
+                timings["borrowed_session"] = self._using_borrowed_session()
                 
                 # ─── Fase B: Pre-query guards (solo ping si NO borrowed) ───
                 await self._pre_query_guards(session, stmt_timeout_ms=3000)

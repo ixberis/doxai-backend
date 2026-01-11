@@ -105,8 +105,8 @@ async def db_user_by_email_ping(
             "auth_user_id": str(getattr(user, "auth_user_id", None)) if user and getattr(user, "auth_user_id", None) else None,
             "borrowed_session": borrowed_session,
             "note": (
-                "pool_checkout_ms=connection ready from pool (0 if borrowed), "
-                "prep_ms=session setup, exec_ms=SQL execution time ONLY"
+                "conn_checkout_ms=await session.connection() (always measured), "
+                "prep_ms=session scope + pre_query_guards, exec_ms=SQL execution ONLY"
             ),
         }
         
