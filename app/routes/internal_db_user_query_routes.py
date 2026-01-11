@@ -54,16 +54,16 @@ async def db_user_by_email_ping(
     Ejecuta la query de usuario por email y mide tiempos detallados.
     
     Respuesta:
-    - pool_checkout_ms: tiempo de obtener conexión del pool (await session.connection())
-    - prep_ms: tiempo de preparación (session scope + pre_query_guards)
-    - exec_ms: tiempo de ejecución de la query SQL
+    - loop_lag_ms: event loop lag (await asyncio.sleep(0) before DB calls)
+    - conn_checkout_ms: tiempo de obtener conexión del pool (await session.connection())
+    - raw_sql_exec_ms: tiempo de SELECT crudo via text() + fetchone (sin ORM/repo)
+    - repo_exec_ms: tiempo de repo.get_by_email (ORM path)
     - total_ms: tiempo total del handler
     - found: bool indicando si se encontró el usuario
-    - user_id: ID del usuario (si encontrado, sin PII adicional)
-    - auth_user_id: UUID del usuario (si encontrado)
-    - borrowed_session: True si usó sesión prestada (como login)
-    - explain_plan: plan de ejecución (si explain_analyze=true)
+    - diagnosis: análisis de cuál es el cuello de botella
     """
+    import asyncio
+    
     total_start = time.perf_counter()
     
     # Normalizar email igual que login
@@ -76,37 +76,76 @@ async def db_user_by_email_ping(
         )
     
     try:
-        # ─── Crear UserService con la sesión del request (IGUAL que login) ───
-        # LoginFlowService hace: self.user_service = UserService.with_session(db)
+        # ─── 1. Medir loop lag (detecta bloqueo del event loop) ───
+        loop_lag_start = time.perf_counter()
+        await asyncio.sleep(0)  # Yield al event loop
+        loop_lag_ms = (time.perf_counter() - loop_lag_start) * 1000
+        
+        # ─── 2. Medir conn_checkout (await session.connection()) ───
+        conn_start = time.perf_counter()
+        conn = await db.connection()
+        conn_checkout_ms = (time.perf_counter() - conn_start) * 1000
+        
+        # ─── 3. Medir raw SQL (text() + fetchone, sin ORM/repo) ───
+        raw_sql = text("""
+            SELECT user_id, auth_user_id, user_email
+            FROM public.app_users 
+            WHERE user_email = :email
+              AND deleted_at IS NULL
+            LIMIT 1
+        """)
+        
+        raw_start = time.perf_counter()
+        raw_result = await db.execute(raw_sql, {"email": norm_email})
+        raw_row = raw_result.fetchone()
+        raw_sql_exec_ms = (time.perf_counter() - raw_start) * 1000
+        
+        # ─── 4. Medir repo/ORM path (UserService.get_by_email) ───
         user_service = UserService.with_session(db)
         
-        # ─── Ejecutar get_by_email con return_timings=True (igual que login) ───
+        repo_start = time.perf_counter()
         result = await user_service.get_by_email(norm_email, return_timings=True)
         user, db_timings = result
+        repo_exec_ms = (time.perf_counter() - repo_start) * 1000
         
-        # Extraer tiempos del servicio
-        pool_checkout_ms = db_timings.get("conn_checkout_ms", 0)
-        prep_ms = db_timings.get("db_prep_ms", 0)
-        exec_ms = db_timings.get("db_exec_ms", 0)
-        borrowed_session = db_timings.get("borrowed_session", True)
+        # Extraer tiempos internos del servicio para comparar
+        service_conn_ms = db_timings.get("conn_checkout_ms", 0)
+        service_exec_ms = db_timings.get("db_exec_ms", 0)
         
         # Setear en request.state para timing_middleware
-        request.state.db_exec_ms = exec_ms
+        request.state.db_exec_ms = repo_exec_ms
         
         total_ms = (time.perf_counter() - total_start) * 1000
         
+        # ─── Diagnóstico: identificar cuello de botella ───
+        diagnosis = _diagnose_delay(
+            loop_lag_ms=loop_lag_ms,
+            conn_checkout_ms=conn_checkout_ms,
+            raw_sql_exec_ms=raw_sql_exec_ms,
+            repo_exec_ms=repo_exec_ms,
+            service_exec_ms=service_exec_ms,
+            total_ms=total_ms,
+        )
+        
         response_data = {
-            "pool_checkout_ms": round(pool_checkout_ms, 2),
-            "prep_ms": round(prep_ms, 2),
-            "exec_ms": round(exec_ms, 2),
+            "loop_lag_ms": round(loop_lag_ms, 2),
+            "conn_checkout_ms": round(conn_checkout_ms, 2),
+            "raw_sql_exec_ms": round(raw_sql_exec_ms, 2),
+            "repo_exec_ms": round(repo_exec_ms, 2),
+            "service_internal": {
+                "conn_checkout_ms": round(service_conn_ms, 2),
+                "db_exec_ms": round(service_exec_ms, 2),
+            },
             "total_ms": round(total_ms, 2),
             "found": user is not None,
             "user_id": getattr(user, "user_id", None) if user else None,
             "auth_user_id": str(getattr(user, "auth_user_id", None)) if user and getattr(user, "auth_user_id", None) else None,
-            "borrowed_session": borrowed_session,
+            "diagnosis": diagnosis,
             "note": (
-                "conn_checkout_ms=await session.connection() (always measured), "
-                "prep_ms=session scope + pre_query_guards, exec_ms=SQL execution ONLY"
+                "loop_lag_ms=event loop responsiveness, "
+                "conn_checkout_ms=pool checkout (first await connection()), "
+                "raw_sql_exec_ms=raw text() SELECT, "
+                "repo_exec_ms=full UserService.get_by_email"
             ),
         }
         
@@ -219,6 +258,78 @@ async def login_path_simulation(
         total_ms = (time.perf_counter() - total_start) * 1000
         logger.exception("login_path_simulation_failed: %s", type(e).__name__)
         raise HTTPException(status_code=503, detail=f"Simulation failed: {type(e).__name__}")
+
+
+def _diagnose_delay(
+    loop_lag_ms: float,
+    conn_checkout_ms: float,
+    raw_sql_exec_ms: float,
+    repo_exec_ms: float,
+    service_exec_ms: float,
+    total_ms: float,
+) -> dict:
+    """
+    Diagnóstico del cuello de botella basado en los tiempos medidos.
+    
+    Interpretación:
+    - loop_lag_ms alto (>10ms): event loop bloqueado por código síncrono
+    - conn_checkout_ms alto (>100ms): pool exhausted o pre_ping reconectando
+    - raw_sql_exec_ms bajo pero repo_exec_ms alto: overhead ORM/repo
+    - raw_sql_exec_ms alto: latencia de red real al DB server
+    """
+    findings = []
+    bottleneck = "unknown"
+    
+    # Event loop lag
+    if loop_lag_ms > 50:
+        findings.append(f"CRITICAL: Event loop lag {loop_lag_ms:.1f}ms - blocking code in async path")
+        bottleneck = "event_loop_blocked"
+    elif loop_lag_ms > 10:
+        findings.append(f"WARNING: Event loop lag {loop_lag_ms:.1f}ms - minor contention")
+    
+    # Connection checkout
+    if conn_checkout_ms > 500:
+        findings.append(f"CRITICAL: Pool checkout {conn_checkout_ms:.1f}ms - pool exhausted or pre_ping failing")
+        if bottleneck == "unknown":
+            bottleneck = "pool_exhaustion"
+    elif conn_checkout_ms > 100:
+        findings.append(f"WARNING: Pool checkout {conn_checkout_ms:.1f}ms - possible pre_ping or slow checkout")
+    
+    # Raw SQL vs Repo comparison
+    # Baseline: raw_sql ~60-120ms es normal en nuestro entorno (db-ping ~60ms)
+    orm_overhead = repo_exec_ms - raw_sql_exec_ms
+    if raw_sql_exec_ms < 150 and orm_overhead > 500:
+        findings.append(f"CRITICAL: Raw SQL {raw_sql_exec_ms:.1f}ms but repo {repo_exec_ms:.1f}ms - ORM overhead {orm_overhead:.1f}ms")
+        if bottleneck == "unknown":
+            bottleneck = "orm_overhead"
+    elif raw_sql_exec_ms > 500:
+        # Solo marcamos network_latency si raw SQL es realmente alto (>500ms)
+        findings.append(f"WARNING: Raw SQL execution {raw_sql_exec_ms:.1f}ms - network latency to DB")
+        if bottleneck == "unknown":
+            bottleneck = "network_latency"
+    
+    # Service internal exec vs raw SQL
+    # Solo alertamos si raw_sql es normal (<150ms) pero service tiene overhead significativo
+    if service_exec_ms > raw_sql_exec_ms * 3 and raw_sql_exec_ms < 150:
+        findings.append(f"INFO: Service.db_exec_ms ({service_exec_ms:.1f}ms) >> raw_sql ({raw_sql_exec_ms:.1f}ms) - hidden roundtrip in service?")
+    
+    # Unaccounted time
+    accounted = loop_lag_ms + conn_checkout_ms + repo_exec_ms
+    unaccounted = total_ms - accounted
+    if unaccounted > 100:
+        findings.append(f"INFO: Unaccounted time {unaccounted:.1f}ms (FastAPI/serialization/other)")
+    
+    if not findings:
+        findings.append("All timings look healthy")
+        bottleneck = "none"
+    
+    return {
+        "bottleneck": bottleneck,
+        "orm_overhead_ms": round(orm_overhead, 2),
+        "accounted_ms": round(accounted, 2),
+        "unaccounted_ms": round(unaccounted, 2),
+        "findings": findings,
+    }
 
 
 def _analyze_timings(timings: dict) -> dict:
