@@ -48,6 +48,8 @@ from .session_schemas import (
 )
 
 from .user_schemas import UserOut, UserAdminView
+from .user_dto import UserDTO
+from .login_user_dto import LoginUserDTO, LoginUserDTOMappingError
 
 __all__ = [
     # Requests
@@ -81,4 +83,9 @@ __all__ = [
 
     "UserOut",
     "UserAdminView",
+    
+    # DTOs (Core mode)
+    "UserDTO",
+    "LoginUserDTO",
+    "LoginUserDTOMappingError",
 ]

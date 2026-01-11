@@ -234,6 +234,34 @@ class UserService:
                 repo = UserRepository(session)
                 return await repo.get_by_email_core(norm_email)
     
+    async def get_by_email_core_login(
+        self, email: str, *, timeout_seconds: float = 5.0
+    ) -> Optional["LoginUserDTO"]:
+        """
+        Obtiene usuario por email usando Core SQL MÍNIMO para login.
+        Solo 1 statement, sin ORM, sin eager loading.
+        Devuelve LoginUserDTO con solo los campos necesarios para validar credenciales.
+
+        Args:
+            email: Email del usuario a buscar
+            timeout_seconds: Timeout máximo para la operación completa (default: 5s)
+        
+        Returns:
+            LoginUserDTO o None
+        """
+        import asyncio
+        from app.modules.auth.schemas.login_user_dto import LoginUserDTO
+        
+        norm_email = (email or "").strip().lower()
+        if not norm_email:
+            return None
+
+        async with asyncio.timeout(timeout_seconds):
+            async with self._session_scope() as session:
+                await self._pre_query_guards(session, stmt_timeout_ms=3000)
+                repo = UserRepository(session)
+                return await repo.get_by_email_core_login(norm_email)
+    
     async def get_by_email_timed(
         self, email: str, *, use_core: bool = False, timeout_seconds: float = 5.0
     ) -> tuple[Optional[AppUser] | Optional["UserDTO"], dict]:

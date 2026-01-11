@@ -81,12 +81,67 @@ class UserRepository:
         return result.scalar_one_or_none()
     
     # ─────────────────────────────────────────────────────────────────────────
-    # get_by_email_core: Versión Core (para login optimizado)
+    # get_by_email_core_login: Versión Core MÍNIMA para login (1 statement)
+    # ─────────────────────────────────────────────────────────────────────────
+    async def get_by_email_core_login(self, email: str) -> Optional["LoginUserDTO"]:
+        """
+        Obtiene usuario por email usando Core SQL MÍNIMO para login.
+        Solo 1 statement, sin ORM, sin eager loading.
+        
+        Columnas seleccionadas:
+        - user_id, auth_user_id: identificación
+        - user_email, user_password_hash: validación de credenciales
+        - user_role, user_status: información de cuenta
+        - user_is_activated, deleted_at: estado de activación
+        - user_full_name: para response de login
+        
+        Args:
+            email: Email del usuario a buscar
+            
+        Returns:
+            LoginUserDTO o None
+        """
+        from sqlalchemy import text
+        from app.modules.auth.schemas.login_user_dto import LoginUserDTO
+        
+        norm_email = (email or "").strip().lower()
+        if not norm_email:
+            return None
+
+        # SQL mínimo: solo columnas necesarias para login + AND deleted_at IS NULL
+        core_sql = text("""
+            SELECT
+                user_id,
+                auth_user_id,
+                user_email,
+                user_password_hash,
+                user_role,
+                user_status,
+                user_is_activated,
+                deleted_at,
+                user_full_name
+            FROM public.app_users
+            WHERE user_email = :email
+              AND deleted_at IS NULL
+            LIMIT 1
+        """)
+        
+        result = await self._db.execute(core_sql, {"email": norm_email})
+        row_mapping = result.mappings().first()
+        
+        if row_mapping:
+            return LoginUserDTO.from_mapping(dict(row_mapping))
+        return None
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # get_by_email_core: Versión Core completa (para diagnóstico A/B)
     # ─────────────────────────────────────────────────────────────────────────
     async def get_by_email_core(self, email: str) -> Optional["UserDTO"]:
         """
         Obtiene un usuario por email usando SQLAlchemy Core (sin ORM).
         Devuelve UserDTO en lugar de AppUser para evitar overhead ORM.
+        
+        NOTA: Para login, usar get_by_email_core_login() que es más eficiente.
         
         Args:
             email: Email del usuario a buscar
@@ -101,13 +156,15 @@ class UserRepository:
         if not norm_email:
             return None
 
+        # SQL corregido: user_full_name (no user_name) + deleted_at IS NULL
         core_sql = text("""
-            SELECT user_id, auth_user_id, user_email, user_name, user_password_hash, 
+            SELECT user_id, auth_user_id, user_email, user_full_name, user_password_hash, 
                    user_status, user_created_at, user_updated_at, deleted_at,
                    welcome_email_status, welcome_email_sent_at, welcome_email_attempts,
                    welcome_email_claimed_at, welcome_email_last_error
             FROM public.app_users 
             WHERE user_email = :email
+              AND deleted_at IS NULL
             LIMIT 1
         """)
         
@@ -142,32 +199,30 @@ class UserRepository:
         import logging
         from sqlalchemy import text
         from app.modules.auth.schemas.user_dto import UserDTO
-        from app.shared.database.statement_counter import get_counter
         
         logger = logging.getLogger(__name__)
         
+        # NOTA: El conteo de statements se hace en el endpoint (counter delta global)
+        # para evitar doble conteo. Este método solo retorna timings de ejecución.
         timings: dict = {
             "mode": "core" if use_core else "orm",
-            "statements_executed": 0,
         }
         
         norm_email = (email or "").strip().lower()
         if not norm_email:
-            return None, {"execute_ms": 0, "fetch_ms": 0, "consume_ms": 0, "total_ms": 0, "mode": timings["mode"], "statements_executed": 0}
+            return None, {"execute_ms": 0, "fetch_ms": 0, "consume_ms": 0, "total_ms": 0, "mode": timings["mode"]}
 
-        # Capturar contador antes de ejecutar
-        counter_before = get_counter()
-        count_start = counter_before.count if counter_before else 0
-        
         if use_core:
             # ─── MODO CORE ───
+            # SQL corregido: user_full_name (no user_name) + deleted_at IS NULL
             core_sql = text("""
-                SELECT user_id, auth_user_id, user_email, user_name, user_password_hash, 
+                SELECT user_id, auth_user_id, user_email, user_full_name, user_password_hash, 
                        user_status, user_created_at, user_updated_at, deleted_at,
                        welcome_email_status, welcome_email_sent_at, welcome_email_attempts,
                        welcome_email_claimed_at, welcome_email_last_error
                 FROM public.app_users 
                 WHERE user_email = :email
+                  AND deleted_at IS NULL
                 LIMIT 1
             """)
             
@@ -210,14 +265,45 @@ class UserRepository:
             
             timings["consume_ms"] = 0.0
         
-        # Capturar contador después
-        counter_after = get_counter()
-        count_end = counter_after.count if counter_after else 0
-        timings["statements_executed"] = count_end - count_start
-        
+        # NOTA: statements_executed se calcula en el endpoint (counter delta global)
+        # Aquí solo calculamos total_ms
         timings["total_ms"] = timings["execute_ms"] + timings["fetch_ms"] + timings["consume_ms"]
         
         return user, timings
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # set_auth_user_id_if_missing: Fix SSOT legacy para usuarios sin UUID
+    # ─────────────────────────────────────────────────────────────────────────
+    async def set_auth_user_id_if_missing(self, user_id: int, new_uuid: "UUID") -> bool:
+        """
+        Persiste auth_user_id para usuarios legacy que no lo tienen.
+        
+        SQL:
+            UPDATE public.app_users 
+            SET auth_user_id = :uuid 
+            WHERE user_id = :id AND auth_user_id IS NULL
+        
+        Args:
+            user_id: PK del usuario
+            new_uuid: UUID a asignar
+            
+        Returns:
+            True si se actualizó 1 fila, False si ya tenía UUID o no existe
+        """
+        from sqlalchemy import text
+        from uuid import UUID
+        
+        stmt = text("""
+            UPDATE public.app_users 
+            SET auth_user_id = :new_uuid 
+            WHERE user_id = :user_id 
+              AND auth_user_id IS NULL
+        """)
+        
+        result = await self._db.execute(stmt, {"new_uuid": new_uuid, "user_id": user_id})
+        # NO commit aquí - el caller maneja la transacción
+        
+        return result.rowcount == 1
 
     async def exists_by_email(self, email: str) -> bool:
         """

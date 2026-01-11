@@ -47,6 +47,7 @@ async def db_user_by_email_ping(
     request: Request,
     _auth: InternalServiceAuth,
     email: Annotated[str, Query(description="Email a buscar (se normalizará: strip + lower)")],
+    mode: Annotated[str, Query(description="Modo de query: 'orm' (default) o 'core'")] = "orm",
     explain_analyze: Annotated[bool, Query(description="Si true, ejecuta EXPLAIN ANALYZE y devuelve el plan")] = False,
     compare_modes: Annotated[bool, Query(description="Si true, ejecuta AMBOS modos (ORM y Core) para comparar")] = False,
     capture_sql: Annotated[bool, Query(description="Si true, captura SQL de cada statement (máx 10, solo debug)")] = False,
@@ -111,45 +112,80 @@ async def db_user_by_email_ping(
         raw_sql_exec_ms = (time.perf_counter() - raw_start) * 1000
         statements_after_raw = counter.count
         
-        # ─── 4. Medir repo con instrumentación A/B ───
+        # ─── 4. Medir repo según modo seleccionado ───
         from app.modules.auth.repositories.user_repository import UserRepository
         
         repo_direct = UserRepository(db)
         
-        # ORM mode
-        statements_before_orm = counter.count
-        repo_orm_start = time.perf_counter()
-        user_orm, orm_timings = await repo_direct.get_by_email_timed(norm_email, use_core=False)
-        repo_orm_exec_ms = (time.perf_counter() - repo_orm_start) * 1000
-        orm_statements = counter.count - statements_before_orm
+        # Determinar si usar Core como modo principal
+        use_core_primary = mode.lower() == "core"
         
-        # ─── 5. Comparar modo Core si se solicita ───
-        core_comparison = None
+        # Ejecutar modo primario
+        statements_before_primary = counter.count
+        repo_primary_start = time.perf_counter()
+        if use_core_primary:
+            user_primary, primary_timings = await repo_direct.get_by_email_timed(norm_email, use_core=True)
+        else:
+            user_primary, primary_timings = await repo_direct.get_by_email_timed(norm_email, use_core=False)
+        repo_primary_exec_ms = (time.perf_counter() - repo_primary_start) * 1000
+        primary_statements = counter.count - statements_before_primary
+        
+        # ─── 5. Comparar ambos modos si se solicita ───
+        orm_timings = {}
         core_timings = {}
+        orm_statements = 0
         core_statements = 0
+        repo_orm_exec_ms = 0.0
+        repo_core_exec_ms = 0.0
+        user_orm = None
+        user_core = None
+        
         if compare_modes:
-            statements_before_core = counter.count
-            repo_core_start = time.perf_counter()
-            user_core, core_timings = await repo_direct.get_by_email_timed(norm_email, use_core=True)
-            repo_core_exec_ms = (time.perf_counter() - repo_core_start) * 1000
-            core_statements = counter.count - statements_before_core
-            
-            core_comparison = {
-                "mode": "core",
-                "returns": "UserDTO",
-                "total_exec_ms": round(repo_core_exec_ms, 2),
-                "execute_ms": round(core_timings.get("execute_ms", 0), 2),
-                "fetch_ms": round(core_timings.get("fetch_ms", 0), 2),
-                "consume_ms": round(core_timings.get("consume_ms", 0), 2),
-                "statements_executed": core_statements,
-                "found": user_core is not None,
-            }
+            # Ejecutar ORM si no fue el primario
+            if use_core_primary:
+                # Ya ejecutamos Core, ahora ejecutamos ORM
+                statements_before_orm = counter.count
+                repo_orm_start = time.perf_counter()
+                user_orm, orm_timings = await repo_direct.get_by_email_timed(norm_email, use_core=False)
+                repo_orm_exec_ms = (time.perf_counter() - repo_orm_start) * 1000
+                orm_statements = counter.count - statements_before_orm
+                
+                # Core ya fue ejecutado como primario
+                user_core = user_primary
+                core_timings = primary_timings
+                repo_core_exec_ms = repo_primary_exec_ms
+                core_statements = primary_statements
+            else:
+                # Ya ejecutamos ORM como primario
+                user_orm = user_primary
+                orm_timings = primary_timings
+                repo_orm_exec_ms = repo_primary_exec_ms
+                orm_statements = primary_statements
+                
+                # Ejecutar Core
+                statements_before_core = counter.count
+                repo_core_start = time.perf_counter()
+                user_core, core_timings = await repo_direct.get_by_email_timed(norm_email, use_core=True)
+                repo_core_exec_ms = (time.perf_counter() - repo_core_start) * 1000
+                core_statements = counter.count - statements_before_core
+        else:
+            # Solo modo primario
+            if use_core_primary:
+                user_core = user_primary
+                core_timings = primary_timings
+                repo_core_exec_ms = repo_primary_exec_ms
+                core_statements = primary_statements
+            else:
+                user_orm = user_primary
+                orm_timings = primary_timings
+                repo_orm_exec_ms = repo_primary_exec_ms
+                orm_statements = primary_statements
         
         # ─── FIN: Detener contador y obtener estadísticas finales ───
         final_counter = stop_counting()
         
         # Setear en request.state para timing_middleware
-        request.state.db_exec_ms = repo_orm_exec_ms
+        request.state.db_exec_ms = repo_primary_exec_ms
         
         total_ms = (time.perf_counter() - total_start) * 1000
         
@@ -158,8 +194,8 @@ async def db_user_by_email_ping(
             loop_lag_ms=loop_lag_ms,
             conn_checkout_ms=conn_checkout_ms,
             raw_sql_exec_ms=raw_sql_exec_ms,
-            repo_exec_ms=repo_orm_exec_ms,
-            service_exec_ms=orm_timings.get("execute_ms", 0),
+            repo_exec_ms=repo_primary_exec_ms,
+            service_exec_ms=primary_timings.get("execute_ms", 0),
             total_ms=total_ms,
         )
         
@@ -167,30 +203,38 @@ async def db_user_by_email_ping(
         statements_breakdown = {
             "after_conn_checkout": statements_after_conn,
             "raw_sql": statements_after_raw - statements_after_conn,
-            "orm_query": orm_statements,
+            "primary_query": primary_statements,
         }
         if compare_modes:
+            statements_breakdown["orm_query"] = orm_statements
             statements_breakdown["core_query"] = core_statements
         
+        # Determinar usuario resultado (primario)
+        result_user = user_primary
+        
+        # Nota: Usamos solo el conteo del counter (delta global), no el del repo (evita doble conteo)
         response_data = {
+            "mode": mode,
             "loop_lag_ms": round(loop_lag_ms, 2),
             "conn_checkout_ms": round(conn_checkout_ms, 2),
             "raw_sql_exec_ms": round(raw_sql_exec_ms, 2),
-            "repo_orm": {
-                "mode": "orm",
-                "returns": "AppUser",
-                "total_exec_ms": round(repo_orm_exec_ms, 2),
-                "execute_ms": round(orm_timings.get("execute_ms", 0), 2),
-                "fetch_ms": round(orm_timings.get("fetch_ms", 0), 2),
-                "consume_ms": round(orm_timings.get("consume_ms", 0), 2),
-                "statements_executed": orm_statements,
+            "repo_primary": {
+                "mode": mode,
+                # Diagnóstico: get_by_email_timed(use_core=True) devuelve UserDTO
+                # Login producción: get_by_email_core_login() devuelve LoginUserDTO
+                "returns": "UserDTO (diagnóstico)" if use_core_primary else "AppUser (ORM)",
+                "total_exec_ms": round(repo_primary_exec_ms, 2),
+                "execute_ms": round(primary_timings.get("execute_ms", 0), 2),
+                "fetch_ms": round(primary_timings.get("fetch_ms", 0), 2),
+                "consume_ms": round(primary_timings.get("consume_ms", 0), 2),
+                "statements_executed": primary_statements,
             },
             "statements_total": final_counter.count if final_counter else 0,
             "statements_breakdown": statements_breakdown,
             "total_ms": round(total_ms, 2),
-            "found": user_orm is not None,
-            "user_id": getattr(user_orm, "user_id", None) if user_orm else None,
-            "auth_user_id": str(getattr(user_orm, "auth_user_id", None)) if user_orm and getattr(user_orm, "auth_user_id", None) else None,
+            "found": result_user is not None,
+            "user_id": getattr(result_user, "user_id", None) if result_user else None,
+            "auth_user_id": str(getattr(result_user, "auth_user_id", None)) if result_user and getattr(result_user, "auth_user_id", None) else None,
             "diagnosis": diagnosis,
         }
         
@@ -200,8 +244,31 @@ async def db_user_by_email_ping(
             if len(final_counter.statements) > 10:
                 response_data["statements_truncated"] = True
         
-        if core_comparison:
-            response_data["repo_core"] = core_comparison
+        if compare_modes:
+            # Añadir ambos modos para comparación
+            # Nota: statements_executed viene del counter delta (no del repo) para evitar doble conteo
+            response_data["repo_orm"] = {
+                "mode": "orm",
+                "returns": "AppUser (ORM)",
+                "total_exec_ms": round(repo_orm_exec_ms, 2),
+                "execute_ms": round(orm_timings.get("execute_ms", 0), 2),
+                "fetch_ms": round(orm_timings.get("fetch_ms", 0), 2),
+                "consume_ms": round(orm_timings.get("consume_ms", 0), 2),
+                "statements_executed": orm_statements,  # Solo counter delta
+                "found": user_orm is not None,
+            }
+            response_data["repo_core"] = {
+                "mode": "core",
+                # Diagnóstico: UserDTO; Login producción: LoginUserDTO
+                "returns": "UserDTO (diagnóstico)",
+                "total_exec_ms": round(repo_core_exec_ms, 2),
+                "execute_ms": round(core_timings.get("execute_ms", 0), 2),
+                "fetch_ms": round(core_timings.get("fetch_ms", 0), 2),
+                "consume_ms": round(core_timings.get("consume_ms", 0), 2),
+                "statements_executed": core_statements,  # Solo counter delta
+                "found": user_core is not None,
+            }
+            
             # Comparar overhead ORM vs Core con desglose completo
             orm_execute = orm_timings.get("execute_ms", 0)
             orm_fetch = orm_timings.get("fetch_ms", 0)

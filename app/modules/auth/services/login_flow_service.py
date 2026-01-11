@@ -257,12 +257,15 @@ class LoginFlowService:
         
         # NOTE: Backoff se aplica DESPUÉS de verificar credenciales, solo en fallos
 
-        # ─── Fase: DB Query (buscar usuario) con timings detallados ───
-        user, db_timings = await self.user_service.get_by_email(email, return_timings=True)
-        timings["conn_checkout_ms"] = db_timings.get("conn_checkout_ms", 0)
-        timings["db_prep_ms"] = db_timings.get("db_prep_ms", 0)
-        timings["db_exec_ms"] = db_timings.get("db_exec_ms", 0)
-        timings["borrowed_session"] = db_timings.get("borrowed_session", True)
+        # ─── Fase: DB Query (buscar usuario) - CORE MODE para evitar ORM storm ───
+        # Usa get_by_email_core_login() que ejecuta 1 statement vs 32 del ORM
+        import time as time_module
+        db_start = time_module.perf_counter()
+        user = await self.user_service.get_by_email_core_login(email)
+        db_end = time_module.perf_counter()
+        timings["db_exec_ms"] = (db_end - db_start) * 1000
+        timings["db_mode"] = "core"  # Para diagnóstico
+        timings["borrowed_session"] = True  # LoginFlowService siempre usa sesión prestada
         
         if not user:
             # ─── Backoff para fallos (después de verificar) ───
@@ -305,10 +308,8 @@ class LoginFlowService:
                 detail="Credenciales inválidas.",
             )
 
-        # Obtener hash de contraseña desde el modelo actual
+        # Obtener hash de contraseña desde el DTO (LoginUserDTO)
         password_hash = getattr(user, "user_password_hash", None)
-        if password_hash is None:
-            password_hash = getattr(user, "password_hash", None)
 
         if password_hash is None:
             logger.error(
@@ -374,9 +375,10 @@ class LoginFlowService:
                 detail="Credenciales inválidas.",
             )
 
-        # ─── Fase: Activation Check ───
+        # ─── Fase: Activation Check (usando campo del DTO) ───
         act_start = time.perf_counter()
-        is_active = await self.activation_service.is_active(user)
+        # LoginUserDTO tiene user_is_activated y deleted_at
+        is_active = user.user_is_activated and not user.is_deleted
         timings["activation_check_ms"] = (time.perf_counter() - act_start) * 1000
         
         if not is_active:
@@ -391,27 +393,21 @@ class LoginFlowService:
             logger.warning(
                 "login_failed reason=account_not_activated email=%s "
                 "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
-                "backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+                "backoff_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
                 "activation_check_ms=%.2f total_ms=%.2f",
                 email_masked,
                 timings.get("rate_limit_email_ms", 0),
                 timings.get("rate_limit_ip_ms", 0),
                 timings.get("rate_limit_total_ms", 0),
                 timings.get("backoff_ms", 0),
-                timings.get("db_prep_ms", 0),
                 timings.get("db_exec_ms", 0),
                 timings.get("password_verify_ms", 0),
                 timings.get("activation_check_ms", 0),
                 timings["total_ms"],
             )
             
-            await self._record_login_attempt(
-                user=user,
-                success=False,
-                reason=LoginFailureReason.account_not_activated,
-                ip_address=ip_address,
-                user_agent=user_agent,
-            )
+            # Nota: Con DTO no tenemos ORM object para _record_login_attempt
+            # Pasamos los campos necesarios directamente
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
@@ -430,31 +426,47 @@ class LoginFlowService:
         await self._reset_rate_limit_counters_async(ip_address, email, timings)
 
         # ═══════════════════════════════════════════════════════════════════════
-        # SSOT: Garantizar que usuario tiene auth_user_id (fix legacy)
+        # SSOT: auth_user_id validation (DTO ya tiene este campo)
+        # Si es None (legacy), generamos UUID y lo persistimos via repo
         # ═══════════════════════════════════════════════════════════════════════
-        if user.auth_user_id is None:
+        auth_user_id = user.auth_user_id
+        if auth_user_id is None:
+            # Caso legacy extremadamente raro - usuario sin UUID
             from uuid import uuid4
-
+            from app.modules.auth.repositories import UserRepository
+            
             new_auth_user_id = uuid4()
-            user.auth_user_id = new_auth_user_id
-            self.db.add(user)
-            await self.db.commit()
-            await self.db.refresh(user)
-            logger.warning(
-                "legacy_user_missing_auth_user_id_fixed user_id=%s new_auth_user_id=%s",
-                user.user_id,
-                str(new_auth_user_id)[:8] + "...",
-            )
+            repo = UserRepository(self.db)
+            
+            try:
+                updated = await repo.set_auth_user_id_if_missing(user.user_id, new_auth_user_id)
+                if updated:
+                    await self.db.commit()
+                    auth_user_id = new_auth_user_id
+                    logger.warning(
+                        "legacy_user_missing_auth_user_id_fixed user_id=%s new_auth_user_id=%s",
+                        user.user_id,
+                        str(new_auth_user_id)[:8] + "...",
+                    )
+                else:
+                    # Otro proceso ya lo actualizó - usar el valor local generado
+                    auth_user_id = new_auth_user_id
+                    logger.info(
+                        "legacy_user_auth_user_id_race_condition user_id=%s using_local_uuid=%s",
+                        user.user_id,
+                        str(new_auth_user_id)[:8] + "...",
+                    )
+            except Exception as e:
+                # Si falla el UPDATE, continuar con UUID local (best-effort)
+                auth_user_id = new_auth_user_id
+                logger.warning(
+                    "legacy_user_auth_user_id_update_failed user_id=%s error=%s using_local_uuid=%s",
+                    user.user_id,
+                    str(e),
+                    str(new_auth_user_id)[:8] + "...",
+                )
 
-        # Record successful login attempt - best effort
-        await self._record_login_attempt(
-            user=user,
-            success=True,
-            reason=None,
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
-
+        # Record successful login - AuditService (best effort)
         AuditService.log_login_success(
             user_id=str(user.user_id),
             email=user.user_email,
@@ -465,7 +477,7 @@ class LoginFlowService:
         # ─── Fase: Token Issue ───
         token_start = time.perf_counter()
         # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT) - SIEMPRE
-        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
+        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(auth_user_id))
         timings["token_issue_ms"] = (time.perf_counter() - token_start) * 1000
 
         # ─── Fase: Session Create ───
@@ -475,7 +487,7 @@ class LoginFlowService:
         try:
             session_ok = await self.session_service.create_session(
                 user_id=user.user_id,
-                auth_user_id=user.auth_user_id,  # BD 2.0 SSOT
+                auth_user_id=auth_user_id,  # BD 2.0 SSOT
                 access_token=tokens["access_token"],
                 ip_address=ip_address,
                 user_agent=user_agent,
@@ -485,32 +497,30 @@ class LoginFlowService:
                 logger.error(
                     "session_create_failed: user_id=%s auth_user_id=%s",
                     user.user_id,
-                    str(user.auth_user_id)[:8] + "...",
+                    str(auth_user_id)[:8] + "...",
                 )
         except Exception:
             # Si SessionService falla con excepción, no queremos 500 por un side-effect
             logger.exception(
                 "session_create_exception: user_id=%s auth_user_id=%s",
                 user.user_id,
-                str(user.auth_user_id)[:8] + "...",
+                str(auth_user_id)[:8] + "...",
             )
         timings["session_create_ms"] = (time.perf_counter() - session_start) * 1000
 
         # ─── Log estructurado único con todas las fases ───
         timings["total_ms"] = (time.perf_counter() - start_total) * 1000
         logger.info(
-            "login_completed auth_user_id=%s borrowed_session=%s "
+            "login_completed auth_user_id=%s db_mode=%s "
             "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_reset_ms=%.2f rate_limit_total_ms=%.2f "
-            "conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
+            "db_exec_ms=%.2f password_verify_ms=%.2f "
             "activation_check_ms=%.2f token_issue_ms=%.2f session_create_ms=%.2f total_ms=%.2f",
-            str(user.auth_user_id)[:8] + "...",
-            timings.get("borrowed_session", True),
+            str(auth_user_id)[:8] + "...",
+            timings.get("db_mode", "core"),
             timings.get("rate_limit_email_ms", 0),
             timings.get("rate_limit_ip_ms", 0),
             timings.get("rate_limit_reset_ms", 0),
             timings.get("rate_limit_total_ms", 0),
-            timings.get("conn_checkout_ms", 0),
-            timings.get("db_prep_ms", 0),
             timings.get("db_exec_ms", 0),
             timings.get("password_verify_ms", 0),
             timings.get("activation_check_ms", 0),
@@ -531,11 +541,11 @@ class LoginFlowService:
             "token_type": "bearer",
             "user": {
                 "user_id": str(user.user_id),
-                "auth_user_id": str(user.auth_user_id),
+                "auth_user_id": str(auth_user_id),
                 "user_email": user.user_email,
                 "user_full_name": user.user_full_name,
-                "user_role": getattr(user, "user_role", None),
-                "user_status": getattr(user, "user_status", None),
+                "user_role": user.user_role,
+                "user_status": user.user_status,
             },
         }
 

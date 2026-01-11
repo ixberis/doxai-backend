@@ -26,9 +26,9 @@ class UserDTO:
     Usado por modo Core en get_by_email para comparar rendimiento.
     """
     user_id: int
-    auth_user_id: UUID
+    auth_user_id: Optional[UUID]  # Puede ser None en legacy
     user_email: str
-    user_name: Optional[str]
+    user_full_name: Optional[str]
     user_password_hash: str
     user_status: UserStatus
     user_created_at: datetime
@@ -45,9 +45,9 @@ class UserDTO:
         """Construye DTO desde un dict (resultado de mappings().first())."""
         return cls(
             user_id=row["user_id"],
-            auth_user_id=row["auth_user_id"],
+            auth_user_id=row.get("auth_user_id"),  # Optional: puede ser None en legacy
             user_email=row["user_email"],
-            user_name=row.get("user_name"),
+            user_full_name=row.get("user_full_name"),
             user_password_hash=row["user_password_hash"],
             user_status=row["user_status"],
             user_created_at=row["user_created_at"],
