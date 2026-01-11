@@ -143,6 +143,25 @@ class RequestTelemetry:
             except Exception as e:
                 logger.debug("Failed to read auth_timings: %s", str(e))
         
+        # ═══════════════════════════════════════════════════════════════════════
+        # Incorporate dep_timings from factories (pre-handler dependencies)
+        # ═══════════════════════════════════════════════════════════════════════
+        if request is not None:
+            try:
+                dep_timings = getattr(request.state, "dep_timings", None)
+                if dep_timings and isinstance(dep_timings, dict):
+                    # Calculate total deps_ms
+                    deps_ms = sum(
+                        v for v in dep_timings.values()
+                        if isinstance(v, (int, float))
+                    )
+                    self.flags["deps_ms"] = deps_ms
+                    # Include individual dep timings as flags for detailed breakdown
+                    for k, v in dep_timings.items():
+                        self.flags[k] = v
+            except Exception as e:
+                logger.debug("Failed to read dep_timings: %s", str(e))
+        
         # Calculate accounted dynamically: sum all keys ending with _ms except meta keys
         meta_keys = {"total_ms", "accounted_ms", "overhead_ms"}
         accounted_ms = sum(

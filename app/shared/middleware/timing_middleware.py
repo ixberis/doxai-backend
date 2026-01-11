@@ -103,6 +103,16 @@ class TimingMiddleware(BaseHTTPMiddleware):
                     extra_timings += f" rate_limit_total_ms={_format_timing(rate_limit_ms)}"
                 
                 # ═══════════════════════════════════════════════════════════════
+                # NEW: Extract dep_timings from factories (pre-handler dependencies)
+                # ═══════════════════════════════════════════════════════════════
+                dep_timings_raw = getattr(request.state, "dep_timings", None)
+                dep_timings = dep_timings_raw if isinstance(dep_timings_raw, dict) else {}
+                deps_ms = sum(
+                    v for v in dep_timings.values() 
+                    if isinstance(v, (int, float))
+                )
+                
+                # ═══════════════════════════════════════════════════════════════
                 # GAP ANALYSIS: Calculate unaccounted time
                 # ═══════════════════════════════════════════════════════════════
                 # auth_dep_total_ms: set by token_service (via auth_timings)
@@ -114,21 +124,24 @@ class TimingMiddleware(BaseHTTPMiddleware):
                 # route_handler_ms: set by RequestTelemetry.finalize
                 route_handler_ms = _safe_get_float(request.state, "route_handler_ms")
                 
-                # Calculate gap
-                accounted_ms = auth_dep_total_ms + route_handler_ms
+                # Calculate gap with deps included
+                accounted_ms = auth_dep_total_ms + deps_ms + route_handler_ms
                 gap_ms = max(0, duration_ms - accounted_ms)
                 
                 # Add gap analysis to log if significant
-                if auth_dep_total_ms > 0 or route_handler_ms > 0:
+                if auth_dep_total_ms > 0 or route_handler_ms > 0 or deps_ms > 0:
                     extra_timings += f" auth_dep_ms={_format_timing(auth_dep_total_ms)}"
+                    extra_timings += f" deps_ms={_format_timing(deps_ms)}"
                     extra_timings += f" handler_ms={_format_timing(route_handler_ms)}"
                     extra_timings += f" gap_ms={_format_timing(gap_ms)}"
                     
                     # Log warning if gap is significant
                     if gap_ms > GAP_WARNING_THRESHOLD_MS:
+                        # Include dep breakdown in warning for diagnosis
+                        dep_detail = " ".join(f"{k}={v:.2f}" for k, v in dep_timings.items()) if dep_timings else "none"
                         logger.warning(
-                            "timing_gap_detected path=%s gap_ms=%.2f duration_ms=%.2f auth_dep_ms=%.2f handler_ms=%.2f",
-                            path, gap_ms, duration_ms, auth_dep_total_ms, route_handler_ms
+                            "timing_gap_detected path=%s gap_ms=%.2f duration_ms=%.2f auth_dep_ms=%.2f deps_ms=%.2f handler_ms=%.2f dep_breakdown=%s",
+                            path, gap_ms, duration_ms, auth_dep_total_ms, deps_ms, route_handler_ms, dep_detail
                         )
                 
                 logger.log(

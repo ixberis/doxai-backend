@@ -82,18 +82,27 @@ _password_hasher = PasswordHasherAdapter()
 _session_manager = NoOpSessionManager()
 
 
-async def get_profile_service(
+def get_profile_service(
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> ProfileService:
     """
     Dependency provider para ProfileService.
     Inyecta db, password_hasher y session_manager correctamente.
+    
+    Timing: records dep_factory.profile_service_ms
     """
-    return ProfileService(
+    from app.shared.observability.dep_timing import record_dep_timing
+    
+    start = time.perf_counter()
+    svc = ProfileService(
         db=db,
         password_hasher=_password_hasher,
         session_manager=_session_manager,
     )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    record_dep_timing(request, "dep_factory.profile_service_ms", elapsed_ms)
+    return svc
 
 
 # ---------------------------------------------------------------------------
