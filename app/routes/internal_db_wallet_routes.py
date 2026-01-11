@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects import postgresql
 
 from app.shared.database.database import get_async_session
-from app.shared.internal_auth import InternalServiceAuth
+from app.shared.internal_auth import require_internal_service_token
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +43,13 @@ router = APIRouter(prefix="/_internal/db", tags=["internal-db-diagnostics"])
 # Flag para habilitar/deshabilitar endpoint
 _DIAGNOSTICS_ENABLED = os.getenv("DB_MODEL_DIAGNOSTICS", "0") == "1"
 
+# Instancia de la dependencia de auth interna
+_internal_auth = require_internal_service_token
+
 
 @router.get("/wallet-model")
 async def get_wallet_model_diagnostic(
-    _auth: None = InternalServiceAuth,
+    _: None = Depends(_internal_auth),
     db: AsyncSession = Depends(get_async_session),
 ):
     """
