@@ -34,11 +34,12 @@ from app.modules.auth.services.audit_service import AuditService
 from app.shared.security.rate_limit_dep import RateLimitDep
 from app.shared.http_utils.request_meta import get_request_meta
 from app.shared.database.database import get_async_session
+from app.shared.observability.timed_route import TimedAPIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
-router = APIRouter(prefix="/auth", tags=["auth-tokens"])
-router = APIRouter(prefix="/auth", tags=["auth-tokens"])
+# route_class=TimedAPIRoute instruments all routes for handler timing
+router = APIRouter(prefix="/auth", tags=["auth-tokens"], route_class=TimedAPIRoute)
 
 
 # ------------------------ LOGIN ------------------------ #

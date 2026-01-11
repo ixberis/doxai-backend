@@ -140,11 +140,28 @@ class TimingMiddleware(BaseHTTPMiddleware):
                 # ═══════════════════════════════════════════════════════════
                 # PHASE 3.2: WARN - timing_gap_detected if significant
                 # mw_after_warn_ms = 0 if NO warning is emitted
+                # 
+                # GUARDRAIL: If handler_ms=0 but call_next_ms is high, this indicates
+                # missing instrumentation (route doesn't set route_handler_ms), NOT a
+                # real timing gap. Report handler_instrumentation_missing instead.
                 # ═══════════════════════════════════════════════════════════
                 mw_after_warn_ms = 0.0
                 warn_end = build_end  # Si no hay warning, warn_end = build_end
                 
-                if gap_call_next_ms > GAP_WARNING_THRESHOLD_MS:
+                # Detect missing instrumentation: handler_ms=0 but significant call_next time
+                handler_instrumentation_missing = (handler_ms == 0 and call_next_ms > 50)
+                
+                if handler_instrumentation_missing:
+                    # Log as INFO (not WARNING) - this is a known gap, not a mystery
+                    logger.info(
+                        "handler_instrumentation_missing path=%s call_next_ms=%.2f "
+                        "auth_dep_ms=%.2f deps_ms=%.2f handler_ms=0.00 "
+                        "mw_pre_call_next_ms=%.2f",
+                        path, call_next_ms, auth_dep_ms, deps_ms, mw_pre_call_next_ms
+                    )
+                    warn_end = time.perf_counter()
+                    mw_after_warn_ms = (warn_end - build_end) * 1000
+                elif gap_call_next_ms > GAP_WARNING_THRESHOLD_MS:
                     dep_detail = " ".join(f"{k}={v:.2f}" for k, v in dep_timings.items()) if dep_timings else "none"
                     logger.warning(
                         "timing_gap_detected path=%s gap_call_next_ms=%.2f call_next_ms=%.2f "

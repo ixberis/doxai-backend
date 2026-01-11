@@ -164,6 +164,13 @@ class LoginTelemetry:
                 request.state.rate_limit_total_ms = self.timings.get("rate_limit_total_ms", 0)
                 # Full timings for observability (NOT serialized to response)
                 request.state.login_timings = self.timings.copy()
+                
+                # ═══════════════════════════════════════════════════════════════
+                # Aligned with RequestTelemetry.finalize(): set route_handler_ms
+                # total_ms includes everything measured (DB, argon2, rate limit, etc.)
+                # ═══════════════════════════════════════════════════════════════
+                request.state.route_handler_ms = float(self.timings.get("total_ms", 0.0))
+                
             except Exception as e:
                 logger.debug("Failed to set request.state: %s", str(e))
         

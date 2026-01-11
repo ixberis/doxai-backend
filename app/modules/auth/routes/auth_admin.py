@@ -18,9 +18,11 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 
 from app.modules.auth.facades.auth_facade import AuthFacade, get_auth_facade
+from app.shared.observability.timed_route import TimedAPIRoute
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
-router = APIRouter(prefix="/auth", tags=["auth-admin"])
+# route_class=TimedAPIRoute instruments all routes for handler timing
+router = APIRouter(prefix="/auth", tags=["auth-admin"], route_class=TimedAPIRoute)
 
 
 @router.get(

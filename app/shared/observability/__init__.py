@@ -2,7 +2,7 @@
 """
 backend/app/shared/observability/__init__.py
 
-Módulo de observabilidad: métricas HTTP, contadores, query timing, etc.
+Módulo de observabilidad: métricas HTTP, contadores, query timing, timed routes, etc.
 """
 from .http_metrics_middleware import HTTPMetricsMiddleware
 from .http_metrics_store import (
@@ -15,6 +15,7 @@ from .redis_http_metrics_store import (
     DisabledHttpMetricsStore,
 )
 from .query_timing import QueryTimingContext, timed_execute
+from .timed_route import TimedAPIRoute
 
 __all__ = [
     "HTTPMetricsMiddleware",
@@ -25,4 +26,5 @@ __all__ = [
     "reset_http_metrics_store",
     "QueryTimingContext",
     "timed_execute",
+    "TimedAPIRoute",
 ]

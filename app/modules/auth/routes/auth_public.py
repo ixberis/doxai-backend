@@ -33,9 +33,11 @@ from app.modules.auth.schemas import (
 )
 from app.shared.http_utils.request_meta import get_request_meta
 from app.shared.security.rate_limit_dep import RateLimitDep
+from app.shared.observability.timed_route import TimedAPIRoute
 
 # Tag único para identificación en montaje (Swagger agrupa bajo "auth")
-router = APIRouter(prefix="/auth", tags=["auth-public"])
+# route_class=TimedAPIRoute instruments all routes for handler timing
+router = APIRouter(prefix="/auth", tags=["auth-public"], route_class=TimedAPIRoute)
 
 
 @router.post(
