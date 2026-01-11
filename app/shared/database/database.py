@@ -7,29 +7,43 @@ SQLAlchemy + asyncpg con conexión directa a PostgreSQL (puerto 5432).
 TLS habilitado con verificación. Pool del lado del cliente (AsyncAdaptedQueuePool)
 para reutilizar conexiones y reducir latencia.
 
-Configuración actual (enero 2026):
-- Conexión directa: db.<project_ref>.supabase.co:5432
-- IPv4 add-on habilitado (compatible con Railway)
-- Pool del cliente: AsyncAdaptedQueuePool (SQLAlchemy async)
+═══════════════════════════════════════════════════════════════════════════════════
+ARQUITECTURA DE INICIALIZACIÓN DE CONEXIÓN (enero 2026)
+═══════════════════════════════════════════════════════════════════════════════════
 
-Provee:
-- engine (create_async_engine con pool adaptado)
-- SessionLocal (async_sessionmaker)
-- Base (DeclarativeBase con naming convention para Alembic)
-- Dependencias FastAPI: get_async_session / get_db
-- context manager: session_scope()
-- check_database_health()
+OBJETIVO:
+    Configurar cada conexión física del pool EXACTAMENTE UNA VEZ con:
+    - statement_timeout (5000ms por defecto)
+    - search_path (vía server_settings, ya manejado por asyncpg)
 
-Notas:
-- Se añaden timeouts a nivel de conexión (asyncpg: timeout, command_timeout).
-- Se aplica SET SESSION statement_timeout al abrir cada sesión (configurable).
-- Pool con pool_pre_ping=True valida conexiones antes de reusar.
+MECANISMO CANÓNICO:
+    Usamos el evento de pool "connect" de SQLAlchemy sobre engine.sync_engine.
+    Este evento se dispara UNA SOLA VEZ cuando se crea una nueva conexión física,
+    no en cada checkout del pool.
 
-DECISIÓN TÉCNICA (Postgres Direct + BD 2.0):
-- NO se usa SET LOCAL statement_timeout por query individual (por consistencia).
-- SET SESSION aplica configuración a nivel de sesión.
-- Para timeouts específicos en endpoints críticos, usar asyncio.timeout() en el caller.
-- statement_cache_size=0 se mantiene por compatibilidad con posibles proxies intermediarios.
+    Para asyncpg, ejecutamos el SQL de inicialización usando:
+        dbapi_connection.run_async(async_init_fn)
+
+    El guard secundario usa connection_record.info["doxai_conn_init_done"] = True
+    para garantizar idempotencia incluso si el evento se disparara dos veces.
+
+FLUJO:
+    1. Pool crea nueva conexión física → evento "connect" se dispara
+    2. _on_connect() usa run_async() para ejecutar SET SESSION statement_timeout
+    3. connection_record.info["doxai_conn_init_done"] = True
+    4. Requests posteriores que reutilizan esa conexión → NO ejecutan nada
+
+PER-REQUEST (LEGACY MODE):
+    Si DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1:
+    - El evento "connect" sigue aplicando statement_timeout
+    - Pero _configure_session() RE-APLICA en cada request (para debugging)
+
+DIAGNÓSTICO:
+    Si DB_TIMEOUT_DIAGNOSTICS=1:
+    - Log "conn_init_applied" con el timeout cuando se configura una nueva conexión
+    - Log "SHOW statement_timeout" UNA VEZ por proceso para verificación
+
+═══════════════════════════════════════════════════════════════════════════════════
 """
 
 import os
@@ -38,7 +52,6 @@ import ssl
 import time
 import asyncio
 import logging
-import weakref
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 from urllib.parse import quote_plus
@@ -117,11 +130,24 @@ SKIP_DB_INIT = _env_bool("SKIP_DB_INIT", False)
 DB_SESSION_STATEMENT_TIMEOUT_MS: int = 5000
 
 # Flag para aplicar SET SESSION per-request (fallback legacy, default=False en prod)
-# En prod el timeout se aplica con guard once-per-connection
+# En prod el timeout se aplica via pool event once-per-connection
 DB_APPLY_SESSION_TIMEOUT_PER_REQUEST = _env_bool("DB_APPLY_SESSION_TIMEOUT_PER_REQUEST", False)
+
+# Flag para fallback per-request si pool connect init falló
+# Solo se usa si el init de conexión falló y se necesita recuperación operativa
+DB_CONNECT_INIT_FALLBACK_PER_REQUEST = _env_bool("DB_CONNECT_INIT_FALLBACK_PER_REQUEST", False)
 
 # Flag para diagnóstico temporal: loguea SHOW statement_timeout una vez por proceso
 DB_TIMEOUT_DIAGNOSTICS = _env_bool("DB_TIMEOUT_DIAGNOSTICS", False)
+
+# Guard global para diagnóstico (una vez por proceso)
+_db_timeout_diagnostics_logged = False
+
+# Flags globales de proceso para estado de pool connect init
+# Usados por _configure_session para decidir si hacer fallback per-request
+_CONNECT_INIT_FAILED = False
+_connect_init_failed_logged = False  # Para loguear warning solo una vez
+_CONNECT_INIT_SUCCEEDED_ONCE = False  # Evita quedarse "pegado" en fallback por fallo transitorio
 
 if SKIP_DB_INIT:
     logger.warning("[DB] SKIP_DB_INIT=1: Database disabled (test mode)")
@@ -226,7 +252,7 @@ else:
     # y como medida de seguridad ante cambios futuros de infraestructura.
     #
     # NOTA: statement_timeout NO se pone en server_settings porque no es confiable
-    # en asyncpg. Se aplica via SET SESSION en _configure_session con guard once-per-connection.
+    # en asyncpg. Se aplica via pool event "connect" con run_async().
     connect_args = {
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
@@ -271,6 +297,74 @@ else:
     if pool_class_name == "NullPool":
         logger.warning("[DB] ⚠️ NullPool detected - connection reuse DISABLED")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # INICIALIZACIÓN CANÓNICA DE CONEXIÓN VIA POOL EVENT
+    # ══════════════════════════════════════════════════════════════════════════
+    #
+    # El evento "connect" se dispara UNA SOLA VEZ cuando el pool crea una nueva
+    # conexión física. Usamos connection_record.info como SSOT para el guard.
+    #
+    # Para ejecutar SQL async desde un evento sync, usamos el método run_async()
+    # del AdaptedConnection de SQLAlchemy. Este método recibe un CALLABLE que
+    # será invocado con la conexión asyncpg real, no un coroutine ya creado.
+    #
+    # Patrón canónico:
+    #   dbapi_conn.run_async(lambda async_conn: async_conn.execute(sql))
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _on_connect(dbapi_connection, connection_record):
+        """
+        Pool event handler: se ejecuta cuando se crea una NUEVA conexión física.
+        
+        Este evento NO se dispara en cada checkout, solo al crear conexiones.
+        Usamos connection_record.info como guard para idempotencia.
+        
+        Args:
+            dbapi_connection: El AdaptedConnection de SQLAlchemy (wrapper de asyncpg)
+            connection_record: El ConnectionPoolEntry del pool
+        """
+        global _CONNECT_INIT_FAILED, _CONNECT_INIT_SUCCEEDED_ONCE
+        
+        # Guard con connection_record.info (SSOT canónico)
+        if connection_record.info.get("doxai_conn_init_done"):
+            return
+        
+        timeout_ms = DB_SESSION_STATEMENT_TIMEOUT_MS
+        
+        # run_async() recibe un CALLABLE, no un coroutine ya construido.
+        # El callable recibe la conexión asyncpg real como argumento.
+        def _init(async_conn):
+            return async_conn.execute(f"SET SESSION statement_timeout = {timeout_ms}")
+        
+        try:
+            dbapi_connection.run_async(_init)
+            
+            # Marcar como inicializado solo si tuvo éxito
+            connection_record.info["doxai_conn_init_done"] = True
+            connection_record.info.pop("doxai_conn_init_error", None)
+            
+            # Marcar que al menos una conexión tuvo éxito (evita fallback permanente)
+            _CONNECT_INIT_SUCCEEDED_ONCE = True
+            
+            if DB_TIMEOUT_DIAGNOSTICS:
+                logger.info(
+                    "[DB] [DIAG] conn_init_applied statement_timeout=%dms",
+                    timeout_ms
+                )
+        except Exception as e:
+            # NO marcar init_done si falló - registrar el error
+            connection_record.info["doxai_conn_init_error"] = str(e)
+            # Setear flag global para que _configure_session pueda hacer fallback
+            _CONNECT_INIT_FAILED = True
+            logger.warning("[DB] pool connect init failed: %s", e)
+
+    # Registrar el evento en el sync_engine (requerido para pool events)
+    event.listen(engine.sync_engine, "connect", _on_connect)
+    logger.info(
+        "[DB] Pool event 'connect' registered: statement_timeout=%dms will be applied once per physical connection",
+        DB_SESSION_STATEMENT_TIMEOUT_MS
+    )
+
     # ── Registrar statement counter global (para diagnóstico A/B) ──
     try:
         from app.shared.database.statement_counter import setup_statement_counter
@@ -288,80 +382,34 @@ else:
     # Log de startup
     if DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
         logger.info(
-            "[DB] DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=True: SET SESSION per-request (legacy mode)"
+            "[DB] DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=True: SET SESSION will ALSO run per-request (legacy/debug mode)"
         )
     else:
         logger.info(
-            "[DB] statement_timeout = %d ms via SET SESSION once-per-connection (guard mode)",
+            "[DB] statement_timeout = %d ms via pool event 'connect' (canonical mode, per-request is NO-OP)",
             DB_SESSION_STATEMENT_TIMEOUT_MS
         )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Guard robusto para once-per-physical-connection
+# PER-REQUEST CONFIGURATION (legacy mode only)
 # ══════════════════════════════════════════════════════════════════════════════
-# WeakKeyDictionary como fallback si el driver connection no permite setattr
-_stmt_timeout_guard: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+# En modo canonical (default), _configure_session es NO-OP porque el timeout
+# ya está aplicado via pool event.
+#
+# En legacy mode (DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1), ejecuta SET SESSION
+# en cada request para debugging o compatibilidad.
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Guard global para diagnóstico (una vez por proceso)
-_db_timeout_diagnostics_logged = False
-
-
-def _get_driver_connection(raw_conn: object) -> object:
-    """
-    Obtiene la conexión real del driver (asyncpg.Connection), no el wrapper.
-    
-    asyncpg puede envolver la conexión en diferentes capas según la versión
-    de SQLAlchemy. Intentamos obtener el objeto más interno y persistente.
-    """
-    driver_conn = getattr(raw_conn, "driver_connection", None)
-    if driver_conn is not None:
-        return driver_conn
-    
-    driver_conn = getattr(raw_conn, "_connection", None)
-    if driver_conn is not None:
-        return driver_conn
-    
-    # Fallback: usar el objeto tal cual
-    return raw_conn
-
-
-def _is_guard_set(driver_conn: object) -> bool:
-    """Verifica si el guard está seteado para esta conexión."""
-    # Primero intentar atributo directo (más rápido)
-    if getattr(driver_conn, "_doxai_stmt_timeout_applied", False):
-        return True
-    
-    # Fallback: WeakKeyDictionary
-    try:
-        return _stmt_timeout_guard.get(driver_conn, False)
-    except TypeError:
-        # Objeto no hasheable, asumir no seteado
-        return False
-
-
-def _set_guard(driver_conn: object) -> None:
-    """Marca el guard para esta conexión."""
-    # Intentar setattr primero
-    try:
-        setattr(driver_conn, "_doxai_stmt_timeout_applied", True)
-        return
-    except (AttributeError, TypeError):
-        pass
-    
-    # Fallback: WeakKeyDictionary
-    try:
-        _stmt_timeout_guard[driver_conn] = True
-    except TypeError:
-        # Objeto no hasheable, ignorar (el SET se repetirá pero no rompe)
-        logger.debug("[DB] Guard fallback failed: driver_conn not hasheable")
-
-
-async def _maybe_log_statement_timeout(session: AsyncSession) -> None:
+async def _maybe_log_statement_timeout(session: AsyncSession, mode: str = "canonical") -> None:
     """
     Diagnóstico temporal: loguea SHOW statement_timeout UNA VEZ por proceso.
     
     Solo activo si DB_TIMEOUT_DIAGNOSTICS=1.
+    
+    Args:
+        session: La sesión de base de datos
+        mode: El modo de aplicación ("canonical", "legacy", "fallback")
     """
     global _db_timeout_diagnostics_logged
     
@@ -371,7 +419,7 @@ async def _maybe_log_statement_timeout(session: AsyncSession) -> None:
     try:
         result = await session.execute(text("SHOW statement_timeout"))
         val = result.scalar_one_or_none()
-        logger.info("[DB] [DIAG] SHOW statement_timeout = %s", val)
+        logger.info("[DB] [DIAG] SHOW statement_timeout = %s mode=%s (verified per-process)", val, mode)
         _db_timeout_diagnostics_logged = True
     except Exception:
         logger.debug("[DB] [DIAG] SHOW statement_timeout failed", exc_info=True)
@@ -380,61 +428,62 @@ async def _maybe_log_statement_timeout(session: AsyncSession) -> None:
 
 async def _configure_session(session: AsyncSession) -> None:
     """
-    Aplica SET SESSION statement_timeout con guard once-per-connection robusto.
+    Configuración per-request de la sesión.
     
     ARQUITECTURA (enero 2026):
-    - Por defecto: ejecuta SET SESSION solo UNA VEZ por conexión física del pool.
-    - Usa guard en driver_connection real (no wrapper) con fallback a WeakKeyDictionary.
-    - Después del primer request por conexión, es NO-OP (~0ms).
-    - Si DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1: ejecuta siempre (legacy mode).
-    - Si DB_TIMEOUT_DIAGNOSTICS=1: loguea SHOW statement_timeout una vez por proceso.
     
-    Esto reduce latencia de 100-150ms a ~0-3ms en steady state mientras
-    garantiza que statement_timeout está realmente aplicado.
+    CANONICAL MODE (default):
+        - El statement_timeout ya está aplicado via pool event "connect"
+        - Esta función es NO-OP (~0ms)
+        - Solo ejecuta diagnóstico si DB_TIMEOUT_DIAGNOSTICS=1
+    
+    LEGACY MODE (DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1):
+        - Ejecuta SET SESSION statement_timeout en cada request
+        - Para debugging o troubleshooting
+        - Añade ~60-180ms de latencia
+    
+    FALLBACK MODE (DB_CONNECT_INIT_FALLBACK_PER_REQUEST=1 + _CONNECT_INIT_FAILED + not _CONNECT_INIT_SUCCEEDED_ONCE):
+        - Si el pool connect init falló globalmente Y ninguna conexión tuvo éxito
+        - Flag global _CONNECT_INIT_FAILED se setea cuando _on_connect falla
+        - Flag _CONNECT_INIT_SUCCEEDED_ONCE evita quedarse "pegado" tras fallo transitorio
+        - Operativo solo como recuperación de emergencia
+    
+    Esto permite que rutas críticas como /api/projects/active-projects
+    tengan dep.db_configure_ms ~0-3ms en steady state.
     """
+    global _connect_init_failed_logged
+    
     if SKIP_DB_INIT:
         return
     
-    # Legacy mode: ejecutar siempre sin guard
+    # LEGACY MODE: ejecutar SET SESSION per-request siempre
     if DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
         try:
             await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
-            await _maybe_log_statement_timeout(session)
+            await _maybe_log_statement_timeout(session, mode="legacy")
         except Exception as e:
             logger.debug("[DB] Error en SET SESSION (legacy mode): %s", e)
         return
     
-    # Guard mode: ejecutar solo una vez por conexión física
-    try:
-        # Obtener la conexión raw subyacente
-        async_conn = await session.connection()
-        raw_conn = await async_conn.get_raw_connection()
+    # FALLBACK MODE: si pool connect init falló globalmente, fallback habilitado,
+    # Y ninguna conexión ha tenido éxito aún (evita quedarse pegado por fallo transitorio)
+    if _CONNECT_INIT_FAILED and not _CONNECT_INIT_SUCCEEDED_ONCE and DB_CONNECT_INIT_FALLBACK_PER_REQUEST:
+        # Loguear warning solo una vez para no spamear
+        if not _connect_init_failed_logged:
+            logger.warning(
+                "[DB] pool connect init failed globally, applying statement_timeout per-request (fallback mode)"
+            )
+            _connect_init_failed_logged = True
         
-        # Obtener driver connection real (no wrapper)
-        driver_conn = _get_driver_connection(raw_conn)
-        
-        # Verificar guard
-        if _is_guard_set(driver_conn):
-            # Ya configurado en esta conexión física, NO-OP
-            return
-        
-        # Primera vez en esta conexión: ejecutar SET SESSION
-        await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
-        
-        # Marcar guard para evitar repetición
-        _set_guard(driver_conn)
-        
-        logger.debug(
-            "[DB] SET SESSION statement_timeout = %d ms (first request on this connection)",
-            DB_SESSION_STATEMENT_TIMEOUT_MS
-        )
-        
-        # Diagnóstico temporal (una vez por proceso)
-        await _maybe_log_statement_timeout(session)
-        
-    except Exception as e:
-        # No romper el request; loguear como debug
-        logger.debug("[DB] Error en _configure_session (guard mode): %s", e)
+        try:
+            await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
+            await _maybe_log_statement_timeout(session, mode="fallback")
+        except Exception as e:
+            logger.debug("[DB] Error en SET SESSION (fallback mode): %s", e)
+        return
+    
+    # CANONICAL MODE: NO-OP, solo diagnóstico opcional
+    await _maybe_log_statement_timeout(session, mode="canonical")
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
@@ -478,11 +527,12 @@ async def get_db_timed(request: StarletteRequest) -> AsyncGenerator[AsyncSession
     Dependency para obtener sesión DB con instrumentación granular.
     
     Mide un segmento crítico para diagnóstico de latencia:
-    - dep.db_configure_ms: tiempo de _configure_session (acquire + SET SESSION)
-      Este incluye el checkout real del pool porque es el primer IO.
+    - dep.db_configure_ms: tiempo de _configure_session
     
-    NOTA: El checkout del pool ocurre en el primer IO (dentro de _configure_session),
-    no al crear el objeto Session. Por eso solo medimos configure_ms.
+    En CANONICAL MODE (default), _configure_session es NO-OP, por lo que
+    dep.db_configure_ms será ~0-3ms (solo overhead de medición).
+    
+    En LEGACY MODE, incluye el SET SESSION (~60-180ms).
     
     El total se guarda en request.state.db_dep_total_ms (NO en dep_timings)
     para evitar doble conteo en TimingMiddleware.deps_ms.
@@ -501,8 +551,7 @@ async def get_db_timed(request: StarletteRequest) -> AsyncGenerator[AsyncSession
     
     session = SessionLocal()
     async with session:
-        # Fase: Configure session (acquire + SET SESSION statement_timeout)
-        # El checkout real del pool ocurre aquí (primer IO)
+        # Fase: Configure session (en canonical mode es NO-OP)
         configure_start = time.perf_counter()
         await _configure_session(session)
         configure_ms = (time.perf_counter() - configure_start) * 1000
@@ -684,5 +733,7 @@ __all__ = [
     "check_database_health",
     "log_db_identity",
     "init_db_diagnostics",
+    "DB_SESSION_STATEMENT_TIMEOUT_MS",
+    "DB_APPLY_SESSION_TIMEOUT_PER_REQUEST",
 ]
 # Fin del archivo backend/app/shared/database/database.py
