@@ -428,7 +428,7 @@ class DisabledHttpMetricsStore:
         pass
     
     async def start(self):
-        # Silently skip - metrics disabled, no need to log
+        pass  # Silently skip - metrics disabled, no need to log
     
     async def stop(self):
         pass
