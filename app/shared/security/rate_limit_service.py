@@ -54,6 +54,36 @@ local ttl = redis.call('TTL', key)
 return {count, ttl}
 """
 
+# LUA script for combined rate limiting (email + IP in 1 roundtrip)
+# Returns: [email_count, email_ttl, ip_count, ip_ttl]
+RATE_LIMIT_COMBINED_LUA_SCRIPT = """
+local email_key = KEYS[1]
+local ip_key = KEYS[2]
+local email_window = tonumber(ARGV[1])
+local ip_window = tonumber(ARGV[2])
+
+local email_count = redis.call('INCR', email_key)
+if email_count == 1 then
+    redis.call('EXPIRE', email_key, email_window)
+end
+local email_ttl = redis.call('TTL', email_key)
+
+local ip_count = redis.call('INCR', ip_key)
+if ip_count == 1 then
+    redis.call('EXPIRE', ip_key, ip_window)
+end
+local ip_ttl = redis.call('TTL', ip_key)
+
+return {email_count, email_ttl, ip_count, ip_ttl}
+"""
+
+# LUA script for reset keys (best-effort, 1 roundtrip)
+RATE_LIMIT_RESET_LUA_SCRIPT = """
+redis.call('DEL', KEYS[1])
+redis.call('DEL', KEYS[2])
+return 1
+"""
+
 
 @dataclass
 class RateLimitResult:
@@ -63,6 +93,41 @@ class RateLimitResult:
     retry_after: int  # seconds until limit resets
     current_count: int
     limit: int
+
+
+@dataclass
+class RateLimitDecision:
+    """
+    Result of combined rate limit check (email + IP in 1 roundtrip).
+    
+    Attributes:
+        allowed: True if both email and IP are within limits
+        blocked_by: "email", "ip", or None if allowed
+        email_count: Current count for email
+        ip_count: Current count for IP
+        email_retry_after: Seconds until email limit resets
+        ip_retry_after: Seconds until IP limit resets
+        timings: Detailed timing breakdown for observability
+    """
+    allowed: bool
+    blocked_by: Optional[str] = None
+    email_count: int = 0
+    ip_count: int = 0
+    email_limit: int = 5
+    ip_limit: int = 20
+    email_retry_after: int = 0
+    ip_retry_after: int = 0
+    timings: Dict[str, float] = field(default_factory=dict)
+    roundtrips: int = 1
+    
+    @property
+    def retry_after(self) -> int:
+        """Return the relevant retry_after based on what was blocked."""
+        if self.blocked_by == "email":
+            return self.email_retry_after
+        elif self.blocked_by == "ip":
+            return self.ip_retry_after
+        return 0
 
 
 @dataclass  
@@ -167,6 +232,8 @@ class RateLimitService:
         self._async_client: Optional[Any] = None
         self._async_connected: Optional[bool] = None  # None = not tried, True/False = result
         self._lua_script_sha: Optional[str] = None
+        self._lua_combined_sha: Optional[str] = None  # Combined email+IP check
+        self._lua_reset_sha: Optional[str] = None      # Reset keys
         # Lock created lazily in _ensure_async_connection to avoid loop issues
         self._connect_lock: Optional[asyncio.Lock] = None
         
@@ -249,14 +316,20 @@ class RateLimitService:
                 # Test connection
                 await self._async_client.ping()
                 
-                # Register LUA script
+                # Register LUA scripts
                 self._lua_script_sha = await self._async_client.script_load(
                     RATE_LIMIT_LUA_SCRIPT
+                )
+                self._lua_combined_sha = await self._async_client.script_load(
+                    RATE_LIMIT_COMBINED_LUA_SCRIPT
+                )
+                self._lua_reset_sha = await self._async_client.script_load(
+                    RATE_LIMIT_RESET_LUA_SCRIPT
                 )
                 
                 self._async_connected = True
                 logger.info(
-                    "RateLimitService: async Redis connected, LUA script loaded pid=%d",
+                    "RateLimitService: async Redis connected, LUA scripts loaded pid=%d",
                     os.getpid()
                 )
                 return True
@@ -338,6 +411,353 @@ class RateLimitService:
         else:
             return self._check_memory(key, actual_limit, actual_window)
     
+    async def check_login_limits_combined(
+        self,
+        email: str,
+        ip_address: str,
+    ) -> RateLimitDecision:
+        """
+        Combined rate limit check for login: email + IP in 1 roundtrip.
+        
+        This is the preferred method for login endpoints as it:
+        - Uses 1 Redis roundtrip instead of 2
+        - Provides detailed timing breakdown for observability
+        - Returns RateLimitDecision with all timing metadata
+        
+        Args:
+            email: User email for lockout tracking
+            ip_address: Client IP for rate limiting
+            
+        Returns:
+            RateLimitDecision with allowed status and timing breakdown
+        """
+        start_total = time.perf_counter()
+        timings: Dict[str, float] = {}
+        
+        if not self._enabled:
+            return RateLimitDecision(
+                allowed=True,
+                email_count=0,
+                ip_count=0,
+                timings={"total_ms": 0, "redis_rtt_ms": 0},
+                roundtrips=0,
+            )
+        
+        # Get limits from defaults
+        email_config = self.DEFAULT_LIMITS.get("auth:login:email", {"limit": 5, "window": 900})
+        ip_config = self.DEFAULT_LIMITS.get("auth:login:ip", {"limit": 20, "window": 300})
+        
+        email_limit = email_config["limit"]
+        email_window = email_config["window"]
+        ip_limit = ip_config["limit"]
+        ip_window = ip_config["window"]
+        
+        email_key = self._build_key("auth:login", "email", email)
+        ip_key = self._build_key("auth:login", "ip", ip_address)
+        
+        # Try async Redis first
+        redis_ok = await self._ensure_async_connection()
+        
+        if redis_ok:
+            return await self._check_combined_redis_async(
+                email_key, ip_key,
+                email_limit, email_window,
+                ip_limit, ip_window,
+                start_total,
+            )
+        else:
+            return self._check_combined_memory(
+                email_key, ip_key,
+                email_limit, email_window,
+                ip_limit, ip_window,
+                start_total,
+            )
+    
+    async def _check_combined_redis_async(
+        self,
+        email_key: str,
+        ip_key: str,
+        email_limit: int,
+        email_window: int,
+        ip_limit: int,
+        ip_window: int,
+        start_total: float,
+    ) -> RateLimitDecision:
+        """
+        Combined check using LUA script (1 roundtrip for both email + IP).
+        """
+        timings: Dict[str, float] = {}
+        roundtrips = 1
+        
+        # Ensure combined LUA script SHA is loaded
+        if not self._lua_combined_sha:
+            self._lua_combined_sha = await self._async_client.script_load(
+                RATE_LIMIT_COMBINED_LUA_SCRIPT
+            )
+            roundtrips = 2
+        
+        redis_start = time.perf_counter()
+        try:
+            # Execute combined LUA script
+            result = await self._async_client.evalsha(
+                self._lua_combined_sha,
+                2,  # number of keys
+                email_key,
+                ip_key,
+                email_window,
+                ip_window,
+            )
+            
+            timings["redis_rtt_ms"] = (time.perf_counter() - redis_start) * 1000
+            
+            email_count = int(result[0])
+            email_ttl = int(result[1])
+            ip_count = int(result[2])
+            ip_ttl = int(result[3])
+            
+            # Handle edge case: TTL < 0 means key has no expiry
+            if email_ttl < 0:
+                email_ttl = email_window
+            if ip_ttl < 0:
+                ip_ttl = ip_window
+            
+            # Check limits
+            email_allowed = email_count <= email_limit
+            ip_allowed = ip_count <= ip_limit
+            
+            blocked_by = None
+            if not email_allowed:
+                blocked_by = "email"
+            elif not ip_allowed:
+                blocked_by = "ip"
+            
+            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+            # NOTE: No invented breakdown (email_check_ms/ip_check_ms) - only real metrics
+            
+            decision = RateLimitDecision(
+                allowed=email_allowed and ip_allowed,
+                blocked_by=blocked_by,
+                email_count=email_count,
+                ip_count=ip_count,
+                email_limit=email_limit,
+                ip_limit=ip_limit,
+                email_retry_after=email_ttl if not email_allowed else 0,
+                ip_retry_after=ip_ttl if not ip_allowed else 0,
+                timings=timings,
+                roundtrips=roundtrips,
+            )
+            
+            if blocked_by:
+                logger.warning(
+                    "rate_limit_exceeded_combined blocked_by=%s "
+                    "email_count=%d/%d ip_count=%d/%d retry_after=%d",
+                    blocked_by, email_count, email_limit, ip_count, ip_limit,
+                    decision.retry_after
+                )
+            elif RATE_LIMIT_DEBUG and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "rate_limit_combined_check email_count=%d/%d ip_count=%d/%d "
+                    "redis_rtt_ms=%.2f roundtrips=%d",
+                    email_count, email_limit, ip_count, ip_limit,
+                    timings["redis_rtt_ms"], roundtrips
+                )
+            
+            return decision
+            
+        except Exception as e:
+            error_str = str(e).upper()
+            if "NOSCRIPT" in error_str:
+                # Script evicted, reload and retry
+                logger.warning("rate_limit_combined_noscript - reloading LUA script")
+                self._lua_combined_sha = await self._async_client.script_load(
+                    RATE_LIMIT_COMBINED_LUA_SCRIPT
+                )
+                roundtrips = 3
+                
+                result = await self._async_client.evalsha(
+                    self._lua_combined_sha,
+                    2,
+                    email_key,
+                    ip_key,
+                    email_window,
+                    ip_window,
+                )
+                
+                timings["redis_rtt_ms"] = (time.perf_counter() - redis_start) * 1000
+                email_count = int(result[0])
+                email_ttl = int(result[1])
+                ip_count = int(result[2])
+                ip_ttl = int(result[3])
+                
+                if email_ttl < 0:
+                    email_ttl = email_window
+                if ip_ttl < 0:
+                    ip_ttl = ip_window
+                
+                email_allowed = email_count <= email_limit
+                ip_allowed = ip_count <= ip_limit
+                
+                blocked_by = None
+                if not email_allowed:
+                    blocked_by = "email"
+                elif not ip_allowed:
+                    blocked_by = "ip"
+                
+                timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+                
+                return RateLimitDecision(
+                    allowed=email_allowed and ip_allowed,
+                    blocked_by=blocked_by,
+                    email_count=email_count,
+                    ip_count=ip_count,
+                    email_limit=email_limit,
+                    ip_limit=ip_limit,
+                    email_retry_after=email_ttl if not email_allowed else 0,
+                    ip_retry_after=ip_ttl if not ip_allowed else 0,
+                    timings=timings,
+                    roundtrips=roundtrips,
+                )
+            
+            # Fail-open on Redis errors
+            timings["redis_rtt_ms"] = (time.perf_counter() - redis_start) * 1000
+            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+            logger.error(
+                "rate_limit_combined_redis_error error=%s elapsed_ms=%.2f - falling back to allow",
+                str(e), timings["total_ms"]
+            )
+            return RateLimitDecision(
+                allowed=True,
+                email_count=0,
+                ip_count=0,
+                timings=timings,
+                roundtrips=roundtrips,
+            )
+    
+    def _check_combined_memory(
+        self,
+        email_key: str,
+        ip_key: str,
+        email_limit: int,
+        email_window: int,
+        ip_limit: int,
+        ip_window: int,
+        start_total: float,
+    ) -> RateLimitDecision:
+        """
+        Combined in-memory rate limit check (fallback when Redis unavailable).
+        """
+        timings: Dict[str, float] = {}
+        now = time.time()
+        
+        with self._mem_lock:
+            # Check/update email
+            email_record = self._mem_storage.get(email_key)
+            if email_record is None or email_record.is_expired(email_window):
+                email_record = InMemoryRecord(count=1, window_start=now)
+                self._mem_storage[email_key] = email_record
+            else:
+                email_record.count += 1
+            
+            # Check/update IP
+            ip_record = self._mem_storage.get(ip_key)
+            if ip_record is None or ip_record.is_expired(ip_window):
+                ip_record = InMemoryRecord(count=1, window_start=now)
+                self._mem_storage[ip_key] = ip_record
+            else:
+                ip_record.count += 1
+        
+        email_count = email_record.count
+        ip_count = ip_record.count
+        
+        email_allowed = email_count <= email_limit
+        ip_allowed = ip_count <= ip_limit
+        
+        blocked_by = None
+        email_retry_after = 0
+        ip_retry_after = 0
+        
+        if not email_allowed:
+            blocked_by = "email"
+            email_retry_after = int(email_window - (now - email_record.window_start))
+        elif not ip_allowed:
+            blocked_by = "ip"
+            ip_retry_after = int(ip_window - (now - ip_record.window_start))
+        
+        timings["total_ms"] = (time.perf_counter() - start_total) * 1000
+        timings["redis_rtt_ms"] = 0  # In-memory, no RTT
+        
+        return RateLimitDecision(
+            allowed=email_allowed and ip_allowed,
+            blocked_by=blocked_by,
+            email_count=email_count,
+            ip_count=ip_count,
+            email_limit=email_limit,
+            ip_limit=ip_limit,
+            email_retry_after=max(0, email_retry_after),
+            ip_retry_after=max(0, ip_retry_after),
+            timings=timings,
+            roundtrips=0,
+        )
+    
+    async def reset_login_limits_async(
+        self,
+        email: str,
+        ip_address: str,
+    ) -> Dict[str, float]:
+        """
+        Reset login rate limit counters on successful login (1 roundtrip).
+        
+        Returns:
+            Timing dict with reset_ms and roundtrips
+        """
+        start = time.perf_counter()
+        timings: Dict[str, float] = {"roundtrips": 0}
+        
+        email_key = self._build_key("auth:login", "email", email)
+        ip_key = self._build_key("auth:login", "ip", ip_address)
+        
+        redis_ok = await self._ensure_async_connection()
+        
+        if redis_ok:
+            try:
+                # Use LUA script for 1-roundtrip reset
+                if not self._lua_reset_sha:
+                    self._lua_reset_sha = await self._async_client.script_load(
+                        RATE_LIMIT_RESET_LUA_SCRIPT
+                    )
+                    timings["roundtrips"] = 2
+                else:
+                    timings["roundtrips"] = 1
+                
+                await self._async_client.evalsha(
+                    self._lua_reset_sha,
+                    2,
+                    email_key,
+                    ip_key,
+                )
+            except Exception as e:
+                error_str = str(e).upper()
+                if "NOSCRIPT" in error_str:
+                    self._lua_reset_sha = await self._async_client.script_load(
+                        RATE_LIMIT_RESET_LUA_SCRIPT
+                    )
+                    await self._async_client.evalsha(
+                        self._lua_reset_sha,
+                        2,
+                        email_key,
+                        ip_key,
+                    )
+                    timings["roundtrips"] = 3
+                else:
+                    logger.warning("rate_limit_reset_combined_failed error=%s", str(e))
+        else:
+            with self._mem_lock:
+                self._mem_storage.pop(email_key, None)
+                self._mem_storage.pop(ip_key, None)
+        
+        timings["reset_ms"] = (time.perf_counter() - start) * 1000
+        return timings
+
     async def _check_redis_async(
         self, key: str, limit: int, window_sec: int
     ) -> RateLimitResult:
@@ -622,4 +1042,4 @@ def get_rate_limiter() -> RateLimitService:
     return RateLimitService.get_instance()
 
 
-__all__ = ["RateLimitService", "RateLimitResult", "get_rate_limiter"]
+__all__ = ["RateLimitService", "RateLimitResult", "RateLimitDecision", "get_rate_limiter"]

@@ -3,7 +3,7 @@
 backend/app/modules/auth/services/login_flow_service.py
 
 Flujo de login y refresh de tokens:
-- Aplica rate limiting con RateLimitService (single source of truth).
+- Aplica rate limiting con RateLimitService (1-roundtrip combined check).
 - Valida credenciales.
 - Verifica activación de cuenta.
 - Emite tokens de acceso/refresh.
@@ -14,7 +14,7 @@ Flujo de login y refresh de tokens:
 
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
-Updated: 03/01/2026 - Instrumentación de login_attempts
+Updated: 11/01/2026 - LoginTelemetry + combined rate limiting (1 roundtrip)
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from app.modules.auth.services.activation_service import ActivationService
 from app.modules.auth.services.audit_service import AuditService
 from app.modules.auth.services.token_issuer_service import TokenIssuerService
 from app.modules.auth.services.session_service import SessionService
+from app.modules.auth.services.login_telemetry import LoginTelemetry
 from app.modules.auth.repositories.login_attempt_repository import LoginAttemptRepository
 from app.modules.auth.enums import LoginFailureReason
 from app.modules.auth.utils.payload_extractors import as_dict
@@ -62,6 +63,9 @@ class LoginFlowService:
     - Rate limiting by IP (20/5min)
     - Lockout by email (5/15min)
     - Progressive backoff calculation
+    
+    NEW: Uses combined rate limit check (1 roundtrip) and LoginTelemetry
+    for unified structured logging.
 
     Registers sessions in user_sessions table for Auth Metrics.
     """
@@ -132,7 +136,7 @@ class LoginFlowService:
             )
 
     async def _apply_backoff_if_needed(
-        self, email: str, current_count: int, is_failure: bool
+        self, email: str, current_count: int, is_failure: bool, telemetry: LoginTelemetry
     ) -> float:
         """
         Apply progressive backoff delay ONLY for repeated failures.
@@ -146,20 +150,22 @@ class LoginFlowService:
         - Failure with current_count >= 2: Progressive backoff
         """
         if not is_failure:
+            telemetry.mark_timing("backoff_ms", 0)
             return 0.0
         
         if current_count < 2:
+            telemetry.mark_timing("backoff_ms", 0)
             return 0.0
         
         delay = _get_backoff_delay(current_count)
         if delay > 0:
-            email_masked = email[:3] + "***" if len(email) > 3 else "***"
             logger.debug(
                 "backoff_applied email=%s attempts=%d delay_sec=%.2f",
-                email_masked, current_count, delay
+                telemetry.email_masked, current_count, delay
             )
             await asyncio.sleep(delay)
         
+        telemetry.mark_timing("backoff_ms", delay * 1000)
         return delay
 
     async def login(
@@ -175,20 +181,9 @@ class LoginFlowService:
             - ip_address
             - user_agent
         
-        Timing por fases (Bloque B):
-            - rate_limit_ms: verificación de rate limiting + backoff
-            - db_acquire_ms: tiempo para obtener conexión (pool checkout)
-            - db_exec_ms: tiempo de ejecución del SQL
-            - password_verify_ms: verificación de contraseña (Argon2)
-            - activation_check_ms: verificación de activación
-            - token_issue_ms: emisión de JWT
-            - session_create_ms: registro de sesión
-            - total_ms: tiempo total del login
+        Uses LoginTelemetry for unified structured logging.
+        Uses combined rate limit check (1 roundtrip instead of 2).
         """
-        start_total = time.perf_counter()
-        timings: Dict[str, float] = {}
-        email_masked = ""  # Para logs en error (sin datos sensibles)
-        
         payload = as_dict(data)
         email = (payload.get("email") or "").strip().lower()
         password = payload.get("password", "")
@@ -199,95 +194,52 @@ class LoginFlowService:
         # Pop _request from payload to prevent serialization/logging leaks
         _request = request or payload.pop("_request", None)
         
-        # Mask email para logs (evita datos sensibles)
-        email_masked = email[:3] + "***" if len(email) > 3 else "***"
+        # Initialize telemetry (email masked internally)
+        telemetry = LoginTelemetry.create(email)
 
         if not email or not password:
+            telemetry.finalize(_request, result="missing_credentials")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email y contraseña son obligatorios.",
             )
 
-        # ─── Fase: Rate Limiting (async, 1-roundtrip LUA each) ───
-        # P0: Separate email and IP rate limit timing for observability
-        
-        # 1. Check email rate limit
-        email_rl_start = time.perf_counter()
-        email_result = await self._rate_limiter.check_and_consume_async(
-            endpoint="auth:login",
-            key_type="email",
-            identifier=email,
-        )
-        timings["rate_limit_email_ms"] = (time.perf_counter() - email_rl_start) * 1000
-        
-        if not email_result.allowed:
-            AuditService.log_login_blocked(email=email, ip_address=ip_address)
-            # Calculate total before raising
-            timings["rate_limit_ip_ms"] = 0
-            timings["rate_limit_total_ms"] = timings["rate_limit_email_ms"]
-            # Set request.state for timing_middleware (even on 429)
-            if _request is not None:
-                _request.state.rate_limit_total_ms = timings["rate_limit_total_ms"]
-            raise RateLimitExceeded(
-                retry_after=email_result.retry_after,
-                detail="Demasiados intentos de inicio de sesión. Intente más tarde.",
+        # ─── Fase: Combined Rate Limiting (1 roundtrip) ───
+        with telemetry.measure("rate_limit_check_ms"):
+            rl_decision = await self._rate_limiter.check_login_limits_combined(
+                email=email,
+                ip_address=ip_address,
             )
         
-        # 2. Check IP rate limit (separate roundtrip)
-        ip_rl_start = time.perf_counter()
-        ip_result = await self._rate_limiter.check_and_consume_async(
-            endpoint="auth:login",
-            key_type="ip",
-            identifier=ip_address,
-        )
-        timings["rate_limit_ip_ms"] = (time.perf_counter() - ip_rl_start) * 1000
+        # Copy REAL rate limit timings to telemetry (no invented breakdown)
+        telemetry.mark_timing("rate_limit_total_ms", rl_decision.timings.get("total_ms", 0))
+        telemetry.mark_timing("redis_rtt_ms", rl_decision.timings.get("redis_rtt_ms", 0))
+        telemetry.set_flag("rate_limit_roundtrips", rl_decision.roundtrips)
         
-        # Calculate total (email + IP only, NO backoff, NO DB, NO logging)
-        timings["rate_limit_total_ms"] = timings["rate_limit_email_ms"] + timings["rate_limit_ip_ms"]
-        
-        if not ip_result.allowed:
+        if not rl_decision.allowed:
             AuditService.log_login_blocked(email=email, ip_address=ip_address)
-            # Set request.state for timing_middleware (even on 429)
-            if _request is not None:
-                _request.state.rate_limit_total_ms = timings["rate_limit_total_ms"]
+            # CRITICAL: finalize() BEFORE raising to ensure request.state is populated
+            telemetry.finalize(_request, result="rate_limited")
+            
+            detail = "Demasiados intentos de inicio de sesión. Intente más tarde."
+            if rl_decision.blocked_by == "ip":
+                detail = "Demasiados intentos desde esta dirección IP. Intente más tarde."
+            
             raise RateLimitExceeded(
-                retry_after=ip_result.retry_after,
-                detail="Demasiados intentos desde esta dirección IP. Intente más tarde.",
+                retry_after=rl_decision.retry_after,
+                detail=detail,
             )
-        
-        # NOTE: Backoff se aplica DESPUÉS de verificar credenciales, solo en fallos
 
-        # ─── Fase: DB Query (buscar usuario) - CORE MODE para evitar ORM storm ───
-        # Usa get_by_email_core_login() que ejecuta 1 statement vs 32 del ORM
-        import time as time_module
-        db_start = time_module.perf_counter()
-        user = await self.user_service.get_by_email_core_login(email)
-        db_end = time_module.perf_counter()
-        timings["db_exec_ms"] = (db_end - db_start) * 1000
-        timings["db_mode"] = "core"  # Para diagnóstico
-        timings["borrowed_session"] = True  # LoginFlowService siempre usa sesión prestada
+        # ─── Fase: DB Query (buscar usuario) - CORE MODE ───
+        with telemetry.measure("lookup_user_ms"):
+            user = await self.user_service.get_by_email_core_login(email)
+        
+        telemetry.set_flag("found", user is not None)
         
         if not user:
-            # ─── Backoff para fallos (después de verificar) ───
-            backoff_delay = await self._apply_backoff_if_needed(
-                email, email_result.current_count, is_failure=True
-            )
-            timings["backoff_ms"] = backoff_delay * 1000
-            
-            # ─── Log login_failed con timings disponibles ───
-            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
-            logger.warning(
-                "login_failed reason=user_not_found email=%s "
-                "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
-                "backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f total_ms=%.2f",
-                email_masked,
-                timings.get("rate_limit_email_ms", 0),
-                timings.get("rate_limit_ip_ms", 0),
-                timings.get("rate_limit_total_ms", 0),
-                timings.get("backoff_ms", 0),
-                timings.get("db_prep_ms", 0),
-                timings.get("db_exec_ms", 0),
-                timings["total_ms"],
+            # Backoff for failures
+            await self._apply_backoff_if_needed(
+                email, rl_decision.email_count, is_failure=True, telemetry=telemetry
             )
             
             await self._record_login_attempt(
@@ -303,6 +255,8 @@ class LoginFlowService:
                 reason="Usuario no encontrado",
                 user_agent=user_agent,
             )
+            
+            telemetry.finalize(_request, result="user_not_found")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas.",
@@ -313,9 +267,8 @@ class LoginFlowService:
 
         if password_hash is None:
             logger.error(
-                "LOGIN: usuario %s (%s) no tiene campo de hash de contraseña (user_password_hash/password_hash).",
+                "LOGIN: usuario %s no tiene hash de contraseña.",
                 getattr(user, "user_id", None),
-                email,
             )
             AuditService.log_login_failed(
                 email=email,
@@ -323,38 +276,20 @@ class LoginFlowService:
                 reason="Configuración de usuario inválida (sin hash de contraseña)",
                 user_agent=user_agent,
             )
+            telemetry.finalize(_request, result="internal_error")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Configuración de usuario inválida.",
             )
 
-        # ─── Fase: Password Verify (Argon2) ───
-        pw_start = time.perf_counter()
-        password_valid = verify_password(password, password_hash)
-        timings["password_verify_ms"] = (time.perf_counter() - pw_start) * 1000
+        # ─── Fase: Password Verify (Argon2id) ───
+        with telemetry.measure("argon2_verify_ms"):
+            password_valid = verify_password(password, password_hash)
         
         if not password_valid:
-            # ─── Backoff para fallos (después de verificar) ───
-            backoff_delay = await self._apply_backoff_if_needed(
-                email, email_result.current_count, is_failure=True
-            )
-            timings["backoff_ms"] = backoff_delay * 1000
-            
-            # ─── Log login_failed con timings disponibles ───
-            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
-            logger.warning(
-                "login_failed reason=invalid_credentials email=%s "
-                "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
-                "backoff_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f total_ms=%.2f",
-                email_masked,
-                timings.get("rate_limit_email_ms", 0),
-                timings.get("rate_limit_ip_ms", 0),
-                timings.get("rate_limit_total_ms", 0),
-                timings.get("backoff_ms", 0),
-                timings.get("db_prep_ms", 0),
-                timings.get("db_exec_ms", 0),
-                timings.get("password_verify_ms", 0),
-                timings["total_ms"],
+            # Backoff for failures
+            await self._apply_backoff_if_needed(
+                email, rl_decision.email_count, is_failure=True, telemetry=telemetry
             )
             
             await self._record_login_attempt(
@@ -370,50 +305,32 @@ class LoginFlowService:
                 reason="Contraseña incorrecta",
                 user_agent=user_agent,
             )
+            
+            telemetry.finalize(_request, result="invalid_credentials")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Credenciales inválidas.",
             )
 
-        # ─── Fase: Activation Check (usando campo del DTO) ───
-        act_start = time.perf_counter()
-        # LoginUserDTO tiene user_is_activated y deleted_at
-        is_active = user.user_is_activated and not user.is_deleted
-        timings["activation_check_ms"] = (time.perf_counter() - act_start) * 1000
+        # ─── Fase: Activation Check ───
+        with telemetry.measure("activation_check_ms"):
+            is_active = user.user_is_activated and not user.is_deleted
         
         if not is_active:
-            # ─── Backoff para fallos (cuenta no activada) ───
-            backoff_delay = await self._apply_backoff_if_needed(
-                email, email_result.current_count, is_failure=True
-            )
-            timings["backoff_ms"] = backoff_delay * 1000
-            
-            # ─── Log login_failed con timings disponibles ───
-            timings["total_ms"] = (time.perf_counter() - start_total) * 1000
-            logger.warning(
-                "login_failed reason=account_not_activated email=%s "
-                "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_total_ms=%.2f "
-                "backoff_ms=%.2f db_exec_ms=%.2f password_verify_ms=%.2f "
-                "activation_check_ms=%.2f total_ms=%.2f",
-                email_masked,
-                timings.get("rate_limit_email_ms", 0),
-                timings.get("rate_limit_ip_ms", 0),
-                timings.get("rate_limit_total_ms", 0),
-                timings.get("backoff_ms", 0),
-                timings.get("db_exec_ms", 0),
-                timings.get("password_verify_ms", 0),
-                timings.get("activation_check_ms", 0),
-                timings["total_ms"],
+            # Backoff for failures
+            await self._apply_backoff_if_needed(
+                email, rl_decision.email_count, is_failure=True, telemetry=telemetry
             )
             
-            # Nota: Con DTO no tenemos ORM object para _record_login_attempt
-            # Pasamos los campos necesarios directamente
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
-                reason="Cuenta no activada",
+                reason="Cuenta no activada" if not user.user_is_activated else "Cuenta eliminada",
                 user_agent=user_agent,
             )
+            
+            result_type = "account_not_activated" if not user.user_is_activated else "account_deleted"
+            telemetry.finalize(_request, result=result_type)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
@@ -422,49 +339,65 @@ class LoginFlowService:
                 },
             )
 
-        # Login exitoso - reset rate limit counters (async) with timing
-        await self._reset_rate_limit_counters_async(ip_address, email, timings)
+        # Login exitoso - reset rate limit counters (async, 1 roundtrip)
+        with telemetry.measure("rate_limit_reset_ms"):
+            reset_timings = await self._rate_limiter.reset_login_limits_async(
+                email=email,
+                ip_address=ip_address,
+            )
+        telemetry.set_flag("rate_limit_reset_roundtrips", reset_timings.get("roundtrips", 0))
 
         # ═══════════════════════════════════════════════════════════════════════
         # SSOT: auth_user_id validation (DTO ya tiene este campo)
         # Si es None (legacy), generamos UUID y lo persistimos via repo
         # ═══════════════════════════════════════════════════════════════════════
         auth_user_id = user.auth_user_id
+        auth_user_id_present_initially = auth_user_id is not None
+        used_legacy_ssot_fix = False
+        
+        telemetry.set_flag("auth_user_id_present", auth_user_id_present_initially)
+        
         if auth_user_id is None:
             # Caso legacy extremadamente raro - usuario sin UUID
             from uuid import uuid4
             from app.modules.auth.repositories import UserRepository
             
-            new_auth_user_id = uuid4()
-            repo = UserRepository(self.db)
-            
-            try:
-                updated = await repo.set_auth_user_id_if_missing(user.user_id, new_auth_user_id)
-                if updated:
-                    await self.db.commit()
+            with telemetry.measure("legacy_ssot_fix_ms"):
+                new_auth_user_id = uuid4()
+                repo = UserRepository(self.db)
+                
+                try:
+                    updated = await repo.set_auth_user_id_if_missing(user.user_id, new_auth_user_id)
+                    if updated:
+                        await self.db.commit()
+                        auth_user_id = new_auth_user_id
+                        used_legacy_ssot_fix = True
+                        logger.warning(
+                            "legacy_user_missing_auth_user_id_fixed user_id=%s new_auth_user_id=%s",
+                            user.user_id,
+                            str(new_auth_user_id)[:8] + "...",
+                        )
+                    else:
+                        auth_user_id = new_auth_user_id
+                        used_legacy_ssot_fix = True
+                        logger.info(
+                            "legacy_user_auth_user_id_race_condition user_id=%s using_local_uuid=%s",
+                            user.user_id,
+                            str(new_auth_user_id)[:8] + "...",
+                        )
+                except Exception as e:
                     auth_user_id = new_auth_user_id
+                    used_legacy_ssot_fix = True
                     logger.warning(
-                        "legacy_user_missing_auth_user_id_fixed user_id=%s new_auth_user_id=%s",
+                        "legacy_user_auth_user_id_update_failed user_id=%s error=%s using_local_uuid=%s",
                         user.user_id,
+                        str(e),
                         str(new_auth_user_id)[:8] + "...",
                     )
-                else:
-                    # Otro proceso ya lo actualizó - usar el valor local generado
-                    auth_user_id = new_auth_user_id
-                    logger.info(
-                        "legacy_user_auth_user_id_race_condition user_id=%s using_local_uuid=%s",
-                        user.user_id,
-                        str(new_auth_user_id)[:8] + "...",
-                    )
-            except Exception as e:
-                # Si falla el UPDATE, continuar con UUID local (best-effort)
-                auth_user_id = new_auth_user_id
-                logger.warning(
-                    "legacy_user_auth_user_id_update_failed user_id=%s error=%s using_local_uuid=%s",
-                    user.user_id,
-                    str(e),
-                    str(new_auth_user_id)[:8] + "...",
-                )
+            
+            telemetry.set_flag("used_legacy_ssot_fix", True)
+        else:
+            telemetry.set_flag("used_legacy_ssot_fix", False)
 
         # Record successful login - AuditService (best effort)
         AuditService.log_login_success(
@@ -475,64 +408,35 @@ class LoginFlowService:
         )
 
         # ─── Fase: Token Issue ───
-        token_start = time.perf_counter()
-        # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT) - SIEMPRE
-        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(auth_user_id))
-        timings["token_issue_ms"] = (time.perf_counter() - token_start) * 1000
+        with telemetry.measure("issue_token_ms"):
+            # SSOT: JWT sub = auth_user_id (UUID), NO user_id (INT) - SIEMPRE
+            tokens = self.token_issuer.issue_tokens_for_user(user_id=str(auth_user_id))
 
         # ─── Fase: Session Create ───
-        session_start = time.perf_counter()
-        # Multi-sesión: cada login crea nueva sesión (no revocamos anteriores)
-        # BD 2.0: Pasar auth_user_id (UUID SSOT) - NOT NULL en user_sessions
-        try:
-            session_ok = await self.session_service.create_session(
-                user_id=user.user_id,
-                auth_user_id=auth_user_id,  # BD 2.0 SSOT
-                access_token=tokens["access_token"],
-                ip_address=ip_address,
-                user_agent=user_agent,
-            )
-            if not session_ok:
-                # No bloquea login, pero deja evidencia clara en logs
-                logger.error(
-                    "session_create_failed: user_id=%s auth_user_id=%s",
+        with telemetry.measure("session_create_ms"):
+            try:
+                session_ok = await self.session_service.create_session(
+                    user_id=user.user_id,
+                    auth_user_id=auth_user_id,
+                    access_token=tokens["access_token"],
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+                if not session_ok:
+                    logger.error(
+                        "session_create_failed: user_id=%s auth_user_id=%s",
+                        user.user_id,
+                        str(auth_user_id)[:8] + "...",
+                    )
+            except Exception:
+                logger.exception(
+                    "session_create_exception: user_id=%s auth_user_id=%s",
                     user.user_id,
                     str(auth_user_id)[:8] + "...",
                 )
-        except Exception:
-            # Si SessionService falla con excepción, no queremos 500 por un side-effect
-            logger.exception(
-                "session_create_exception: user_id=%s auth_user_id=%s",
-                user.user_id,
-                str(auth_user_id)[:8] + "...",
-            )
-        timings["session_create_ms"] = (time.perf_counter() - session_start) * 1000
 
-        # ─── Log estructurado único con todas las fases ───
-        timings["total_ms"] = (time.perf_counter() - start_total) * 1000
-        logger.info(
-            "login_completed auth_user_id=%s db_mode=%s "
-            "rate_limit_email_ms=%.2f rate_limit_ip_ms=%.2f rate_limit_reset_ms=%.2f rate_limit_total_ms=%.2f "
-            "db_exec_ms=%.2f password_verify_ms=%.2f "
-            "activation_check_ms=%.2f token_issue_ms=%.2f session_create_ms=%.2f total_ms=%.2f",
-            str(auth_user_id)[:8] + "...",
-            timings.get("db_mode", "core"),
-            timings.get("rate_limit_email_ms", 0),
-            timings.get("rate_limit_ip_ms", 0),
-            timings.get("rate_limit_reset_ms", 0),
-            timings.get("rate_limit_total_ms", 0),
-            timings.get("db_exec_ms", 0),
-            timings.get("password_verify_ms", 0),
-            timings.get("activation_check_ms", 0),
-            timings.get("token_issue_ms", 0),
-            timings.get("session_create_ms", 0),
-            timings["total_ms"],
-        )
-
-        # Set request.state for timing_middleware breakdown
-        if _request is not None:
-            _request.state.db_exec_ms = timings.get("db_exec_ms", 0)
-            _request.state.rate_limit_total_ms = timings.get("rate_limit_total_ms", 0)
+        # ─── Finalize telemetry (single structured log) ───
+        telemetry.finalize(_request, result="success")
 
         return {
             "message": "Login exitoso.",
@@ -548,22 +452,6 @@ class LoginFlowService:
                 "user_status": user.user_status,
             },
         }
-
-    async def _reset_rate_limit_counters_async(
-        self, ip_address: str, email: str, timings: Dict[str, float]
-    ) -> None:
-        """
-        Reset rate limit counters on successful login (async).
-        Records reset timing separately from check timing.
-        """
-        reset_start = time.perf_counter()
-        try:
-            await self._rate_limiter.reset_key_async("auth:login", "email", email)
-            await self._rate_limiter.reset_key_async("auth:login", "ip", ip_address)
-        except Exception as e:
-            logger.warning("rate_limit_reset_failed error=%s", str(e))
-        finally:
-            timings["rate_limit_reset_ms"] = (time.perf_counter() - reset_start) * 1000
 
     async def refresh_tokens(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """
@@ -655,4 +543,3 @@ class LoginFlowService:
 __all__ = ["LoginFlowService"]
 
 # Fin del script backend/app/modules/auth/services/login_flow_service.py
-
