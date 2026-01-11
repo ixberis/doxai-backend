@@ -38,6 +38,7 @@ import ssl
 import time
 import asyncio
 import logging
+import weakref
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 from urllib.parse import quote_plus
@@ -116,8 +117,11 @@ SKIP_DB_INIT = _env_bool("SKIP_DB_INIT", False)
 DB_SESSION_STATEMENT_TIMEOUT_MS: int = 5000
 
 # Flag para aplicar SET SESSION per-request (fallback legacy, default=False en prod)
-# En prod el timeout se aplica en el event listener "connect" (una vez por conexión)
+# En prod el timeout se aplica con guard once-per-connection
 DB_APPLY_SESSION_TIMEOUT_PER_REQUEST = _env_bool("DB_APPLY_SESSION_TIMEOUT_PER_REQUEST", False)
+
+# Flag para diagnóstico temporal: loguea SHOW statement_timeout una vez por proceso
+DB_TIMEOUT_DIAGNOSTICS = _env_bool("DB_TIMEOUT_DIAGNOSTICS", False)
 
 if SKIP_DB_INIT:
     logger.warning("[DB] SKIP_DB_INIT=1: Database disabled (test mode)")
@@ -221,16 +225,14 @@ else:
     # NOTA: statement_cache_size=0 se mantiene por compatibilidad con proxies intermediarios
     # y como medida de seguridad ante cambios futuros de infraestructura.
     #
-    # OPTIMIZACIÓN (enero 2026): statement_timeout en server_settings
-    # asyncpg envía estos settings en el handshake de conexión, evitando
-    # un roundtrip SET SESSION adicional. Es la forma más eficiente.
+    # NOTA: statement_timeout NO se pone en server_settings porque no es confiable
+    # en asyncpg. Se aplica via SET SESSION en _configure_session con guard once-per-connection.
     connect_args = {
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": _prepared_statement_name_func,
         "server_settings": {
             "search_path": "public",
-            "statement_timeout": str(DB_SESSION_STATEMENT_TIMEOUT_MS),  # ms como string
         },
         "timeout": DB_CONNECT_TIMEOUT_S,
         "command_timeout": DB_COMMAND_TIMEOUT_S,
@@ -283,86 +285,156 @@ else:
         autoflush=False,
     )
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Event listener: Logging y guard de statement_timeout por conexión física
-    # ══════════════════════════════════════════════════════════════════════════
-    # ARQUITECTURA FINAL (enero 2026):
-    # - statement_timeout se configura en server_settings (connect_args) que asyncpg
-    #   envía en el handshake de conexión. Esto es ZERO roundtrips adicionales.
-    # - El listener "checkout" solo sirve para:
-    #   1) Logging de diagnóstico (primera vez por conexión)
-    #   2) Guard para evitar logs repetitivos
-    #   3) Fallback con cursor si el driver lo soporta (non-asyncpg)
-    # ══════════════════════════════════════════════════════════════════════════
-    _STMT_TIMEOUT_KEY = "_doxai_stmt_timeout_set"
-    
-    @event.listens_for(engine.sync_engine, "checkout")
-    def _on_checkout(
-        dbapi_connection: object,
-        connection_record: ConnectionPoolEntry,
-        connection_proxy: object,
-    ) -> None:
-        """
-        Callback ejecutado en cada checkout del pool.
-        
-        Con asyncpg + server_settings, el statement_timeout ya está configurado
-        en el handshake. Este listener solo loguea la primera vez y marca el guard.
-        """
-        # Guard: solo loguear una vez por conexión física
-        if connection_record.info.get(_STMT_TIMEOUT_KEY):
-            return
-        
-        try:
-            # Marcar como configurado (via server_settings en handshake)
-            connection_record.info[_STMT_TIMEOUT_KEY] = True
-            logger.debug(
-                "[DB] Checkout: connection configured with statement_timeout = %d ms (via server_settings)",
-                DB_SESSION_STATEMENT_TIMEOUT_MS
-            )
-        except Exception as e:
-            # No romper la conexión; loguear como debug
-            logger.debug("[DB] Error en checkout event: %s", e)
-
     # Log de startup
     if DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
         logger.info(
-            "[DB] DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=True: SET SESSION per-request activo (legacy mode)"
+            "[DB] DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=True: SET SESSION per-request (legacy mode)"
         )
     else:
         logger.info(
-            "[DB] statement_timeout = %d ms configurado via server_settings (zero extra roundtrips)",
+            "[DB] statement_timeout = %d ms via SET SESSION once-per-connection (guard mode)",
             DB_SESSION_STATEMENT_TIMEOUT_MS
         )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Guard robusto para once-per-physical-connection
+# ══════════════════════════════════════════════════════════════════════════════
+# WeakKeyDictionary como fallback si el driver connection no permite setattr
+_stmt_timeout_guard: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+# Guard global para diagnóstico (una vez por proceso)
+_db_timeout_diagnostics_logged = False
+
+
+def _get_driver_connection(raw_conn: object) -> object:
+    """
+    Obtiene la conexión real del driver (asyncpg.Connection), no el wrapper.
+    
+    asyncpg puede envolver la conexión en diferentes capas según la versión
+    de SQLAlchemy. Intentamos obtener el objeto más interno y persistente.
+    """
+    driver_conn = getattr(raw_conn, "driver_connection", None)
+    if driver_conn is not None:
+        return driver_conn
+    
+    driver_conn = getattr(raw_conn, "_connection", None)
+    if driver_conn is not None:
+        return driver_conn
+    
+    # Fallback: usar el objeto tal cual
+    return raw_conn
+
+
+def _is_guard_set(driver_conn: object) -> bool:
+    """Verifica si el guard está seteado para esta conexión."""
+    # Primero intentar atributo directo (más rápido)
+    if getattr(driver_conn, "_doxai_stmt_timeout_applied", False):
+        return True
+    
+    # Fallback: WeakKeyDictionary
+    try:
+        return _stmt_timeout_guard.get(driver_conn, False)
+    except TypeError:
+        # Objeto no hasheable, asumir no seteado
+        return False
+
+
+def _set_guard(driver_conn: object) -> None:
+    """Marca el guard para esta conexión."""
+    # Intentar setattr primero
+    try:
+        setattr(driver_conn, "_doxai_stmt_timeout_applied", True)
+        return
+    except (AttributeError, TypeError):
+        pass
+    
+    # Fallback: WeakKeyDictionary
+    try:
+        _stmt_timeout_guard[driver_conn] = True
+    except TypeError:
+        # Objeto no hasheable, ignorar (el SET se repetirá pero no rompe)
+        logger.debug("[DB] Guard fallback failed: driver_conn not hasheable")
+
+
+async def _maybe_log_statement_timeout(session: AsyncSession) -> None:
+    """
+    Diagnóstico temporal: loguea SHOW statement_timeout UNA VEZ por proceso.
+    
+    Solo activo si DB_TIMEOUT_DIAGNOSTICS=1.
+    """
+    global _db_timeout_diagnostics_logged
+    
+    if not DB_TIMEOUT_DIAGNOSTICS or _db_timeout_diagnostics_logged:
+        return
+    
+    try:
+        result = await session.execute(text("SHOW statement_timeout"))
+        val = result.scalar_one_or_none()
+        logger.info("[DB] [DIAG] SHOW statement_timeout = %s", val)
+        _db_timeout_diagnostics_logged = True
+    except Exception:
+        logger.debug("[DB] [DIAG] SHOW statement_timeout failed", exc_info=True)
+        _db_timeout_diagnostics_logged = True
+
+
 async def _configure_session(session: AsyncSession) -> None:
     """
-    Aplica configuraciones por sesión (NO-OP por defecto en prod).
+    Aplica SET SESSION statement_timeout con guard once-per-connection robusto.
     
     ARQUITECTURA (enero 2026):
-    - El SET SESSION statement_timeout ahora se ejecuta UNA VEZ por conexión física
-      en el event listener "connect" del engine (más eficiente).
-    - Esta función es NO-OP por defecto para evitar un roundtrip extra por request.
-    - Si se necesita el comportamiento legacy (SET SESSION per-request), activar:
-      DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1
+    - Por defecto: ejecuta SET SESSION solo UNA VEZ por conexión física del pool.
+    - Usa guard en driver_connection real (no wrapper) con fallback a WeakKeyDictionary.
+    - Después del primer request por conexión, es NO-OP (~0ms).
+    - Si DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1: ejecuta siempre (legacy mode).
+    - Si DB_TIMEOUT_DIAGNOSTICS=1: loguea SHOW statement_timeout una vez por proceso.
     
-    Estrategia de defensa en profundidad:
-    1. Event listener "connect": SET SESSION al establecer conexión física
-    2. asyncio.timeout() en callers críticos como segunda capa (determinista)
-    3. Pool timeout (pool_timeout) como última línea de defensa
+    Esto reduce latencia de 100-150ms a ~0-3ms en steady state mientras
+    garantiza que statement_timeout está realmente aplicado.
     """
     if SKIP_DB_INIT:
         return
     
-    # NO-OP por defecto: el timeout ya se aplicó en el event listener "connect"
-    if not DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
+    # Legacy mode: ejecutar siempre sin guard
+    if DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
+        try:
+            await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
+            await _maybe_log_statement_timeout(session)
+        except Exception as e:
+            logger.debug("[DB] Error en SET SESSION (legacy mode): %s", e)
         return
     
-    # Fallback legacy: SET SESSION per-request (solo si flag está activo)
+    # Guard mode: ejecutar solo una vez por conexión física
     try:
+        # Obtener la conexión raw subyacente
+        async_conn = await session.connection()
+        raw_conn = await async_conn.get_raw_connection()
+        
+        # Obtener driver connection real (no wrapper)
+        driver_conn = _get_driver_connection(raw_conn)
+        
+        # Verificar guard
+        if _is_guard_set(driver_conn):
+            # Ya configurado en esta conexión física, NO-OP
+            return
+        
+        # Primera vez en esta conexión: ejecutar SET SESSION
         await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
+        
+        # Marcar guard para evitar repetición
+        _set_guard(driver_conn)
+        
+        logger.debug(
+            "[DB] SET SESSION statement_timeout = %d ms (first request on this connection)",
+            DB_SESSION_STATEMENT_TIMEOUT_MS
+        )
+        
+        # Diagnóstico temporal (una vez por proceso)
+        await _maybe_log_statement_timeout(session)
+        
     except Exception as e:
-        logger.debug(f"[DB] No se pudo aplicar statement_timeout de sesión: {e}")
+        # No romper el request; loguear como debug
+        logger.debug("[DB] Error en _configure_session (guard mode): %s", e)
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
