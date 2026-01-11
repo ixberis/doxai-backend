@@ -6,8 +6,13 @@ Modelo ORM para user_tax_profiles.
 
 Almacena datos fiscales del usuario para recibos y futura facturación CFDI.
 
+BD 2.0 SSOT (2026-01-11):
+- auth_user_id (UUID): identificador canónico de ownership
+- user_id (int): FK legacy para JOINs internos
+
 Autor: DoxAI
 Fecha: 2025-12-31
+Actualizado: 2026-01-11 - BD 2.0 SSOT auth_user_id
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 from enum import Enum
+from uuid import UUID
 
 from sqlalchemy import (
     String,
@@ -25,6 +31,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.database.base import Base
@@ -43,6 +50,8 @@ class UserTaxProfile(Base):
     
     Almacena RFC, razón social, dirección fiscal y datos
     necesarios para recibos y futura facturación CFDI.
+    
+    BD 2.0 SSOT: auth_user_id es el identificador canónico de ownership.
     """
     
     __tablename__ = "user_tax_profiles"
@@ -53,13 +62,22 @@ class UserTaxProfile(Base):
         autoincrement=True,
     )
     
-    # FK a app_users.user_id (único - un perfil por usuario)
+    # BD 2.0 SSOT: auth_user_id (UUID) es el identificador canónico
+    auth_user_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,  # Nullable para migración gradual, pero requerido en código
+        unique=True,
+        index=True,
+        doc="UUID del usuario (BD 2.0 SSOT).",
+    )
+    
+    # FK legacy a app_users.user_id (para JOINs internos)
     user_id: Mapped[int] = mapped_column(
         BigInteger,
         nullable=False,
         unique=True,
         index=True,
-        doc="ID del usuario (relación 1:1).",
+        doc="ID legacy del usuario (relación 1:1).",
     )
     
     # RFC (Registro Federal de Contribuyentes)

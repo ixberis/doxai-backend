@@ -343,76 +343,76 @@ async def list_active_projects(
     summary="Listar proyectos cerrados/archivados del usuario",
 )
 async def list_closed_projects(
+    request: Request,
     ordenar_por: str = Query("project_updated_at", description="Columna para ordenar"),
     asc: bool = Query(False, description="Orden ascendente (default: descendente)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     include_total: bool = Query(False),
-    user=Depends(get_current_user),
-    q: ProjectsQueryService = Depends(get_projects_query_service),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    q: ProjectsQueryService = Depends(get_projects_query_service_timed),  # DB instrumentation
 ):
-    start_time = time.perf_counter()
+    from app.shared.observability.request_telemetry import RequestTelemetry
+    
+    telemetry = RequestTelemetry.create("projects.closed-projects")
+    
+    try:
+        # BD 2.0 SSOT: auth_user_id ya resuelto por get_current_user_ctx (Core)
+        auth_user_id = ctx.auth_user_id
 
-    # Fase: Auth Context (BD 2.0 SSOT)
-    auth_start = time.perf_counter()
-    auth_user_id = _get_auth_user_id(user)
-    auth_ms = (time.perf_counter() - auth_start) * 1000
+        # Fase: Validation (pre_ms)
+        with telemetry.measure("pre_ms"):
+            if ordenar_por not in SORT_COLUMN_WHITELIST:
+                telemetry.finalize(request, status_code=400, result="validation_error")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": f"ordenar_por debe ser uno de: {', '.join(SORT_COLUMN_WHITELIST.keys())}",
+                        "error_code": "INVALID_SORT_COLUMN",
+                    }
+                )
+            mapped_column = SORT_COLUMN_WHITELIST[ordenar_por]
+            _log_legacy_alias_warning(ordenar_por, "list_closed_projects", mapped_column)
 
-    # Fase: Validation
-    if ordenar_por not in SORT_COLUMN_WHITELIST:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "message": f"ordenar_por debe ser uno de: {', '.join(SORT_COLUMN_WHITELIST.keys())}",
-                "error_code": "INVALID_SORT_COLUMN",
-            }
+        # Fase: DB Query (BD 2.0: solo auth_user_id, NO user_email)
+        with telemetry.measure("db_ms"):
+            items_or_tuple = await q.list_closed_projects(
+                auth_user_id=auth_user_id,
+                order_by=mapped_column,
+                asc=asc,
+                limit=limit,
+                offset=offset,
+                include_total=include_total,
+            )
+
+        # Fase: Serialization
+        with telemetry.measure("ser_ms"):
+            if isinstance(items_or_tuple, tuple):
+                items, total = items_or_tuple
+            else:
+                items = items_or_tuple
+                total = len(items)
+            response_items = [_project_read_validate(p) for p in items]
+
+        # Set flags for observability
+        telemetry.set_flag("rows", len(items))
+        telemetry.set_flag("auth_user_id", str(auth_user_id)[:8] + "...")
+
+        telemetry.finalize(request, status_code=200, result="success")
+
+        return ProjectListResponse(
+            success=True,
+            items=response_items,
+            total=total,
         )
-
-    mapped_column = SORT_COLUMN_WHITELIST[ordenar_por]
-    _log_legacy_alias_warning(ordenar_por, "list_closed_projects", mapped_column)
-
-    # Fase: DB Query (BD 2.0: solo auth_user_id, NO user_email)
-    db_start = time.perf_counter()
-    items_or_tuple = await q.list_closed_projects(
-        auth_user_id=auth_user_id,
-        order_by=mapped_column,
-        asc=asc,
-        limit=limit,
-        offset=offset,
-        include_total=include_total,
-    )
-    db_ms = (time.perf_counter() - db_start) * 1000
-
-    # Fase: Serialization
-    ser_start = time.perf_counter()
-    if isinstance(items_or_tuple, tuple):
-        items, total = items_or_tuple
-    else:
-        items = items_or_tuple
-        total = len(items)
-
-    response_items = [_project_read_validate(p) for p in items]
-    ser_ms = (time.perf_counter() - ser_start) * 1000
-
-    total_ms = (time.perf_counter() - start_time) * 1000
-    user_log = str(auth_user_id)[:8] + "..."
-
-    if db_ms > 500:
-        logger.warning(
-            "query_slow op=list_closed_projects phase=db_query user=%s duration_ms=%.2f rows=%d",
-            user_log, db_ms, len(items)
-        )
-
-    logger.info(
-        "query_completed op=list_closed_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d",
-        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items)
-    )
-
-    return ProjectListResponse(
-        success=True,
-        items=response_items,
-        total=total,
-    )
+        
+    except HTTPException as e:
+        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        raise
+    except Exception as e:
+        telemetry.finalize(request, status_code=500, result="error")
+        logger.exception("query_error op=list_closed_projects error=%s", str(e))
+        raise
 
 
 # ---------------------------------------------------------------------------

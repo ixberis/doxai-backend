@@ -330,6 +330,55 @@ async def _update_profile_internal(
 
 # ===== Profile Routes =====
 
+async def _get_profile_core(
+    request: Request,
+    ctx: AuthContextDTO,
+    service: ProfileService,
+    endpoint_name: str,
+) -> dict:
+    """
+    Lógica interna para obtener perfil con Core ctx + RequestTelemetry.
+    
+    OPTIMIZADO: Usa get_current_user_ctx (Core) para auth (~40ms vs ~1200ms ORM).
+    """
+    from app.shared.observability.request_telemetry import RequestTelemetry
+    
+    telemetry = RequestTelemetry.create(f"profile.{endpoint_name}")
+    
+    uid = ctx.user_id
+    
+    try:
+        # Fase: DB Query
+        with telemetry.measure("db_ms"):
+            dto = await service.get_profile(user_id=uid)
+        
+        # Fase: Serialization
+        with telemetry.measure("ser_ms"):
+            response_data = _profile_dto_to_response(dto)
+        
+        telemetry.set_flag("user_id", uid)
+        telemetry.finalize(request, status_code=200, result="success")
+        
+        return response_data
+        
+    except ValueError as e:
+        telemetry.finalize(request, status_code=404, result="not_found")
+        raise NotFoundException(detail=str(e))
+    except HTTPException as e:
+        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        raise
+    except Exception:
+        telemetry.finalize(request, status_code=500, result="error")
+        logger.exception("query_error op=%s user_id=%s", endpoint_name, uid)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al obtener perfil",
+                "error_code": "PROFILE_FETCH_ERROR",
+            }
+        )
+
+
 @router.get(
     "/",
     response_model=UserProfileResponse,
@@ -337,11 +386,12 @@ async def _update_profile_internal(
     description="Obtiene el perfil completo del usuario autenticado"
 )
 async def get_user_profile(
-    user=Depends(get_current_user),
-    service: ProfileService = Depends(get_profile_service),
+    request: Request,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    service: ProfileService = Depends(get_profile_service_timed),
 ):
     """Obtiene el perfil completo del usuario autenticado."""
-    return await _get_profile_internal(user, service, "get_profile")
+    return await _get_profile_core(request, ctx, service, "get_profile")
 
 
 # Alias para compatibilidad con UI que llama GET /api/profile/profile
@@ -352,11 +402,73 @@ async def get_user_profile(
     description="Alias de GET /profile para compatibilidad con UI"
 )
 async def get_user_profile_alias(
-    user=Depends(get_current_user),
-    service: ProfileService = Depends(get_profile_service),
+    request: Request,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    service: ProfileService = Depends(get_profile_service_timed),
 ):
     """Alias de get_user_profile para compatibilidad con UI."""
-    return await _get_profile_internal(user, service, "get_profile_alias")
+    return await _get_profile_core(request, ctx, service, "get_profile_alias")
+
+
+async def _update_profile_core(
+    request: Request,
+    ctx: AuthContextDTO,
+    profile_data: UserProfileUpdateRequest,
+    service: ProfileService,
+    endpoint_name: str,
+) -> dict:
+    """
+    Lógica interna para actualizar perfil con Core ctx + RequestTelemetry.
+    
+    OPTIMIZADO: Usa get_current_user_ctx (Core) para auth (~40ms vs ~1200ms ORM).
+    """
+    from datetime import datetime, timezone
+    from app.modules.user_profile.services.profile_service import UpdateProfileDTO
+    from app.shared.observability.request_telemetry import RequestTelemetry
+    
+    telemetry = RequestTelemetry.create(f"profile.{endpoint_name}")
+    
+    uid = ctx.user_id
+    
+    try:
+        # Fase: DB Update
+        with telemetry.measure("db_ms"):
+            dto = UpdateProfileDTO(
+                full_name=profile_data.user_full_name,
+                phone=profile_data.user_phone,
+            )
+            updated_dto = await service.update_profile(user_id=uid, data=dto)
+        
+        # Fase: Serialization
+        with telemetry.measure("ser_ms"):
+            response_data = {
+                "success": True,
+                "message": "Perfil actualizado correctamente",
+                "updated_at": datetime.now(timezone.utc),
+                "user": _profile_dto_to_response(updated_dto),
+            }
+        
+        telemetry.set_flag("user_id", uid)
+        telemetry.finalize(request, status_code=200, result="success")
+        
+        return response_data
+        
+    except ValueError as e:
+        telemetry.finalize(request, status_code=400, result="validation_error")
+        raise BadRequestException(detail=str(e))
+    except HTTPException as e:
+        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        raise
+    except Exception:
+        telemetry.finalize(request, status_code=500, result="error")
+        logger.exception("query_error op=%s user_id=%s", endpoint_name, uid)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error interno al actualizar perfil",
+                "error_code": "PROFILE_UPDATE_ERROR",
+            }
+        )
 
 
 @router.put(
@@ -366,12 +478,13 @@ async def get_user_profile_alias(
     description="Actualiza nombre y/o teléfono del usuario autenticado"
 )
 async def update_user_profile(
+    request: Request,
     profile_data: UserProfileUpdateRequest,
-    user=Depends(get_current_user),
-    service: ProfileService = Depends(get_profile_service),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    service: ProfileService = Depends(get_profile_service_timed),
 ):
     """Actualiza el perfil del usuario autenticado."""
-    return await _update_profile_internal(user, profile_data, service, "update_profile")
+    return await _update_profile_core(request, ctx, profile_data, service, "update_profile")
 
 
 # Alias para compatibilidad con UI que llama PUT /api/profile/profile
@@ -382,12 +495,13 @@ async def update_user_profile(
     description="Alias de PUT /profile para compatibilidad con UI"
 )
 async def update_user_profile_alias(
+    request: Request,
     profile_data: UserProfileUpdateRequest,
-    user=Depends(get_current_user),
-    service: ProfileService = Depends(get_profile_service),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    service: ProfileService = Depends(get_profile_service_timed),
 ):
     """Alias de update_user_profile para compatibilidad con UI."""
-    return await _update_profile_internal(user, profile_data, service, "update_profile_alias")
+    return await _update_profile_core(request, ctx, profile_data, service, "update_profile_alias")
 
 
 # ===== Credits Routes =====
@@ -469,52 +583,56 @@ async def get_credits_balance(
     description="Obtiene el estado actual de la suscripción del usuario"
 )
 async def get_subscription_status(
-    user=Depends(get_current_user),
-    service: ProfileService = Depends(get_profile_service),
+    request: Request,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    service: ProfileService = Depends(get_profile_service_timed),
 ):
     """
     Obtiene el estado de suscripción del usuario autenticado.
     Usa créditos como proxy de suscripción.
     BD 2.0 SSOT: Usa auth_user_id (UUID) para consultar wallets.
+    OPTIMIZADO: Usa get_current_user_ctx (Core) en lugar de get_current_user (ORM).
     """
     from app.modules.auth.enums import UserStatus
+    from app.shared.observability.request_telemetry import RequestTelemetry
     
-    start_total = time.perf_counter()
+    telemetry = RequestTelemetry.create("profile.subscription")
     
-    # Fase 1: Auth Context - extraer user_id (int) y auth_user_id (UUID SSOT)
-    auth_start = time.perf_counter()
-    uid = extract_user_id(user)
-    auth_uid = extract_auth_user_id(user)  # BD 2.0 SSOT
-    email = getattr(user, "user_email", None) or getattr(user, "email", None) or "unknown@example.com"
-    auth_ms = (time.perf_counter() - auth_start) * 1000
+    uid = ctx.user_id
+    auth_uid = ctx.auth_user_id
+    email = ctx.user_email
     
     try:
-        # Fase 2: DB Query (BD 2.0: usa auth_user_id para wallets)
-        db_start = time.perf_counter()
-        balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
-        db_ms = (time.perf_counter() - db_start) * 1000
+        # Fase: DB Query (BD 2.0: usa auth_user_id para wallets)
+        with telemetry.measure("db_ms"):
+            balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
         
-        sub_status = UserStatus.active if balance > 0 else UserStatus.not_active
+        # Fase: Serialization
+        with telemetry.measure("ser_ms"):
+            sub_status = UserStatus.active if balance > 0 else UserStatus.not_active
+            response = {
+                "user_id": uid,  # int - schema espera int
+                "user_email": email,
+                "subscription_status": sub_status,
+                "subscription_period_start": None,
+                "subscription_period_end": None,
+                "last_payment_date": None,
+            }
         
-        total_ms = (time.perf_counter() - start_total) * 1000
-        logger.info(
-            "query_completed op=get_subscription auth_user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
-            str(auth_uid)[:8] + "...", balance, auth_ms, db_ms, total_ms
-        )
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}...")
+        telemetry.set_flag("balance", balance)
+        telemetry.finalize(request, status_code=200, result="success")
         
-        return {
-            "user_id": uid,  # int - schema espera int
-            "user_email": email,
-            "subscription_status": sub_status,
-            "subscription_period_start": None,
-            "subscription_period_end": None,
-            "last_payment_date": None,
-        }
+        return response
+        
+    except HTTPException as e:
+        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        raise
     except Exception:
-        total_ms = (time.perf_counter() - start_total) * 1000
+        telemetry.finalize(request, status_code=500, result="error")
         logger.exception(
-            "query_error op=get_subscription auth_user_id=%s duration_ms=%.2f",
-            str(auth_uid)[:8] + "..." if auth_uid else "unknown", total_ms
+            "query_error op=get_subscription auth_user_id=%s",
+            f"{str(auth_uid)[:8]}..." if auth_uid else "unknown"
         )
         raise HTTPException(
             status_code=500,
