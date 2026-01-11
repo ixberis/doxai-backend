@@ -131,7 +131,10 @@ class TimingMiddleware(BaseHTTPMiddleware):
                 gap_call_next_ms = max(0, call_next_ms - accounted_in_call_next)
                 
                 has_gap_analysis = auth_dep_ms > 0 or handler_ms > 0 or deps_ms > 0
-                log_level = logging.WARNING if (time.perf_counter() - start_time) * 1000 > 1000 else logging.INFO
+                
+                # route_completed severity: INFO for status < 500, WARNING for errors
+                # Reserve WARNING for actual errors, not just slow routes
+                log_level = logging.WARNING if response.status_code >= 500 else logging.INFO
                 
                 build_end = time.perf_counter()
                 # Medición contigua desde after_start (no desde build_start)

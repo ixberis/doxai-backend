@@ -2,11 +2,30 @@
 """
 backend/app/shared/observability/timed_route.py
 
-TimedAPIRoute: Custom APIRoute that automatically instruments handler timing.
+TimedAPIRoute: Custom APIRoute that provides FALLBACK handler timing instrumentation.
 
-Sets request.state.route_handler_ms for TimingMiddleware gap analysis.
+PURPOSE:
+    This class is a FALLBACK mechanism for routes that don't use manual telemetry
+    (RequestTelemetry or LoginTelemetry). It ensures request.state.route_handler_ms
+    is always populated for TimingMiddleware gap analysis.
 
-This is the structural solution for routes that don't use RequestTelemetry manually.
+BEHAVIOR:
+    - Measures handler execution time (start to response)
+    - Sets request.state.route_handler_ms ONLY if not already set by telemetry
+    - Does NOT override values set by LoginTelemetry.finalize() or RequestTelemetry.finalize()
+
+USAGE:
+    Apply to routers where manual telemetry is not used, or as a safety net:
+    
+        router = APIRouter(
+            prefix="/auth",
+            tags=["auth"],
+            route_class=TimedAPIRoute,
+        )
+
+SCOPE:
+    Currently applied to auth routers (auth_tokens, auth_public, auth_admin).
+    NOT applied globally to avoid interference with manually instrumented routes.
 
 Autor: DoxAI
 Fecha: 2026-01-11
@@ -22,17 +41,12 @@ from starlette.responses import Response
 
 class TimedAPIRoute(APIRoute):
     """
-    Custom APIRoute that wraps the endpoint to measure handler execution time.
+    Fallback APIRoute that measures handler execution time.
     
-    Sets request.state.route_handler_ms which is read by TimingMiddleware
-    for accurate gap analysis.
+    Sets request.state.route_handler_ms for TimingMiddleware gap analysis,
+    but ONLY if not already set by RequestTelemetry or LoginTelemetry.
     
-    Usage:
-        router = APIRouter(
-            prefix="/auth",
-            tags=["auth"],
-            route_class=TimedAPIRoute,
-        )
+    This ensures no double measurement occurs when manual telemetry is used.
     """
     
     def get_route_handler(self) -> Callable:
@@ -45,9 +59,9 @@ class TimedAPIRoute(APIRoute):
                 return response
             finally:
                 elapsed_ms = (time.perf_counter() - start) * 1000
-                # Set handler timing for TimingMiddleware
-                # Only set if not already set by RequestTelemetry/LoginTelemetry
-                if not hasattr(request.state, "route_handler_ms") or request.state.route_handler_ms == 0:
+                # FALLBACK: Only set if not already populated by telemetry
+                existing = getattr(request.state, "route_handler_ms", None)
+                if existing is None or existing == 0:
                     request.state.route_handler_ms = elapsed_ms
         
         return timed_route_handler
