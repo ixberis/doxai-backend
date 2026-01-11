@@ -151,8 +151,18 @@ class TimingMiddleware(BaseHTTPMiddleware):
                 mw_after_warn_ms = 0.0
                 warn_end = build_end  # Si no hay warning, warn_end = build_end
                 
+                # For 4xx errors (validation, auth, not found), the handler often doesn't
+                # execute at all (e.g., 422 from Pydantic validation before handler).
+                # In those cases handler_ms=0 is expected, NOT missing instrumentation.
+                is_client_error = 400 <= response.status_code < 500
+                
                 # Detect missing instrumentation: handler_ms=0 but significant call_next time
-                handler_instrumentation_missing = (handler_ms == 0 and call_next_ms > 50)
+                # Only flag this for success paths (2xx/3xx) or server errors (5xx)
+                handler_instrumentation_missing = (
+                    handler_ms == 0 
+                    and call_next_ms > 50 
+                    and not is_client_error
+                )
                 
                 if handler_instrumentation_missing:
                     # Log as INFO (not WARNING) - this is a known gap, not a mystery
@@ -164,7 +174,10 @@ class TimingMiddleware(BaseHTTPMiddleware):
                     )
                     warn_end = time.perf_counter()
                     mw_after_warn_ms = (warn_end - build_end) * 1000
-                elif gap_call_next_ms > GAP_WARNING_THRESHOLD_MS:
+                elif gap_call_next_ms > GAP_WARNING_THRESHOLD_MS and not is_client_error and handler_ms > 0:
+                    # Skip timing_gap_detected for:
+                    # - 4xx: validation failures before handler are expected to have gaps
+                    # - handler_ms=0: if handler didn't run (short-circuit), gap is expected
                     dep_detail = " ".join(f"{k}={v:.2f}" for k, v in dep_timings.items()) if dep_timings else "none"
                     logger.warning(
                         "timing_gap_detected path=%s gap_call_next_ms=%.2f call_next_ms=%.2f "
