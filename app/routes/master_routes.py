@@ -288,7 +288,7 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL DB PING (diagnóstico temporal)
+# INTERNAL DB DIAGNOSTICS (diagnóstico temporal)
 # ═══════════════════════════════════════════════════════════════════════════
 try:
     from app.routes.internal_db_ping_routes import router as internal_db_ping_router
@@ -296,11 +296,23 @@ try:
     # Montar en AMBAS capas para acceso consistente:
     # - /api/_internal/db/ping (con prefix /api)
     # - /_internal/db/ping (sin prefix, root)
-    _include_once(api, internal_db_ping_router, "internal-db", _mounted_api)
-    _include_once(public, internal_db_ping_router, "internal-db", _mounted_public)
+    _include_once(api, internal_db_ping_router, "internal-db-ping", _mounted_api)
+    _include_once(public, internal_db_ping_router, "internal-db-ping", _mounted_public)
     logger.info("✅ Endpoint interno de DB ping montado (api + public)")
 except Exception as e:
     logger.debug("Endpoint interno de DB ping no montado: %s", e)
+
+try:
+    from app.routes.internal_db_user_query_routes import router as internal_db_user_query_router
+
+    # Montar en AMBAS capas para acceso consistente:
+    # - /api/_internal/db/user-by-email (con prefix /api)
+    # - /_internal/db/user-by-email (sin prefix, root)
+    _include_once(api, internal_db_user_query_router, "internal-db-user-query", _mounted_api)
+    _include_once(public, internal_db_user_query_router, "internal-db-user-query", _mounted_public)
+    logger.info("✅ Endpoint interno de DB user-by-email montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de DB user-by-email no montado: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

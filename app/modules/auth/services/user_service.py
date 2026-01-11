@@ -193,7 +193,7 @@ class UserService:
             return_timings: Si True, retorna (user, timings_dict) con:
                 - conn_checkout_ms: tiempo de checkout de conexión del pool
                 - db_prep_ms: tiempo de preparación (session scope + pre_query_guards)
-                - db_exec_ms: tiempo de ejecución del query SQL
+                - db_exec_ms: tiempo de ejecución del query SQL (SOLO el SELECT)
                 - db_total_ms: tiempo total de la operación
             timeout_seconds: Timeout máximo para la operación completa (default: 5s)
         
@@ -217,21 +217,32 @@ class UserService:
 
         # Timeout determinista con asyncio (no depende de SET SESSION)
         async with asyncio.timeout(timeout_seconds):
-            # ─── t1: Medir tiempo de preparación (session scope + pre_query_guards) ───
+            # ─── t1: Medir tiempo de preparación (session scope) ───
             t1_pre_session = time.perf_counter()
             async with self._session_scope() as session:
-                # ─── Fase C: Medir conn_checkout_ms (tiempo de obtener conexión del pool) ───
-                # Siempre forzar checkout para medir latencia real del pool
-                t_checkout_start = time.perf_counter()
-                await session.connection()  # fuerza checkout de conexión del pool
-                t_checkout_end = time.perf_counter()
-                timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
+                t_session_acquired = time.perf_counter()
                 
+                # ─── Fase A: Medir conn_checkout_ms ───
+                # OPTIMIZACIÓN: Si usamos borrowed session, el checkout ya ocurrió
+                # Solo forzar checkout si NO es borrowed session (para medir latencia real)
+                if self._using_borrowed_session():
+                    # Sesión prestada: checkout ya ocurrió en get_async_session
+                    timings["conn_checkout_ms"] = 0
+                    timings["borrowed_session"] = True
+                else:
+                    # Sesión propia: medir checkout real
+                    t_checkout_start = time.perf_counter()
+                    await session.connection()  # fuerza checkout de conexión del pool
+                    t_checkout_end = time.perf_counter()
+                    timings["conn_checkout_ms"] = (t_checkout_end - t_checkout_start) * 1000
+                    timings["borrowed_session"] = False
+                
+                # ─── Fase B: Pre-query guards (solo ping si NO borrowed) ───
                 await self._pre_query_guards(session, stmt_timeout_ms=3000)
                 t2_session_ready = time.perf_counter()
                 timings["db_prep_ms"] = (t2_session_ready - t1_pre_session) * 1000
 
-                # ─── t2→t3: Medir tiempo de ejecución SQL ───
+                # ─── Fase C: Medir SOLO el tiempo de ejecución SQL ───
                 repo = UserRepository(session)
                 t3_pre_exec = time.perf_counter()
                 try:
@@ -241,8 +252,9 @@ class UserService:
                     timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
                     
                     log.debug(
-                        "Users.get_by_email ok email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f",
+                        "Users.get_by_email ok email=%s borrowed=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f",
                         _mask_email(norm_email),
+                        timings.get("borrowed_session", False),
                         timings.get("conn_checkout_ms", 0),
                         timings["db_prep_ms"],
                         timings["db_exec_ms"],
@@ -257,12 +269,13 @@ class UserService:
                     timings["db_total_ms"] = (t4_post_exec - t0_start) * 1000
                     
                     log.exception(
-                        "Users.get_by_email ERROR email=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
+                        "Users.get_by_email ERROR email=%s borrowed=%s conn_checkout_ms=%.2f db_prep_ms=%.2f db_exec_ms=%.2f error=%s",
                         _mask_email(norm_email),
+                        timings.get("borrowed_session", False),
                         timings.get("conn_checkout_ms", 0),
                         timings["db_prep_ms"],
                         timings["db_exec_ms"],
-                        e,
+                        type(e).__name__,
                     )
                     raise
 
