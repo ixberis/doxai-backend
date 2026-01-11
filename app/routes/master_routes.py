@@ -317,6 +317,18 @@ except Exception as e:
     # Diagnóstico temporal: usar error con exc_info para ver causa sin stacktrace completo
     logger.error("❌ Endpoints DB user-query NO montados: %s", e, exc_info=True)
 
+try:
+    from app.routes.internal_db_wallet_routes import router as internal_db_wallet_router
+
+    # Montar en AMBAS capas:
+    # - /api/_internal/db/wallet-model
+    # - /_internal/db/wallet-model
+    _include_once(api, internal_db_wallet_router, "internal-db-wallet", _mounted_api)
+    _include_once(public, internal_db_wallet_router, "internal-db-wallet", _mounted_public)
+    logger.info("✅ Endpoint interno DB wallet-model montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de DB wallet-model no montado: %s", e)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DEBUG ENDPOINT

@@ -4,17 +4,13 @@ backend/app/modules/billing/credits/models.py
 
 Modelos ORM para el sistema de créditos.
 
-Sincronizados con:
-- database/payments/02_tables/01_wallets.sql (payments_wallet / wallets view)
+Sincronizados con BD 2.0:
+- database/common/01_extensions_and_functions/10_wallets.sql (public.wallets)
 - database/payments/02_tables/04_credit_transactions.sql
 - database/payments/02_tables/05_usage_reservations.sql
 
 Autor: DoxAI
 Fecha: 2025-12-30
-
-Notas SSOT (BD 2.0):
-- auth_user_id (UUID) es el ownership canónico.
-- user_id (BIGINT) se mantiene solo como legacy / interno (cuando exista).
 """
 
 from __future__ import annotations
@@ -42,14 +38,10 @@ class Wallet(Base):
     """
     Saldo de créditos del usuario (denormalizado para lectura rápida).
 
-    Tabla/Vista: public.payments_wallet
-
-    SSOT:
-    - auth_user_id: UUID NOT NULL UNIQUE (canónico)
-    - user_id: BIGINT nullable (legacy/interno)
+    Tabla: public.wallets (BD 2.0)
     """
 
-    __tablename__ = "payments_wallet"
+    __tablename__ = "wallets"
 
     id: Mapped[int] = mapped_column(
         BigInteger,
@@ -57,7 +49,6 @@ class Wallet(Base):
         autoincrement=True,
     )
 
-    # SSOT (canónico)
     auth_user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         nullable=False,
@@ -65,7 +56,6 @@ class Wallet(Base):
         index=True,
     )
 
-    # Legacy / interno (mantener nullable)
     user_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,
         nullable=True,
@@ -114,10 +104,6 @@ class CreditTransaction(Base):
     Ledger inmutable de movimientos de créditos.
 
     Tabla: public.credit_transactions
-
-    SSOT:
-    - auth_user_id: UUID NOT NULL
-    - user_id: BIGINT nullable (legacy)
     """
 
     __tablename__ = "credit_transactions"
@@ -128,14 +114,12 @@ class CreditTransaction(Base):
         autoincrement=True,
     )
 
-    # SSOT (canónico)
     auth_user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         nullable=False,
         index=True,
     )
 
-    # Legacy / interno (mantener nullable)
     user_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,
         nullable=True,
@@ -192,7 +176,6 @@ class CreditTransaction(Base):
         nullable=True,
     )
 
-    # Mapear a la columna real "metadata"
     tx_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
         JSONB,
@@ -219,10 +202,6 @@ class UsageReservation(Base):
     Reservación de créditos para operaciones de uso (e.g., pipelines RAG).
 
     Tabla: public.usage_reservations
-
-    SSOT:
-    - auth_user_id: UUID NOT NULL
-    - user_id: BIGINT nullable (legacy)
     """
 
     __tablename__ = "usage_reservations"
@@ -233,14 +212,12 @@ class UsageReservation(Base):
         autoincrement=True,
     )
 
-    # SSOT (canónico)
     auth_user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         nullable=False,
         index=True,
     )
 
-    # Legacy / interno (mantener nullable)
     user_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,
         nullable=True,
@@ -333,6 +310,3 @@ __all__ = [
     "CreditTransaction",
     "UsageReservation",
 ]
-
-# Fin del archivo
-

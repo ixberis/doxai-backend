@@ -223,7 +223,7 @@ class ProfileService:
 
     # ---------- Créditos: balance y overview ----------
 
-    async def get_credits_balance(self, user_id: int, auth_user_id: UUID = None) -> int:
+    async def get_credits_balance(self, user_id: int, auth_user_id: Optional[UUID] = None) -> int:
         """
         Regresa el saldo actual de créditos.
 
@@ -233,17 +233,27 @@ class ProfileService:
         Prioridad:
           1) credits_gateway (si está inyectado)
           2) Wallet denormalizada (BD 2.0): public.wallets.balance por auth_user_id
-          3) 0 (fallback_zero)
+          3) 0 (fallback_zero) - SOLO si STRICT_WALLET_SSOT=0
 
         IMPORTANTE:
-        - Cada fallback hace rollback en caso de error para evitar que el
-          request quede en estado "transaction aborted" (InFailedSQLTransactionError).
+        - Si STRICT_WALLET_SSOT=1:
+          * WalletSSOTError se propaga (catch explícito + re-raise)
+          * SQLAlchemyError hace rollback y SE PROPAGA (NO fallback a 0)
+        - Si STRICT_WALLET_SSOT=0:
+          * WalletSSOTError se loguea como warning y continúa
+          * SQLAlchemyError hace rollback y fallback a 0
         
         Args:
             user_id: ID interno del usuario (int) - para gateway legacy
             auth_user_id: UUID canónico del usuario (SSOT BD 2.0) - requerido para DB
+            
+        Raises:
+            WalletSSOTError: Si STRICT_WALLET_SSOT=1 y el modelo Wallet es inválido
+            SQLAlchemyError: Si STRICT_WALLET_SSOT=1 y hay error de DB
         """
         import time
+        from sqlalchemy.exc import SQLAlchemyError
+        
         start = time.perf_counter()
 
         # 1) Gateway inyectado (puede usar user_id int legacy)
@@ -259,13 +269,24 @@ class ProfileService:
         # 2) Wallet denormalizada (BD 2.0): wallets.auth_user_id
         # Optimización 2026-01-11: Usa idx_wallets_auth_user_id (Index Scan)
         if auth_user_id is not None:
+            # Imports tardíos para evitar circulares
+            from app.modules.billing.models import Wallet
+            from app.shared.queries.wallet_balance import build_wallet_balance_statement
+            from app.shared.wallet_ssot_guard import (
+                assert_wallet_ssot, 
+                WalletSSOTError, 
+                is_strict_mode,
+            )
+            
+            # Fail-fast: valida SSOT ANTES de construir statement
+            # WalletSSOTError se propaga directamente (no se captura aquí)
+            assert_wallet_ssot(Wallet)
+            
             try:
-                # SSOT: billing.models no importa services/routers (evita circular)
-                from app.modules.billing.models import Wallet
-                from app.shared.queries.wallet_balance import build_wallet_balance_statement
                 stmt = build_wallet_balance_statement(auth_user_id, Wallet)
                 res = await self.db.execute(stmt)
                 balance_value = res.scalar_one_or_none()
+                
                 if balance_value is not None:
                     balance = int(balance_value)
                     duration_ms = (time.perf_counter() - start) * 1000
@@ -275,26 +296,39 @@ class ProfileService:
                         logger.debug(f"[credits] auth_user_id={str(auth_user_id)[:8]}... balance={balance} source=wallets duration_ms={duration_ms:.2f}")
                     return balance
                 else:
-                    # Wallet no existe para este usuario - balance 0
+                    # Wallet no existe para este usuario - balance 0 (válido)
                     duration_ms = (time.perf_counter() - start) * 1000
                     logger.debug(f"[credits] auth_user_id={str(auth_user_id)[:8]}... balance=0 source=wallet_not_found duration_ms={duration_ms:.2f}")
                     return 0
-            except Exception as e:
-                # Rollback para no envenenar la transacción del request
+            
+            except WalletSSOTError:
+                # Catch explícito: SIEMPRE propagar (no confundir con SQLAlchemyError)
+                raise
+                    
+            except SQLAlchemyError as e:
+                # Rollback para no envenenar la transacción
                 try:
                     await self.db.rollback()
                 except Exception:
                     pass
+                
+                # En modo estricto: propagar error (NO fallback)
+                if is_strict_mode():
+                    logger.error(f"[credits] SQLAlchemyError in strict mode, propagating: {e}")
+                    raise
+                
+                # En modo no estricto: warning y fallback
                 logger.warning(f"[credits] Wallet query failed, fallback to zero: {e}")
         else:
             logger.warning(f"[credits] auth_user_id not provided, cannot query wallets (user_id={user_id})")
 
         # 3) Default fallback (sin datos o sin auth_user_id)
+        # NOTA: Si STRICT_WALLET_SSOT=1, este código NO se alcanza en caso de error
         duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(f"[credits] user_id={user_id} balance=0 source=fallback_zero duration_ms={duration_ms:.2f}")
         return 0
 
-    async def get_credits_overview(self, user_id: int, auth_user_id: UUID = None) -> CreditsOverviewDTO:
+    async def get_credits_overview(self, user_id: int, auth_user_id: Optional[UUID] = None) -> CreditsOverviewDTO:
         """
         Devuelve un overview simple: balance y timestamps de última recarga/consumo.
 
