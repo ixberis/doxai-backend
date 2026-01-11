@@ -5,18 +5,27 @@ backend/app/shared/queries/wallet_balance.py
 Helper para construcción del statement de balance de wallet.
 Usado por ProfileService.get_credits_balance y tests.
 
-SSOT para Wallet: importar desde app.modules.billing
+SSOT para Wallet: importar desde app.modules.billing.models
+
+NOTA: Este módulo debe ser "pure + lightweight" - usa TYPE_CHECKING
+para imports de tipos SQLAlchemy.
 
 Autor: DoxAI
 Fecha: 2026-01-11
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
 from sqlalchemy import select
-from sqlalchemy.sql import Select
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql import Select
 
 
-def build_wallet_balance_statement(auth_user_id: UUID, wallet_model=None) -> Select:
+def build_wallet_balance_statement(auth_user_id: UUID, wallet_model: Any = None) -> Any:
     """
     Construye el statement ORM para obtener balance de wallet.
     
@@ -40,7 +49,7 @@ def build_wallet_balance_statement(auth_user_id: UUID, wallet_model=None) -> Sel
     )
 
 
-def validate_wallet_statement(stmt: Select) -> dict:
+def validate_wallet_statement(stmt: Any) -> dict:
     """
     Valida que un statement de wallet cumple los requisitos.
     

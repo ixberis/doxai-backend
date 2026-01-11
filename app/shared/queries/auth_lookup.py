@@ -5,14 +5,22 @@ backend/app/shared/queries/auth_lookup.py
 Constantes y helpers para el lookup de autenticación por auth_user_id.
 Usado por UserRepository.get_by_auth_user_id_core_ctx y tests.
 
+NOTA: Este módulo debe ser "pure + lightweight" - sin imports pesados
+que puedan romper el path de autenticación.
+
 Autor: DoxAI
 Fecha: 2026-01-11
 """
 
-from typing import List
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, List, Tuple
 from uuid import UUID
+
 from sqlalchemy import text
-from sqlalchemy.sql import TextClause
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import TextClause
 
 
 # Columnas mínimas requeridas para AuthContextDTO
@@ -45,7 +53,7 @@ AUTH_LOOKUP_SQL: str = """
 """
 
 
-def build_auth_lookup_statement(auth_user_id: UUID) -> tuple[TextClause, dict]:
+def build_auth_lookup_statement(auth_user_id: UUID) -> Tuple[Any, dict]:
     """
     Construye el statement de auth lookup con parámetros.
     
