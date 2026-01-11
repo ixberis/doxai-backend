@@ -26,7 +26,7 @@ from typing import Optional
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database import get_db
@@ -362,6 +362,7 @@ async def update_user_profile_alias(
     description="Obtiene el balance actual de créditos del usuario"
 )
 async def get_credits_balance(
+    request: Request,
     user=Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
 ):
@@ -369,46 +370,47 @@ async def get_credits_balance(
     Obtiene el balance de créditos del usuario autenticado.
     
     BD 2.0 SSOT: Usa auth_user_id (UUID) para consultar wallets.
-    Timing por fases: auth_context, db_query
+    Timing por fases: auth_context, db_query (with RequestTelemetry).
     
     Errores: Retorna HTTP 500 con error_code estándar (NO oculta errores).
     """
-    start_total = time.perf_counter()
+    from app.shared.observability.request_telemetry import RequestTelemetry
     
-    # Fase 1: Auth Context - extraer user_id (int) y auth_user_id (UUID SSOT)
-    auth_start = time.perf_counter()
-    uid = extract_user_id(user)
-    auth_uid = extract_auth_user_id(user)  # BD 2.0 SSOT
-    auth_ms = (time.perf_counter() - auth_start) * 1000
+    telemetry = RequestTelemetry.create("profile.credits")
+    auth_uid = None  # Initialize for safe access in except block
     
     try:
+        # Fase 1: Auth Context - extraer user_id (int) y auth_user_id (UUID SSOT)
+        with telemetry.measure("auth_ms"):
+            uid = extract_user_id(user)
+            auth_uid = extract_auth_user_id(user)  # BD 2.0 SSOT
+        
         # Fase 2: DB Query (BD 2.0: usa auth_user_id para wallets)
-        db_start = time.perf_counter()
-        balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
-        db_ms = (time.perf_counter() - db_start) * 1000
+        with telemetry.measure("db_ms"):
+            balance = await service.get_credits_balance(user_id=uid, auth_user_id=auth_uid)
         
-        total_ms = (time.perf_counter() - start_total) * 1000
+        # Fase 3: Serialization (minimal for this route)
+        with telemetry.measure("ser_ms"):
+            response = {"credits_balance": balance}
         
-        if db_ms > 500:
-            logger.warning(
-                "query_slow op=get_credits phase=db_query auth_user_id=%s duration_ms=%.2f",
-                str(auth_uid)[:8] + "...", db_ms
-            )
+        # Set flags for observability (no PII)
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}..." if auth_uid else "unknown")
+        telemetry.set_flag("balance", balance)
         
-        logger.info(
-            "query_completed op=get_credits auth_user_id=%s balance=%s auth_ms=%.2f db_ms=%.2f total_ms=%.2f",
-            str(auth_uid)[:8] + "...", balance, auth_ms, db_ms, total_ms
-        )
+        telemetry.finalize(request, status_code=200, result="success")
         
-        return {
-            "credits_balance": balance,
-        }
+        return response
         
+    except HTTPException as e:
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}..." if auth_uid else "unknown")
+        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        raise
     except Exception as e:
-        total_ms = (time.perf_counter() - start_total) * 1000
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}..." if auth_uid else "unknown")
+        telemetry.finalize(request, status_code=500, result="error")
         logger.exception(
-            "query_error op=get_credits auth_user_id=%s duration_ms=%.2f error=%s",
-            str(auth_uid)[:8] + "..." if auth_uid else "unknown", total_ms, str(e)
+            "query_error op=get_credits auth_user_id=%s error=%s",
+            f"{str(auth_uid)[:8]}..." if auth_uid else "unknown", str(e)
         )
         # NO ocultar errores - devolver 500 con código de error estándar
         raise HTTPException(
