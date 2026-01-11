@@ -29,7 +29,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.database import get_db
+from app.shared.database import get_db, get_db_timed
 from app.shared.utils.http_exceptions import (
     NotFoundException,
     BadRequestException,
@@ -87,8 +87,33 @@ def get_profile_service(
     db: AsyncSession = Depends(get_db),
 ) -> ProfileService:
     """
-    Dependency provider para ProfileService.
+    Dependency provider para ProfileService (rutas legacy).
     Inyecta db, password_hasher y session_manager correctamente.
+    
+    Timing: records dep_factory.profile_service_ms
+    """
+    from app.shared.observability.dep_timing import record_dep_timing
+    
+    start = time.perf_counter()
+    svc = ProfileService(
+        db=db,
+        password_hasher=_password_hasher,
+        session_manager=_session_manager,
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    record_dep_timing(request, "dep_factory.profile_service_ms", elapsed_ms)
+    return svc
+
+
+def get_profile_service_timed(
+    request: Request,
+    db: AsyncSession = Depends(get_db_timed),
+) -> ProfileService:
+    """
+    Dependency provider para ProfileService con get_db_timed.
+    
+    Rutas críticas (credits, subscription) usan esta versión para
+    obtener instrumentación granular de DB (pool checkout, configure).
     
     Timing: records dep_factory.profile_service_ms
     """
@@ -375,7 +400,7 @@ async def update_user_profile_alias(
 async def get_credits_balance(
     request: Request,
     ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
-    service: ProfileService = Depends(get_profile_service),
+    service: ProfileService = Depends(get_profile_service_timed),  # DB instrumentation
 ):
     """
     Obtiene el balance de créditos del usuario autenticado.

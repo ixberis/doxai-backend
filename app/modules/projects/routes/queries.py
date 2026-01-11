@@ -26,7 +26,7 @@ from datetime import datetime
 
 # Servicios y esquemas
 from app.modules.projects.services import ProjectsQueryService
-from app.modules.projects.routes.deps import get_projects_query_service
+from app.modules.projects.routes.deps import get_projects_query_service, get_projects_query_service_timed
 from app.modules.projects.schemas import (
     ProjectListResponse,
     ProjectRead,
@@ -266,7 +266,7 @@ async def list_active_projects(
     offset: int = Query(0, ge=0),
     include_total: bool = Query(False),
     ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
-    q: ProjectsQueryService = Depends(get_projects_query_service),
+    q: ProjectsQueryService = Depends(get_projects_query_service_timed),  # DB instrumentation
 ):
     from app.shared.observability.request_telemetry import RequestTelemetry
     

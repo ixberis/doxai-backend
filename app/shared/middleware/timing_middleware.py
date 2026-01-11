@@ -120,6 +120,9 @@ class TimingMiddleware(BaseHTTPMiddleware):
                 auth_timings = auth_timings_raw if isinstance(auth_timings_raw, dict) else {}
                 auth_dep_ms = float(auth_timings.get("auth_dep_total_ms", 0)) if auth_timings else 0
                 
+                # db_dep_total_ms: atributo separado de get_db_timed (NO suma a deps_ms)
+                db_dep_total_ms = _safe_get_float(request.state, "db_dep_total_ms")
+                
                 handler_ms = _safe_get_float(request.state, "route_handler_ms")
                 call_next_minus_handler_ms = max(0, call_next_ms - handler_ms) if handler_ms > 0 else 0
                 
@@ -193,6 +196,8 @@ class TimingMiddleware(BaseHTTPMiddleware):
                     extra_timings += f" db_exec_ms={_format_timing(db_exec_ms)}"
                 if rate_limit_ms > 0:
                     extra_timings += f" rate_limit_total_ms={_format_timing(rate_limit_ms)}"
+                if db_dep_total_ms > 0:
+                    extra_timings += f" db_dep_total_ms={_format_timing(db_dep_total_ms)}"
                 
                 extra_timings += f" mw_pre_call_next_ms={_format_timing(mw_pre_call_next_ms)}"
                 extra_timings += f" call_next_ms={_format_timing(call_next_ms)}"

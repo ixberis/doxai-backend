@@ -35,12 +35,15 @@ DECISIÓN TÉCNICA (Postgres Direct + BD 2.0):
 import os
 import sys
 import ssl
+import time
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, TYPE_CHECKING
 from urllib.parse import quote_plus
 from uuid import uuid4
+
+from starlette.requests import Request as StarletteRequest
 from app.shared.database.base import Base  # reutilizamos la Base única
 
 # truststore puede no estar instalado en todos los entornos
@@ -328,6 +331,57 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
                 pass
 
 
+async def get_db_timed(request: StarletteRequest) -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency para obtener sesión DB con instrumentación granular.
+    
+    Mide un segmento crítico para diagnóstico de latencia:
+    - dep.db_configure_ms: tiempo de _configure_session (acquire + SET SESSION)
+      Este incluye el checkout real del pool porque es el primer IO.
+    
+    NOTA: El checkout del pool ocurre en el primer IO (dentro de _configure_session),
+    no al crear el objeto Session. Por eso solo medimos configure_ms.
+    
+    El total se guarda en request.state.db_dep_total_ms (NO en dep_timings)
+    para evitar doble conteo en TimingMiddleware.deps_ms.
+    
+    Uso:
+        @router.get("/...")
+        async def my_route(
+            request: Request,
+            db: AsyncSession = Depends(get_db_timed),
+        ): ...
+    """
+    from app.shared.observability.dep_timing import record_dep_timing
+    
+    if SessionLocal is None:
+        raise RuntimeError("Database not initialized (SKIP_DB_INIT=1)")
+    
+    session = SessionLocal()
+    async with session:
+        # Fase: Configure session (acquire + SET SESSION statement_timeout)
+        # El checkout real del pool ocurre aquí (primer IO)
+        configure_start = time.perf_counter()
+        await _configure_session(session)
+        configure_ms = (time.perf_counter() - configure_start) * 1000
+        record_dep_timing(request, "dep.db_configure_ms", configure_ms)
+        
+        # Total guardado como atributo separado (NO en dep_timings para evitar doble conteo)
+        # Robustez para mocks: verificar que state existe
+        state = getattr(request, "state", None)
+        if state is not None:
+            state.db_dep_total_ms = configure_ms
+        
+        try:
+            yield session
+        finally:
+            try:
+                if session.in_transaction():
+                    await session.rollback()
+            except Exception:
+                pass
+
+
 @asynccontextmanager
 async def session_scope(configure: bool = True) -> AsyncGenerator[AsyncSession, None]:
     if SessionLocal is None:
@@ -483,6 +537,7 @@ __all__ = [
     "get_async_session",
     "get_async_session_context",
     "get_db",
+    "get_db_timed",
     "session_scope",
     "check_database_health",
     "log_db_identity",
