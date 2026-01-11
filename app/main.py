@@ -323,6 +323,24 @@ app = FastAPI(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# LIVENESS ENDPOINT - Railway healthcheck (MUST be first, before any middleware)
+# ═══════════════════════════════════════════════════════════════════════════════
+from fastapi.responses import PlainTextResponse
+
+
+@app.get("/healthz", include_in_schema=False, response_class=PlainTextResponse)
+async def healthz_liveness():
+    """
+    Pure liveness probe for Railway/Kubernetes.
+    
+    - Always returns 200 OK if the process is alive
+    - NO database, Redis, auth, or any external dependency
+    - Works during cold start
+    - Bypasses all heavy middleware
+    """
+    return PlainTextResponse("ok", status_code=200)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CORS - Configuración robusta para preflight OPTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 def _configure_cors(app_instance: FastAPI) -> dict:

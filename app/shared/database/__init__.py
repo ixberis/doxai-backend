@@ -20,6 +20,8 @@ from .database import (
     check_database_health,
     log_db_identity,
     init_db_diagnostics,
+    DB_SESSION_STATEMENT_TIMEOUT_MS,
+    DB_APPLY_SESSION_TIMEOUT_PER_REQUEST,
 )
 from .base import Base, NAMING_CONVENTION, as_pg_enum
 
@@ -39,6 +41,8 @@ __all__ = [
     "check_database_health",
     "log_db_identity",
     "init_db_diagnostics",
+    "DB_SESSION_STATEMENT_TIMEOUT_MS",
+    "DB_APPLY_SESSION_TIMEOUT_PER_REQUEST",
 ]
 
 # Fin del archivo backend/app/shared/database/__init__.py

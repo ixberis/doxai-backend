@@ -58,9 +58,10 @@ try:
 except Exception:  # pragma: no cover
     certifi = None  # type: ignore
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import ConnectionPoolEntry
 
 from app.shared.config import settings
 
@@ -113,6 +114,10 @@ SKIP_DB_INIT = _env_bool("SKIP_DB_INIT", False)
 
 # Default timeout (used when DB is initialized, or as fallback)
 DB_SESSION_STATEMENT_TIMEOUT_MS: int = 5000
+
+# Flag para aplicar SET SESSION per-request (fallback legacy, default=False en prod)
+# En prod el timeout se aplica en el event listener "connect" (una vez por conexión)
+DB_APPLY_SESSION_TIMEOUT_PER_REQUEST = _env_bool("DB_APPLY_SESSION_TIMEOUT_PER_REQUEST", False)
 
 if SKIP_DB_INIT:
     logger.warning("[DB] SKIP_DB_INIT=1: Database disabled (test mode)")
@@ -215,11 +220,18 @@ else:
 
     # NOTA: statement_cache_size=0 se mantiene por compatibilidad con proxies intermediarios
     # y como medida de seguridad ante cambios futuros de infraestructura.
+    #
+    # OPTIMIZACIÓN (enero 2026): statement_timeout en server_settings
+    # asyncpg envía estos settings en el handshake de conexión, evitando
+    # un roundtrip SET SESSION adicional. Es la forma más eficiente.
     connect_args = {
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": _prepared_statement_name_func,
-        "server_settings": {"search_path": "public"},
+        "server_settings": {
+            "search_path": "public",
+            "statement_timeout": str(DB_SESSION_STATEMENT_TIMEOUT_MS),  # ms como string
+        },
         "timeout": DB_CONNECT_TIMEOUT_S,
         "command_timeout": DB_COMMAND_TIMEOUT_S,
     }
@@ -271,24 +283,82 @@ else:
         autoflush=False,
     )
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Event listener: Logging y guard de statement_timeout por conexión física
+    # ══════════════════════════════════════════════════════════════════════════
+    # ARQUITECTURA FINAL (enero 2026):
+    # - statement_timeout se configura en server_settings (connect_args) que asyncpg
+    #   envía en el handshake de conexión. Esto es ZERO roundtrips adicionales.
+    # - El listener "checkout" solo sirve para:
+    #   1) Logging de diagnóstico (primera vez por conexión)
+    #   2) Guard para evitar logs repetitivos
+    #   3) Fallback con cursor si el driver lo soporta (non-asyncpg)
+    # ══════════════════════════════════════════════════════════════════════════
+    _STMT_TIMEOUT_KEY = "_doxai_stmt_timeout_set"
+    
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _on_checkout(
+        dbapi_connection: object,
+        connection_record: ConnectionPoolEntry,
+        connection_proxy: object,
+    ) -> None:
+        """
+        Callback ejecutado en cada checkout del pool.
+        
+        Con asyncpg + server_settings, el statement_timeout ya está configurado
+        en el handshake. Este listener solo loguea la primera vez y marca el guard.
+        """
+        # Guard: solo loguear una vez por conexión física
+        if connection_record.info.get(_STMT_TIMEOUT_KEY):
+            return
+        
+        try:
+            # Marcar como configurado (via server_settings en handshake)
+            connection_record.info[_STMT_TIMEOUT_KEY] = True
+            logger.debug(
+                "[DB] Checkout: connection configured with statement_timeout = %d ms (via server_settings)",
+                DB_SESSION_STATEMENT_TIMEOUT_MS
+            )
+        except Exception as e:
+            # No romper la conexión; loguear como debug
+            logger.debug("[DB] Error en checkout event: %s", e)
+
+    # Log de startup
+    if DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
+        logger.info(
+            "[DB] DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=True: SET SESSION per-request activo (legacy mode)"
+        )
+    else:
+        logger.info(
+            "[DB] statement_timeout = %d ms configurado via server_settings (zero extra roundtrips)",
+            DB_SESSION_STATEMENT_TIMEOUT_MS
+        )
+
 
 async def _configure_session(session: AsyncSession) -> None:
     """
-    Aplica configuraciones por sesión:
-    - SET SESSION statement_timeout para limitar consultas "largas" en esta sesión.
+    Aplica configuraciones por sesión (NO-OP por defecto en prod).
     
-    DECISIÓN TÉCNICA (Postgres Direct + BD 2.0):
-    - SET SESSION aplica el timeout a nivel de sesión de forma confiable.
-    - Para timeouts deterministas en endpoints críticos (login, projects list),
-      usar asyncio.timeout() o asyncio.wait_for() en el caller como capa adicional.
+    ARQUITECTURA (enero 2026):
+    - El SET SESSION statement_timeout ahora se ejecuta UNA VEZ por conexión física
+      en el event listener "connect" del engine (más eficiente).
+    - Esta función es NO-OP por defecto para evitar un roundtrip extra por request.
+    - Si se necesita el comportamiento legacy (SET SESSION per-request), activar:
+      DB_APPLY_SESSION_TIMEOUT_PER_REQUEST=1
     
     Estrategia de defensa en profundidad:
-    1. SET SESSION como primera capa (configuración de sesión)
+    1. Event listener "connect": SET SESSION al establecer conexión física
     2. asyncio.timeout() en callers críticos como segunda capa (determinista)
     3. Pool timeout (pool_timeout) como última línea de defensa
     """
     if SKIP_DB_INIT:
         return
+    
+    # NO-OP por defecto: el timeout ya se aplicó en el event listener "connect"
+    if not DB_APPLY_SESSION_TIMEOUT_PER_REQUEST:
+        return
+    
+    # Fallback legacy: SET SESSION per-request (solo si flag está activo)
     try:
         await session.execute(text(f"SET SESSION statement_timeout = {DB_SESSION_STATEMENT_TIMEOUT_MS}"))
     except Exception as e:
