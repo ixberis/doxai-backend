@@ -160,9 +160,15 @@ def _safe_log(level: int, msg: str):
 
 def _should_warmup() -> bool:
     """
-    Gate para warmup de recursos legacy (modelos/tesseract/httpx).
+    Gate para warmup de recursos LEGACY (modelos/tesseract/httpx).
     
-    Mantenido por compatibilidad con run_warmup_once().
+    Este gate es INDEPENDIENTE de _should_warmup_startup() (infraestructura).
+    Controla solo run_warmup_once() para recursos de procesamiento.
+    
+    NO logea "omitido" para evitar confusión con startup warmups.
+    
+    Returns:
+        True si el warmup de recursos legacy debe ejecutarse.
     """
     dev_reload = os.getenv("DEV_RELOAD") == "1"
     skip_on_reload = os.getenv("SKIP_WARMUP_ON_RELOAD", "1") == "1"
@@ -172,7 +178,7 @@ def _should_warmup() -> bool:
         logger.info("🔥 FORCE_WARMUP=1 - ejecutando warm-up forzado")
         return True
     if dev_reload and skip_on_reload:
-        logger.debug("⚡ Modo reload detectado - omitiendo warm-up")
+        logger.debug("⚡ Modo reload detectado - omitiendo warm-up de recursos")
         return False
 
     settings = get_settings()
@@ -251,14 +257,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ Error registrando ORM cross-module relationships: {e}")
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # LEGACY RESOURCE WARMUP (modelos/tesseract/httpx)
+    # Gated by _should_warmup() - independiente del warmup de infraestructura
+    # NO logear "omitido" para evitar confusión con startup warmups
+    # ─────────────────────────────────────────────────────────────────────────
     try:
         if _should_warmup():
-            logger.info("🌡️ Ejecutando warm-up de recursos...")
+            logger.info("🌡️ Ejecutando warm-up de recursos legacy...")
             await run_warmup_once()
-        else:
-            logger.info("⚡ Warm-up omitido")
+            logger.info("✅ Warm-up de recursos legacy completado")
+        # else: silencio - no es relevante si los recursos legacy no se calientan
     except Exception as e:
-        logger.error(f"❌ Error en warm-up: {e}")
+        logger.warning(f"⚠️ Error en warm-up de recursos legacy: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STARTUP WARMUPS (DB, Redis, Login Cache)
