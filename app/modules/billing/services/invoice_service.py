@@ -14,6 +14,7 @@ Genera snapshots de recibos estilo OpenAI con:
 
 Autor: DoxAI
 Fecha: 2025-12-31
+Updated: 2026-01-12 - SSOT: auth_user_id UUID for intent ownership
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
+from uuid import UUID
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,7 +65,7 @@ def _format_price(cents: int, currency: str) -> str:
 
 
 def _build_bill_to(
-    user_id: int,
+    auth_user_id: UUID,
     user_email: Optional[str] = None,
     user_name: Optional[str] = None,
     tax_profile: Optional[UserTaxProfile] = None,
@@ -76,8 +78,12 @@ def _build_bill_to(
       - Si use_razon_social=True → usar razon_social
       - Si use_razon_social=False → usar user_name
     - Si no hay perfil → user_name o email del usuario
-    - Edge case (sin datos) → "Usuario #{id}"
+    - Edge case (sin datos) → "Usuario #{uuid_prefix}"
+    
+    SSOT: Uses auth_user_id (UUID) as primary identifier.
     """
+    uuid_prefix = str(auth_user_id)[:8]
+    
     # Caso A: Tax profile activo/verificado
     if tax_profile and tax_profile.status in ("active", "verified"):
         # Determinar nombre según use_razon_social
@@ -85,10 +91,10 @@ def _build_bill_to(
             recipient_name = tax_profile.razon_social
         else:
             # use_razon_social=False → usar nombre del usuario
-            recipient_name = user_name or f"Usuario #{user_id}"
+            recipient_name = user_name or f"Usuario #{uuid_prefix}"
         
         return {
-            "user_id": user_id,
+            "auth_user_id": str(auth_user_id),
             "name": recipient_name,
             "rfc": tax_profile.rfc,
             "tax_regime": tax_profile.regimen_fiscal_clave,
@@ -99,15 +105,15 @@ def _build_bill_to(
     # Caso B: Sin tax profile pero con datos de usuario
     if user_name or user_email:
         return {
-            "user_id": user_id,
-            "name": user_name or f"Usuario #{user_id}",
+            "auth_user_id": str(auth_user_id),
+            "name": user_name or f"Usuario #{uuid_prefix}",
             "email": user_email,
         }
     
-    # Caso C: Edge case - solo user_id
+    # Caso C: Edge case - solo auth_user_id
     return {
-        "user_id": user_id,
-        "name": f"Usuario #{user_id}",
+        "auth_user_id": str(auth_user_id),
+        "name": f"Usuario #{uuid_prefix}",
     }
 
 
@@ -177,17 +183,21 @@ def _resolve_paid_at(intent: CheckoutIntent) -> Optional[datetime]:
     Resuelve la fecha de pago estable para un intent completado.
     
     Orden de preferencia:
-    1. intent.paid_at (si existe el campo)
-    2. intent.created_at (fallback - momento de creación)
+    1. intent.completed_at (campo canónico de BD 2.0)
+    2. intent.paid_at (si existe el campo legacy)
+    3. intent.created_at (fallback - momento de creación)
     
     NO usar updated_at porque cambia con cualquier modificación.
     """
-    # Si el modelo tiene paid_at explícito, usarlo
+    # Usar completed_at (campo canónico)
+    if hasattr(intent, 'completed_at') and intent.completed_at:
+        return intent.completed_at
+    
+    # Legacy: paid_at
     if hasattr(intent, 'paid_at') and intent.paid_at:
         return intent.paid_at
     
     # Fallback: usar created_at (asume que el pago ocurrió cerca de la creación)
-    # Esto es menos preciso pero estable
     return intent.created_at
 
 
@@ -209,6 +219,8 @@ async def get_or_create_invoice(
     3. Generar invoice_number = DOX-YYYY-{id:06d}
     4. Actualizar y commit
     
+    SSOT: Uses intent.auth_user_id (UUID) for all operations.
+    
     Args:
         session: Sesión de base de datos
         intent: CheckoutIntent completado
@@ -219,6 +231,9 @@ async def get_or_create_invoice(
         BillingInvoice existente o recién creado
     """
     from sqlalchemy.exc import IntegrityError
+    
+    # SSOT: Use auth_user_id from intent
+    auth_user_id = intent.auth_user_id
     
     # Verificar si ya existe invoice
     result = await session.execute(
@@ -241,17 +256,17 @@ async def get_or_create_invoice(
         )
         
         if needs_backfill and (user_name or user_email):
-            # Obtener tax profile para el backfill
+            # Obtener tax profile para el backfill using auth_user_id
             tax_result = await session.execute(
                 select(UserTaxProfile).where(
-                    UserTaxProfile.user_id == intent.user_id,
+                    UserTaxProfile.auth_user_id == auth_user_id,
                     UserTaxProfile.status.in_(["active", "verified"]),
                 )
             )
             tax_profile = tax_result.scalar_one_or_none()
             
             bill_to_new = _build_bill_to(
-                user_id=intent.user_id,
+                auth_user_id=auth_user_id,
                 user_email=user_email,
                 user_name=user_name,
                 tax_profile=tax_profile,
@@ -274,10 +289,10 @@ async def get_or_create_invoice(
         
         return existing
     
-    # Obtener perfil fiscal del usuario (si existe)
+    # Obtener perfil fiscal del usuario (si existe) using auth_user_id
     tax_result = await session.execute(
         select(UserTaxProfile).where(
-            UserTaxProfile.user_id == intent.user_id,
+            UserTaxProfile.auth_user_id == auth_user_id,
             UserTaxProfile.status.in_(["active", "verified"]),
         )
     )
@@ -295,15 +310,15 @@ async def get_or_create_invoice(
     year = now.year
     
     bill_to = _build_bill_to(
-        user_id=intent.user_id,
+        auth_user_id=auth_user_id,
         user_email=user_email,
         user_name=user_name,
         tax_profile=tax_profile,
     )
     
     logger.debug(
-        "Building invoice snapshot: user_id=%s bill_to_name=%s bill_to_email=%s tax_profile=%s",
-        intent.user_id,
+        "Building invoice snapshot: auth_user_id=%s bill_to_name=%s bill_to_email=%s tax_profile=%s",
+        str(auth_user_id)[:8] + "...",
         bill_to.get("name"),
         bill_to.get("billing_email") or bill_to.get("email"),
         tax_profile.status if tax_profile else None,
@@ -339,7 +354,7 @@ async def get_or_create_invoice(
         
         invoice = BillingInvoice(
             checkout_intent_id=intent.id,
-            user_id=intent.user_id,
+            auth_user_id=auth_user_id,  # SSOT: UUID
             invoice_number=placeholder_number,
             snapshot_json=snapshot,
             issued_at=now,
@@ -361,8 +376,8 @@ async def get_or_create_invoice(
         await session.refresh(invoice)
         
         logger.info(
-            "Created invoice: number=%s intent=%s user=%s",
-            invoice_number, intent.id, intent.user_id,
+            "Created invoice: number=%s intent=%s auth_user_id=%s",
+            invoice_number, intent.id, str(auth_user_id)[:8] + "...",
         )
         
         return invoice

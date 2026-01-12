@@ -39,8 +39,25 @@ from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 from app.shared.database.database import get_async_session
 from app.shared.utils.security import verify_token_type
 
-_bearer = HTTPBearer(auto_error=True)
+# HTTPBearer with auto_error=False to return 401 (not 403) when credentials missing
+_bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+
+
+def _require_credentials(creds: HTTPAuthorizationCredentials | None) -> HTTPAuthorizationCredentials:
+    """
+    Enforce credentials are present - raises 401 if missing.
+    
+    FastAPI's HTTPBearer with auto_error=True returns 403 on missing credentials,
+    which violates RFC 7235. This helper returns 401 Unauthorized instead.
+    """
+    if creds is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return creds
 
 # Umbral para log INFO en auth dependency (default 500ms)
 SLOW_AUTH_DEP_THRESHOLD_MS = float(os.getenv("SLOW_AUTH_DEP_THRESHOLD_MS", "500"))
@@ -210,7 +227,7 @@ async def _validate_and_get_user_ctx(
 
 async def get_current_user_ctx(
     request: Request,
-    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: AsyncSession = Depends(get_async_session),
 ) -> AuthContextDTO:
     """
@@ -221,9 +238,10 @@ async def get_current_user_ctx(
     
     Instrumentación: guarda timings en request.state.auth_timings.
     """
+    validated_creds = _require_credentials(creds)
     expected_type = TokenType.access.value if hasattr(TokenType, "access") else "access"
     return await _validate_and_get_user_ctx(
-        creds.credentials,
+        validated_creds.credentials,
         db,
         request=request,
         expected_type=expected_type,
@@ -340,7 +358,7 @@ async def _validate_and_get_user(
 
 async def get_current_user_id(
     request: Request,
-    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: AsyncSession = Depends(get_async_session),
 ) -> str:
     """
@@ -349,7 +367,8 @@ async def get_current_user_id(
     
     Usa Core mode para optimización (via get_current_user_ctx).
     """
-    ctx = await get_current_user_ctx(request, creds, db)
+    validated_creds = _require_credentials(creds)
+    ctx = await get_current_user_ctx(request, validated_creds, db)
     return str(ctx.auth_user_id)
 
 
@@ -373,7 +392,7 @@ async def get_optional_user_id(
 
 async def get_current_user(
     request: Request,
-    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -384,9 +403,10 @@ async def get_current_user(
     
     Instrumentación: guarda timings en request.state.auth_timings.
     """
+    validated_creds = _require_credentials(creds)
     expected_type = TokenType.access.value if hasattr(TokenType, "access") else "access"
     return await _validate_and_get_user(
-        creds.credentials,
+        validated_creds.credentials,
         db,
         request=request,
         expected_type=expected_type,

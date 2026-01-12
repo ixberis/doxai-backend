@@ -329,6 +329,18 @@ try:
 except Exception as e:
     logger.debug("Endpoint interno de DB wallet-model no montado: %s", e)
 
+try:
+    from app.routes.internal_db_checkout_intent_routes import router as internal_db_checkout_intent_router
+
+    # Montar en AMBAS capas:
+    # - /api/_internal/db/checkout-intent-model
+    # - /_internal/db/checkout-intent-model
+    _include_once(api, internal_db_checkout_intent_router, "internal-db-checkout-intent", _mounted_api)
+    _include_once(public, internal_db_checkout_intent_router, "internal-db-checkout-intent", _mounted_public)
+    logger.info("✅ Endpoint interno DB checkout-intent-model montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de DB checkout-intent-model no montado: %s", e)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DEBUG ENDPOINT

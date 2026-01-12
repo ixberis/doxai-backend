@@ -6,12 +6,14 @@ Repositorio para checkout_intents con manejo de idempotencia y concurrencia.
 
 Autor: DoxAI
 Fecha: 2025-12-29
+Updated: 2026-01-12 - SSOT: auth_user_id UUID reemplaza user_id
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Optional, List
+from uuid import UUID
 
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
@@ -26,28 +28,29 @@ class CheckoutIntentRepository:
     """
     Repositorio para operaciones con checkout_intents.
     
+    SSOT: Todos los métodos usan auth_user_id (UUID) para ownership.
     Maneja idempotencia y concurrencia de forma segura.
     """
     
     async def get_by_idempotency_key(
         self,
         session: AsyncSession,
-        user_id: int,
+        auth_user_id: UUID,
         idempotency_key: str,
     ) -> Optional[CheckoutIntent]:
         """
-        Busca un checkout intent por user_id + idempotency_key.
+        Busca un checkout intent por auth_user_id + idempotency_key.
         
         Args:
             session: Sesión de base de datos
-            user_id: ID del usuario
+            auth_user_id: UUID del usuario (SSOT)
             idempotency_key: Clave idempotente
             
         Returns:
             CheckoutIntent si existe, None si no
         """
         stmt = select(CheckoutIntent).where(
-            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.auth_user_id == auth_user_id,
             CheckoutIntent.idempotency_key == idempotency_key,
         )
         result = await session.execute(stmt)
@@ -57,7 +60,7 @@ class CheckoutIntentRepository:
         self,
         session: AsyncSession,
         *,
-        user_id: int,
+        auth_user_id: UUID,
         package_id: str,
         idempotency_key: str,
         credits_amount: int,
@@ -72,7 +75,7 @@ class CheckoutIntentRepository:
         
         Args:
             session: Sesión de base de datos
-            user_id: ID del usuario
+            auth_user_id: UUID del usuario (SSOT)
             package_id: ID del paquete de créditos
             idempotency_key: Clave idempotente
             credits_amount: Créditos del paquete
@@ -86,7 +89,7 @@ class CheckoutIntentRepository:
             CheckoutIntent creado
         """
         intent = CheckoutIntent(
-            user_id=user_id,
+            auth_user_id=auth_user_id,
             package_id=package_id,
             idempotency_key=idempotency_key,
             credits_amount=credits_amount,
@@ -104,7 +107,7 @@ class CheckoutIntentRepository:
         self,
         session: AsyncSession,
         *,
-        user_id: int,
+        auth_user_id: UUID,
         package_id: str,
         idempotency_key: str,
         credits_amount: int,
@@ -121,7 +124,7 @@ class CheckoutIntentRepository:
         
         Args:
             session: Sesión de base de datos
-            user_id: ID del usuario
+            auth_user_id: UUID del usuario (SSOT)
             package_id: ID del paquete
             idempotency_key: Clave idempotente
             credits_amount: Créditos del paquete
@@ -139,7 +142,7 @@ class CheckoutIntentRepository:
         try:
             intent = await self.create(
                 session,
-                user_id=user_id,
+                auth_user_id=auth_user_id,
                 package_id=package_id,
                 idempotency_key=idempotency_key,
                 credits_amount=credits_amount,
@@ -154,15 +157,15 @@ class CheckoutIntentRepository:
         except IntegrityError as e:
             # Conflicto de unique constraint - rollback y re-fetch
             logger.info(
-                "Idempotency conflict for user=%s key=%s, fetching existing",
-                user_id,
+                "Idempotency conflict for auth_user_id=%s key=%s, fetching existing",
+                str(auth_user_id)[:8] + "...",
                 idempotency_key[:8] + "...",
             )
             await session.rollback()
             
             existing = await self.get_by_idempotency_key(
                 session,
-                user_id=user_id,
+                auth_user_id=auth_user_id,
                 idempotency_key=idempotency_key,
             )
             
@@ -221,7 +224,7 @@ class CheckoutIntentRepository:
     async def compute_credits_balance(
         self,
         session: AsyncSession,
-        user_id: int,
+        auth_user_id: UUID,
     ) -> int:
         """
         Calcula el balance de créditos de un usuario.
@@ -231,13 +234,13 @@ class CheckoutIntentRepository:
         
         Args:
             session: Sesión de base de datos
-            user_id: ID del usuario
+            auth_user_id: UUID del usuario (SSOT)
             
         Returns:
             Balance total de créditos (0 si no hay intents)
         """
         stmt = select(func.coalesce(func.sum(CheckoutIntent.credits_amount), 0)).where(
-            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.auth_user_id == auth_user_id,
             CheckoutIntent.status == CheckoutIntentStatus.COMPLETED.value,
         )
         result = await session.execute(stmt)
@@ -246,7 +249,7 @@ class CheckoutIntentRepository:
     async def list_by_user(
         self,
         session: AsyncSession,
-        user_id: int,
+        auth_user_id: UUID,
         limit: int = 50,
         offset: int = 0,
     ) -> List[CheckoutIntent]:
@@ -255,7 +258,7 @@ class CheckoutIntentRepository:
         
         Args:
             session: Sesión de base de datos
-            user_id: ID del usuario
+            auth_user_id: UUID del usuario (SSOT)
             limit: Máximo de resultados
             offset: Offset para paginación
             
@@ -264,7 +267,7 @@ class CheckoutIntentRepository:
         """
         stmt = (
             select(CheckoutIntent)
-            .where(CheckoutIntent.user_id == user_id)
+            .where(CheckoutIntent.auth_user_id == auth_user_id)
             .order_by(CheckoutIntent.created_at.desc())
             .limit(limit)
             .offset(offset)

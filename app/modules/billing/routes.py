@@ -15,6 +15,7 @@ Feature flag PAYMENTS_ENABLED:
 
 Autor: DoxAI
 Fecha: 2025-12-29
+Updated: 2026-01-12 - SSOT: auth_user_id UUID reemplaza ctx.user_id
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from app.shared.config.settings_payments import get_payments_settings
 
 # CANONICAL: Use get_current_user_ctx (Core mode) for auth
 # Returns AuthContextDTO with user_id (int) and auth_user_id (UUID)
-# Avoids int(uuid_string) ValueError that caused 401s
+# SSOT: Use auth_user_id for all checkout_intents operations
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
@@ -163,8 +164,9 @@ async def start_checkout(
     """
     settings = get_payments_settings()
     
-    # CANONICAL: user_id ya es int desde AuthContextDTO (no necesita conversión)
-    user_id = ctx.user_id
+    # SSOT: Use auth_user_id (UUID) for checkout_intents ownership
+    auth_user_id = ctx.auth_user_id
+    user_id = ctx.user_id  # Only for Stripe metadata (legacy)
     
     repo = CheckoutIntentRepository()
     
@@ -186,7 +188,7 @@ async def start_checkout(
     
     intent, created = await repo.create_or_get_existing(
         session,
-        user_id=user_id,
+        auth_user_id=auth_user_id,  # SSOT: UUID
         package_id=payload.package_id,
         idempotency_key=payload.idempotency_key,
         credits_amount=package.credits,
@@ -210,8 +212,8 @@ async def start_checkout(
                 )
         
         logger.info(
-            "Idempotent request resolved: user=%s intent=%s",
-            user_id,
+            "Idempotent request resolved: auth_user_id=%s intent=%s",
+            str(auth_user_id)[:8] + "...",
             intent.id,
         )
         return BillingCheckoutResponse(
@@ -266,7 +268,7 @@ async def start_checkout(
         
         result = await provider.create_checkout_session(
             intent_id=intent.id,
-            user_id=user_id,
+            user_id=user_id,  # For Stripe metadata only
             package_id=package.id,
             package_name=package.name,
             credits_amount=package.credits,
@@ -285,8 +287,8 @@ async def start_checkout(
         await session.commit()
         
         logger.info(
-            "Created Stripe checkout: user=%s intent=%s session=%s",
-            user_id, intent.id, result.session_id,
+            "Created Stripe checkout: auth_user_id=%s intent=%s session=%s",
+            str(auth_user_id)[:8] + "...", intent.id, result.session_id,
         )
         
         return BillingCheckoutResponse(
@@ -354,7 +356,7 @@ async def get_checkout_status(
     Args:
         intent_id: ID del intent a consultar
         session: Sesión de base de datos
-        ctx: AuthContextDTO con user_id (int)
+        ctx: AuthContextDTO con auth_user_id (UUID)
         
     Returns:
         CheckoutStatusResponse con estado actual
@@ -363,15 +365,14 @@ async def get_checkout_status(
         401: No autenticado
         404: Intent no existe o no pertenece al usuario
     """
-    # CANONICAL: user_id ya es int desde AuthContextDTO
-    user_id = ctx.user_id
-    
+    # SSOT: Use auth_user_id (UUID) for ownership check
+    auth_user_id = ctx.auth_user_id
     
     # Buscar intent por ID y verificar ownership
     result = await session.execute(
         select(CheckoutIntent).where(
             CheckoutIntent.id == intent_id,
-            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.auth_user_id == auth_user_id,
         )
     )
     intent = result.scalar_one_or_none()
@@ -390,8 +391,8 @@ async def get_checkout_status(
         intent.status = CheckoutIntentStatus.EXPIRED.value
         await session.commit()
         logger.info(
-            "Marked intent as expired: intent=%s user=%s",
-            intent.id, user_id,
+            "Marked intent as expired: intent=%s auth_user_id=%s",
+            intent.id, str(auth_user_id)[:8] + "...",
         )
     
     return CheckoutStatusResponse(
@@ -434,7 +435,7 @@ async def list_checkouts(
         limit: Límite de resultados (1-100)
         offset: Offset para paginación
         session: Sesión de base de datos
-        ctx: AuthContextDTO con user_id (int)
+        ctx: AuthContextDTO con auth_user_id (UUID)
         
     Returns:
         CheckoutHistoryResponse con items paginados
@@ -442,14 +443,13 @@ async def list_checkouts(
     Raises:
         401: No autenticado
     """
-    # CANONICAL: user_id ya es int desde AuthContextDTO
-    user_id = ctx.user_id
-    
+    # SSOT: Use auth_user_id (UUID) for ownership
+    auth_user_id = ctx.auth_user_id
     
     # Contar total
     count_result = await session.execute(
         select(func.count(CheckoutIntent.id)).where(
-            CheckoutIntent.user_id == user_id
+            CheckoutIntent.auth_user_id == auth_user_id
         )
     )
     total = count_result.scalar() or 0
@@ -457,7 +457,7 @@ async def list_checkouts(
     # Obtener items paginados
     items_result = await session.execute(
         select(CheckoutIntent)
-        .where(CheckoutIntent.user_id == user_id)
+        .where(CheckoutIntent.auth_user_id == auth_user_id)
         .order_by(CheckoutIntent.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -512,7 +512,7 @@ async def get_checkout_receipt(
     Args:
         intent_id: ID del intent a consultar
         session: Sesión de base de datos
-        ctx: AuthContextDTO con user_id (int)
+        ctx: AuthContextDTO con auth_user_id (UUID)
         
     Returns:
         CheckoutReceiptResponse con detalles del pago
@@ -522,15 +522,15 @@ async def get_checkout_receipt(
         404: Intent no existe o no pertenece al usuario
         409: Intent no está completado
     """
-    # CANONICAL: user_id ya es int desde AuthContextDTO
-    user_id = ctx.user_id
-    
+    # SSOT: Use auth_user_id (UUID) for ownership check
+    auth_user_id = ctx.auth_user_id
+    user_id = ctx.user_id  # For legacy ReceiptData
     
     # Buscar intent por ID y verificar ownership
     result = await session.execute(
         select(CheckoutIntent).where(
             CheckoutIntent.id == intent_id,
-            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.auth_user_id == auth_user_id,
         )
     )
     intent = result.scalar_one_or_none()
@@ -603,7 +603,7 @@ async def get_checkout_receipt_pdf(
     Args:
         intent_id: ID del intent a consultar
         session: Sesión de base de datos
-        ctx: AuthContextDTO con user_id (int)
+        ctx: AuthContextDTO con auth_user_id (UUID)
         
     Returns:
         Response con PDF binario
@@ -613,15 +613,15 @@ async def get_checkout_receipt_pdf(
         404: Intent no existe o no pertenece al usuario
         409: Intent no está completado
     """
-    # CANONICAL: user_id ya es int desde AuthContextDTO
-    user_id = ctx.user_id
-    
+    # SSOT: Use auth_user_id (UUID) for ownership check
+    auth_user_id = ctx.auth_user_id
+    user_id = ctx.user_id  # For legacy ReceiptData
     
     # Buscar intent por ID y verificar ownership
     result = await session.execute(
         select(CheckoutIntent).where(
             CheckoutIntent.id == intent_id,
-            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.auth_user_id == auth_user_id,
         )
     )
     intent = result.scalar_one_or_none()
@@ -660,8 +660,8 @@ async def get_checkout_receipt_pdf(
     user_email = user.user_email if user else None
     
     logger.debug(
-        "Generating receipt: user_id=%s user_name=%s user_email=%s",
-        user_id, user_name, user_email,
+        "Generating receipt: auth_user_id=%s user_name=%s user_email=%s",
+        str(auth_user_id)[:8] + "...", user_name, user_email,
     )
     
     # Obtener o crear invoice desde snapshot
@@ -758,7 +758,7 @@ async def list_receipts(
         limit: Límite de resultados (1-100)
         cursor: Cursor opcional para paginación
         session: Sesión de base de datos
-        ctx: AuthContextDTO con user_id (int)
+        ctx: AuthContextDTO con auth_user_id (UUID)
         
     Returns:
         ReceiptListResponse con items y next_cursor
@@ -766,9 +766,8 @@ async def list_receipts(
     Raises:
         401: No autenticado
     """
-    # CANONICAL: user_id ya es int desde AuthContextDTO
-    user_id = ctx.user_id
-    
+    # SSOT: Use auth_user_id (UUID) for ownership
+    auth_user_id = ctx.auth_user_id
     
     # Solo soportamos status=completed para recibos
     if status_filter != "completed":
@@ -792,7 +791,7 @@ async def list_receipts(
     query = (
         select(CheckoutIntent)
         .where(
-            CheckoutIntent.user_id == user_id,
+            CheckoutIntent.auth_user_id == auth_user_id,
             CheckoutIntent.status == CheckoutIntentStatus.COMPLETED.value,
         )
         .order_by(CheckoutIntent.updated_at.desc(), CheckoutIntent.id.desc())

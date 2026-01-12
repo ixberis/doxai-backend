@@ -6,12 +6,14 @@ Modelo ORM para la tabla checkout_intents.
 
 Autor: DoxAI
 Fecha: 2025-12-29
+Updated: 2026-01-12 - SSOT: auth_user_id UUID reemplaza user_id BIGINT
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 from enum import Enum
 
 from sqlalchemy import (
@@ -23,6 +25,7 @@ from sqlalchemy import (
     Index,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.database.base import Base
@@ -44,6 +47,7 @@ class CheckoutIntent(Base):
     Registra cada intento de checkout antes de que el usuario
     complete el pago. Permite idempotencia y tracking.
     
+    SSOT: Ownership via auth_user_id (UUID), NOT user_id (legacy removed).
     Alineado con: database/payments/02_tables/08_checkout_intents.sql
     """
     
@@ -55,12 +59,12 @@ class CheckoutIntent(Base):
         autoincrement=True,
     )
     
-    # FK a app_users.user_id (BIGINT) - sin ForeignKey para evitar dependencia circular
-    user_id: Mapped[int] = mapped_column(
-        BigInteger,
+    # SSOT: auth_user_id UUID es el ownership único
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
         nullable=False,
         index=True,
-        doc="ID del usuario que inicia el checkout.",
+        doc="UUID del usuario (auth_user_id). SSOT de ownership.",
     )
     
     package_id: Mapped[str] = mapped_column(
@@ -144,17 +148,17 @@ class CheckoutIntent(Base):
     )
     
     __table_args__ = (
-        # Un usuario no puede tener dos intents con el mismo idempotency_key
+        # SSOT: unique constraint por auth_user_id + idempotency_key
         UniqueConstraint(
-            "user_id",
+            "auth_user_id",
             "idempotency_key",
             name="uq_checkout_intent_user_idem",
         ),
-        Index("ix_checkout_intents_user_status", "user_id", "status"),
+        Index("ix_checkout_intents_user_status", "auth_user_id", "status"),
     )
     
     def __repr__(self) -> str:
-        return f"<CheckoutIntent id={self.id} user={self.user_id} package={self.package_id} status={self.status}>"
+        return f"<CheckoutIntent id={self.id} auth_user_id={str(self.auth_user_id)[:8]}... package={self.package_id} status={self.status}>"
 
 
 __all__ = [

@@ -258,6 +258,16 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ Error registrando ORM cross-module relationships: {e}")
     
     # ─────────────────────────────────────────────────────────────────────────
+    # CRITICAL: Log CheckoutIntent ORM mapper at startup for SSOT diagnostics
+    # This helps identify if user_id is still present in the deployed code
+    # ─────────────────────────────────────────────────────────────────────────
+    try:
+        from app.routes.internal_db_checkout_intent_routes import log_checkout_intent_mapper_at_startup
+        log_checkout_intent_mapper_at_startup()
+    except Exception as e:
+        logger.warning(f"⚠️ CheckoutIntent mapper logging failed: {e}")
+    
+    # ─────────────────────────────────────────────────────────────────────────
     # LEGACY RESOURCE WARMUP (modelos/tesseract/httpx)
     # Gated by _should_warmup() - independiente del warmup de infraestructura
     # NO logear "omitido" para evitar confusión con startup warmups

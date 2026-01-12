@@ -85,7 +85,15 @@ class WalletService:
         idempotency_key: Optional[str] = None,
         payment_id: Optional[int] = None,
         tx_metadata: Optional[dict] = None,
-    ):
+    ) -> tuple["CreditTransaction", bool]:
+        """
+        Añade créditos al wallet del usuario.
+        
+        Returns:
+            Tuple de (CreditTransaction, created: bool)
+            - created=True: nueva transacción creada
+            - created=False: transacción existente retornada (idempotencia)
+        """
         if credits <= 0:
             raise ValueError("credits must be positive")
 
@@ -96,7 +104,7 @@ class WalletService:
                     "Idempotent add_credits: already exists for auth_user_id=%s key=%s",
                     str(auth_user_id)[:8] + "...", idempotency_key,
                 )
-                return existing
+                return existing, False  # Existing, not created
 
         wallet = await self.get_or_create_wallet(session, auth_user_id)
         await self.wallet_repo.update_balance(session, wallet, delta=credits)
@@ -118,7 +126,7 @@ class WalletService:
             "Credits added: auth_user_id=%s credits=%+d balance=%d op=%s",
             str(auth_user_id)[:8] + "...", credits, wallet.balance, operation_code,
         )
-        return tx
+        return tx, True  # New transaction created
 
     async def deduct_credits(
         self,
@@ -210,8 +218,8 @@ class CreditService:
         idempotency_key = f"welcome_credits:{auth_user_id}"
 
         try:
-            # Delegar idempotencia a add_credits (single check)
-            result = await self.wallet_service.add_credits(
+            # add_credits now returns (tx, created: bool)
+            tx, is_new = await self.wallet_service.add_credits(
                 db,
                 auth_user_id,
                 welcome_credits,
@@ -220,11 +228,6 @@ class CreditService:
                 idempotency_key=idempotency_key,
                 tx_metadata={"type": "welcome_credits"},
             )
-
-            # add_credits retorna la tx existente si ya existía (idempotente)
-            # Detectar si fue nueva comparando si result.credits_delta > 0
-            # y no era existente (el log "Idempotent add_credits" indica duplicado)
-            is_new = hasattr(result, 'credits_delta') and result.credits_delta == welcome_credits
 
             if is_new:
                 logger.info(

@@ -10,12 +10,14 @@ No es un CFDI - solo recibo comercial con datos fiscales opcionales.
 Autor: DoxAI
 Fecha: 2025-12-31
 Actualizado: 2026-01-01 (public_token para enlaces públicos)
+Updated: 2026-01-12 - SSOT: auth_user_id UUID replaces user_id
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import (
     String,
@@ -26,6 +28,7 @@ from sqlalchemy import (
     Index,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.database.base import Base
@@ -37,6 +40,8 @@ class BillingInvoice(Base):
     
     Almacena un snapshot de los datos al momento de la compra
     para reproducibilidad y auditoría.
+    
+    SSOT: Uses auth_user_id (UUID) for ownership.
     """
     
     __tablename__ = "billing_invoices"
@@ -56,12 +61,12 @@ class BillingInvoice(Base):
         doc="ID del checkout_intent asociado (1:1 relación).",
     )
     
-    # FK a app_users.user_id
-    user_id: Mapped[int] = mapped_column(
-        BigInteger,
+    # SSOT: auth_user_id UUID for ownership
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
         nullable=False,
         index=True,
-        doc="ID del usuario dueño del recibo.",
+        doc="UUID del usuario dueño del recibo (auth_user_id SSOT).",
     )
     
     # Invoice number legible (DOX-2025-0001)
@@ -130,11 +135,11 @@ class BillingInvoice(Base):
     )
     
     __table_args__ = (
-        Index("ix_billing_invoices_user_issued", "user_id", "issued_at"),
+        Index("ix_billing_invoices_user_issued", "auth_user_id", "issued_at"),
     )
     
     def __repr__(self) -> str:
-        return f"<BillingInvoice id={self.id} number={self.invoice_number} user={self.user_id}>"
+        return f"<BillingInvoice id={self.id} number={self.invoice_number} auth_user_id={str(self.auth_user_id)[:8]}...>"
     
     def is_public_token_valid(self) -> bool:
         """Verifica si el token público existe y no ha expirado."""
