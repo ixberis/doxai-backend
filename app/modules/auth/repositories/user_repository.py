@@ -411,10 +411,21 @@ class UserRepository:
         Actualiza un usuario existente, confirmando la transacción.
 
         Usa merge() para manejar entidades potencialmente desprendidas.
+        Invalidates auth context cache after save.
         """
         managed = await self._db.merge(user)
         await self._db.commit()
         await self._db.refresh(managed)
+        
+        # Invalidate auth context cache (any user data might have changed)
+        try:
+            from app.shared.security.auth_context_cache import invalidate_auth_context_cache
+            auth_user_id = getattr(managed, "auth_user_id", None)
+            if auth_user_id:
+                await invalidate_auth_context_cache(auth_user_id)
+        except Exception:
+            pass  # Best-effort, silent
+        
         return managed
 
     async def set_status(
@@ -424,11 +435,22 @@ class UserRepository:
     ) -> AppUser:
         """
         Cambia el estatus lógico del usuario y persiste el cambio.
+        Invalidates auth context cache after status change.
         """
         user.user_status = status
         managed = await self._db.merge(user)
         await self._db.commit()
         await self._db.refresh(managed)
+        
+        # Invalidate auth context cache (user_status changed)
+        try:
+            from app.shared.security.auth_context_cache import invalidate_auth_context_cache
+            auth_user_id = getattr(managed, "auth_user_id", None)
+            if auth_user_id:
+                await invalidate_auth_context_cache(auth_user_id)
+        except Exception:
+            pass  # Best-effort, silent
+        
         return managed
 
     async def claim_welcome_email_if_pending(

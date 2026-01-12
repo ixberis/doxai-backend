@@ -207,6 +207,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Error en warm-up: {e}")
 
+    # Redis warmup (rate limiter connection + LUA scripts)
+    try:
+        from app.shared.security.redis_warmup import warmup_redis_async
+        redis_result = await warmup_redis_async()
+        if redis_result.success:
+            logger.info(
+                "🔴 Redis warmup completado: scripts=%d duration_ms=%.2f",
+                redis_result.scripts_loaded,
+                redis_result.duration_ms,
+            )
+        # Don't log warning for expected "not configured" case
+    except Exception as e:
+        logger.warning(f"⚠️ Redis warmup no disponible: {e}")
+
     # HTTP Metrics Store startup
     _http_metrics_store = None
     try:

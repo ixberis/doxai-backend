@@ -31,14 +31,6 @@ logger = logging.getLogger(__name__)
 # Environment flag to enable verbose rate limit debug logs (default: off in production)
 RATE_LIMIT_DEBUG = os.getenv("RATE_LIMIT_DEBUG", "0").lower() in ("1", "true", "yes")
 
-# Try to import redis.asyncio (redis-py >= 4.2.0)
-try:
-    import redis.asyncio as aioredis
-    REDIS_ASYNC_AVAILABLE = True
-except ImportError:
-    aioredis = None
-    REDIS_ASYNC_AVAILABLE = False
-
 
 # LUA script for atomic rate limiting (1 roundtrip)
 # Returns: [current_count, ttl_remaining]
@@ -228,12 +220,13 @@ class RateLimitService:
         self._enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
         self._redis_url = os.getenv("REDIS_URL")
         
-        # Async Redis client (lazy initialized)
+        # Async Redis client (from canonical module, lazy initialized)
         self._async_client: Optional[Any] = None
         self._async_connected: Optional[bool] = None  # None = not tried, True/False = result
         self._lua_script_sha: Optional[str] = None
         self._lua_combined_sha: Optional[str] = None  # Combined email+IP check
         self._lua_reset_sha: Optional[str] = None      # Reset keys
+        self._scripts_loaded: bool = False             # Flag to track if scripts are loaded
         # Lock created lazily in _ensure_async_connection to avoid loop issues
         self._connect_lock: Optional[asyncio.Lock] = None
         
@@ -255,12 +248,10 @@ class RateLimitService:
         
         # Log initialization once per process with PID
         pid = os.getpid()
-        if self._redis_url and REDIS_ASYNC_AVAILABLE:
+        if self._redis_url:
             logger.info("RateLimitService: async Redis configured (lazy connect) pid=%d", pid)
-        elif not self._redis_url:
+        else:
             logger.info("RateLimitService: REDIS_URL not configured, using in-memory storage pid=%d", pid)
-        elif not REDIS_ASYNC_AVAILABLE:
-            logger.warning("RateLimitService: redis.asyncio not available, using in-memory storage pid=%d", pid)
     
     @property
     def is_enabled(self) -> bool:
@@ -270,13 +261,80 @@ class RateLimitService:
     def is_redis_connected(self) -> bool:
         return self._async_connected is True
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # PUBLIC: Warmup method for startup
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    async def warmup(self) -> "RedisWarmupResult":
+        """
+        Public warmup method for startup.
+        
+        Performs:
+        1. Connect to Redis (if not already connected)
+        2. Execute PING
+        3. Load LUA scripts
+        
+        Returns:
+            RedisWarmupResult with ping_ok, scripts_loaded, duration_ms
+            
+        Note:
+            Best-effort: NEVER raises exceptions.
+        """
+        from app.shared.security.redis_warmup import RedisWarmupResult
+        
+        start = time.perf_counter()
+        result = RedisWarmupResult(success=False, duration_ms=0)
+        
+        if not self._redis_url:
+            result.duration_ms = (time.perf_counter() - start) * 1000
+            result.error = "REDIS_URL not configured"
+            return result
+        
+        try:
+            # Ensure connection (will also load scripts)
+            connected = await self._ensure_async_connection()
+            
+            if not connected:
+                result.duration_ms = (time.perf_counter() - start) * 1000
+                result.error = "Connection failed"
+                return result
+            
+            # Verify ping works
+            try:
+                await self._async_client.ping()
+                result.ping_ok = True
+            except Exception as e:
+                result.duration_ms = (time.perf_counter() - start) * 1000
+                result.error = f"PING failed: {str(e)}"
+                return result
+            
+            # Count loaded scripts
+            scripts_loaded = 0
+            if self._lua_script_sha:
+                scripts_loaded += 1
+            if self._lua_combined_sha:
+                scripts_loaded += 1
+            if self._lua_reset_sha:
+                scripts_loaded += 1
+            
+            result.scripts_loaded = scripts_loaded
+            result.success = True
+            result.duration_ms = (time.perf_counter() - start) * 1000
+            
+            return result
+            
+        except Exception as e:
+            result.duration_ms = (time.perf_counter() - start) * 1000
+            result.error = str(e)
+            return result
+    
     async def _ensure_async_connection(self) -> bool:
         """
-        Lazy-connect to Redis async. Thread-safe via asyncio.Lock.
+        Lazy-connect to Redis async using canonical client.
         Returns True if connected, False otherwise.
         
         FAIL-SAFE: This method NEVER raises exceptions.
-        If no running loop or any error occurs, returns False (fallback to in-memory).
+        Uses the canonical Redis client from app.shared.redis.
         
         Note: Lock is created lazily here (not in __init__) to avoid
         issues when singleton is created outside of an event loop.
@@ -284,12 +342,11 @@ class RateLimitService:
         if self._async_connected is not None:
             return self._async_connected
         
-        if not self._redis_url or not REDIS_ASYNC_AVAILABLE:
+        if not self._redis_url:
             self._async_connected = False
             return False
         
         # Guardrail: verify we have a running loop before creating lock
-        # FAIL-SAFE: if no loop, return False instead of raising
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -307,29 +364,24 @@ class RateLimitService:
                 return self._async_connected
             
             try:
-                self._async_client = aioredis.from_url(
-                    self._redis_url,
-                    decode_responses=True,
-                    socket_connect_timeout=2,
-                    socket_timeout=2,
-                )
-                # Test connection
-                await self._async_client.ping()
+                # Use canonical Redis client
+                from app.shared.redis import get_async_redis_client
                 
-                # Register LUA scripts
-                self._lua_script_sha = await self._async_client.script_load(
-                    RATE_LIMIT_LUA_SCRIPT
-                )
-                self._lua_combined_sha = await self._async_client.script_load(
-                    RATE_LIMIT_COMBINED_LUA_SCRIPT
-                )
-                self._lua_reset_sha = await self._async_client.script_load(
-                    RATE_LIMIT_RESET_LUA_SCRIPT
-                )
+                self._async_client = await get_async_redis_client()
+                
+                if self._async_client is None:
+                    logger.warning(
+                        "RateLimitService: canonical Redis client unavailable, using in-memory fallback"
+                    )
+                    self._async_connected = False
+                    return False
+                
+                # Load LUA scripts
+                await self._ensure_scripts_loaded()
                 
                 self._async_connected = True
                 logger.info(
-                    "RateLimitService: async Redis connected, LUA scripts loaded pid=%d",
+                    "RateLimitService: using canonical Redis client, LUA scripts loaded pid=%d",
                     os.getpid()
                 )
                 return True
@@ -342,6 +394,35 @@ class RateLimitService:
                 self._async_connected = False
                 self._async_client = None
                 return False
+    
+    async def _ensure_scripts_loaded(self) -> bool:
+        """
+        Load LUA scripts if not already loaded.
+        
+        Returns:
+            True if all scripts are loaded, False otherwise.
+        """
+        if self._scripts_loaded:
+            return True
+        
+        if self._async_client is None:
+            return False
+        
+        try:
+            self._lua_script_sha = await self._async_client.script_load(
+                RATE_LIMIT_LUA_SCRIPT
+            )
+            self._lua_combined_sha = await self._async_client.script_load(
+                RATE_LIMIT_COMBINED_LUA_SCRIPT
+            )
+            self._lua_reset_sha = await self._async_client.script_load(
+                RATE_LIMIT_RESET_LUA_SCRIPT
+            )
+            self._scripts_loaded = True
+            return True
+        except Exception as e:
+            logger.warning("RateLimitService: failed to load LUA scripts: %s", str(e))
+            return False
     
     def _mask_key_for_log(self, key: str) -> str:
         """

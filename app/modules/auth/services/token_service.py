@@ -106,6 +106,8 @@ async def _validate_and_get_user_ctx(
     Optimizado para rutas que solo necesitan contexto auth (no AppUser completo).
     NO soporta legacy INT sub - solo UUID.
     
+    NEW: Uses Redis cache for auth context (read-through with TTL).
+    
     Guarda timings en request.state.auth_timings.
     """
     t_start = time.perf_counter()
@@ -115,6 +117,8 @@ async def _validate_and_get_user_ctx(
         "auth_dep_total_ms": 0.0,
         "auth_db_ms": 0.0,
         "auth_mode": "core",
+        "auth_ctx_cache_hit": False,
+        "auth_ctx_cache_ms": 0.0,
     }
     auth_user_id_masked = "unknown"
     
@@ -150,14 +154,47 @@ async def _validate_and_get_user_ctx(
             detail="Token con sub inválido (se requiere UUID)",
         )
     
-    # ─── Fase: Core DB Lookup ───
-    t_lookup_start = time.perf_counter()
+    # ─── Fase: Try Redis Cache First ───
+    auth_context: Optional[AuthContextDTO] = None
     
-    user_service = UserService.with_session(db)
-    auth_context, db_timings = await user_service.get_by_auth_user_id_core_ctx(auth_user_id)
+    try:
+        from app.shared.security.auth_context_cache import get_auth_context_cache
+        
+        cache = get_auth_context_cache()
+        cached_mapping, cache_result = await cache.get_cached(auth_user_id)
+        timings["auth_ctx_cache_ms"] = cache_result.duration_ms
+        
+        if cached_mapping:
+            # Cache hit - construct DTO from cached data
+            auth_context = AuthContextDTO.from_mapping(cached_mapping)
+            timings["auth_ctx_cache_hit"] = True
+            # user_lookup_ms stays 0 on cache hit (no DB lookup)
+            timings["user_lookup_ms"] = 0.0
+            timings["auth_db_ms"] = 0.0
+            timings["auth_mode"] = "core_cached"
+            
+    except Exception as e:
+        # Cache error - continue to DB lookup
+        logger.debug("auth_ctx_cache_error: %s - falling back to DB", str(e))
     
-    timings["user_lookup_ms"] = (time.perf_counter() - t_lookup_start) * 1000
-    timings["auth_db_ms"] = db_timings.get("execute_ms", 0)
+    # ─── Fase: Core DB Lookup (if cache miss) ───
+    if auth_context is None:
+        t_lookup_start = time.perf_counter()
+        
+        user_service = UserService.with_session(db)
+        auth_context, db_timings = await user_service.get_by_auth_user_id_core_ctx(auth_user_id)
+        
+        timings["user_lookup_ms"] = (time.perf_counter() - t_lookup_start) * 1000
+        timings["auth_db_ms"] = db_timings.get("execute_ms", 0)
+        
+        if auth_context:
+            # Cache the result for future requests (best-effort, silent)
+            try:
+                from app.shared.security.auth_context_cache import get_auth_context_cache
+                cache = get_auth_context_cache()
+                await cache.set_cached(auth_user_id, auth_context)
+            except Exception:
+                pass  # Ignore cache set errors - silent
     
     if not auth_context:
         _finalize("user_not_found")
@@ -167,7 +204,7 @@ async def _validate_and_get_user_ctx(
         _finalize("inactive_user")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo o bloqueado")
     
-    _finalize("uuid_core")
+    _finalize("uuid_core" if not timings["auth_ctx_cache_hit"] else "uuid_cached")
     return auth_context
 
 

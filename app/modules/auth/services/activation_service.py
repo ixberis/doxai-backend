@@ -192,6 +192,14 @@ class ActivationService:
         user.user_status = UserStatus.active
         await self.user_repo.save(user)
         await self.activation_repo.mark_as_used(activation)
+        
+        # Invalidate auth context cache (user_status/is_activated changed)
+        try:
+            from app.shared.security.auth_context_cache import invalidate_auth_context_cache
+            if user.auth_user_id:
+                await invalidate_auth_context_cache(user.auth_user_id)
+        except Exception:
+            pass  # Best-effort, silent
 
         # ---------------------------------------------------------
         # 2) Asignar créditos de bienvenida (idempotente, SSOT)
