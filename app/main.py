@@ -159,6 +159,11 @@ def _safe_log(level: int, msg: str):
 
 
 def _should_warmup() -> bool:
+    """
+    Gate para warmup de recursos legacy (modelos/tesseract/httpx).
+    
+    Mantenido por compatibilidad con run_warmup_once().
+    """
     dev_reload = os.getenv("DEV_RELOAD") == "1"
     skip_on_reload = os.getenv("SKIP_WARMUP_ON_RELOAD", "1") == "1"
     force_warmup = os.getenv("FORCE_WARMUP") == "1"
@@ -172,6 +177,54 @@ def _should_warmup() -> bool:
 
     settings = get_settings()
     return bool(getattr(settings, "WARMUP_ENABLE", False))
+
+
+def _should_warmup_startup() -> bool:
+    """
+    Gate UNIFICADO para warmups de startup (DB, Redis, Login Cache).
+    
+    Este gate controla TODOS los warmups de infraestructura que hacen network I/O.
+    
+    Rules (en orden de prioridad):
+    1. STARTUP_WARMUP_DISABLED=1 → NO warmup (máxima prioridad)
+    2. PYTEST_CURRENT_TEST presente → NO warmup (tests NUNCA hacen I/O)
+    3. SKIP_DB_INIT=1 → NO warmup (indica entorno de test explícito)
+    4. STARTUP_WARMUP_ENABLED=1 → SÍ warmup (override explícito)
+    5. ENVIRONMENT=production → SÍ warmup (default en prod)
+    6. Cualquier otro caso → NO warmup (default seguro)
+    
+    Returns:
+        True si los warmups de startup deben ejecutarse.
+    """
+    # 1. Disable explícito (máxima prioridad)
+    if os.getenv("STARTUP_WARMUP_DISABLED", "0").lower() in ("1", "true", "yes"):
+        logger.debug("startup_warmup_gate: disabled via STARTUP_WARMUP_DISABLED=1")
+        return False
+    
+    # 2. Tests NUNCA hacen warmup (pytest inyecta esta variable)
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        logger.debug("startup_warmup_gate: disabled via PYTEST_CURRENT_TEST")
+        return False
+    
+    # 3. SKIP_DB_INIT indica entorno de test/CI
+    if os.getenv("SKIP_DB_INIT", "0").lower() in ("1", "true", "yes"):
+        logger.debug("startup_warmup_gate: disabled via SKIP_DB_INIT=1")
+        return False
+    
+    # 4. Enable explícito (para forzar warmup fuera de prod)
+    if os.getenv("STARTUP_WARMUP_ENABLED", "0").lower() in ("1", "true", "yes"):
+        logger.debug("startup_warmup_gate: enabled via STARTUP_WARMUP_ENABLED=1")
+        return True
+    
+    # 5. Producción hace warmup por defecto
+    env = os.getenv("ENVIRONMENT", "development").lower().strip()
+    if env == "production":
+        logger.debug("startup_warmup_gate: enabled via ENVIRONMENT=production")
+        return True
+    
+    # 6. Default: NO warmup (seguro para dev/staging/test)
+    logger.debug("startup_warmup_gate: disabled by default (ENVIRONMENT=%s)", env)
+    return False
 
 
 def atexit_cleanup():
@@ -207,40 +260,70 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Error en warm-up: {e}")
 
-    # DB warmup (pool/TLS/primera query) - ANTES de Redis para calentar Postgres
-    try:
-        from app.shared.database.db_warmup import warmup_db_async
-        db_result = await warmup_db_async()
-        if db_result.success:
-            if db_result.skipped:
-                logger.info("🗄️ DB warmup omitido (SKIP_DB_INIT)")
+    # ─────────────────────────────────────────────────────────────────────────
+    # STARTUP WARMUPS (DB, Redis, Login Cache)
+    # All gated by _should_warmup_startup() to prevent I/O during tests
+    # ─────────────────────────────────────────────────────────────────────────
+    if _should_warmup_startup():
+        logger.info("🌡️ Startup warmups iniciando...")
+        
+        # DB warmup (pool/TLS/primera query)
+        try:
+            from app.shared.database.db_warmup import warmup_db_async
+            db_result = await warmup_db_async()
+            if db_result.success:
+                if db_result.skipped:
+                    logger.info("🗄️ DB warmup omitido (SKIP_DB_INIT)")
+                else:
+                    logger.info(
+                        "🗄️ DB warmup completado: duration_ms=%.2f",
+                        db_result.duration_ms,
+                    )
             else:
-                logger.info(
-                    "🗄️ DB warmup completado: duration_ms=%.2f",
+                logger.warning(
+                    "⚠️ DB warmup falló: error=%s duration_ms=%.2f",
+                    db_result.error,
                     db_result.duration_ms,
                 )
-        else:
-            logger.warning(
-                "⚠️ DB warmup falló: error=%s duration_ms=%.2f",
-                db_result.error,
-                db_result.duration_ms,
-            )
-    except Exception as e:
-        logger.warning(f"⚠️ DB warmup no disponible: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ DB warmup no disponible: {e}")
 
-    # Redis warmup (rate limiter connection + LUA scripts)
-    try:
-        from app.shared.security.redis_warmup import warmup_redis_async
-        redis_result = await warmup_redis_async()
-        if redis_result.success:
-            logger.info(
-                "🔴 Redis warmup completado: scripts=%d duration_ms=%.2f",
-                redis_result.scripts_loaded,
-                redis_result.duration_ms,
-            )
-        # Don't log warning for expected "not configured" case
-    except Exception as e:
-        logger.warning(f"⚠️ Redis warmup no disponible: {e}")
+        # Redis warmup (rate limiter connection + LUA scripts)
+        try:
+            from app.shared.security.redis_warmup import warmup_redis_async
+            redis_result = await warmup_redis_async()
+            if redis_result.success:
+                logger.info(
+                    "🔴 Redis warmup completado: scripts=%d duration_ms=%.2f",
+                    redis_result.scripts_loaded,
+                    redis_result.duration_ms,
+                )
+            # Don't log warning for expected "not configured" case
+        except Exception as e:
+            logger.warning(f"⚠️ Redis warmup no disponible: {e}")
+
+        # Login cache warmup (best-effort, no real data)
+        try:
+            from app.shared.security.login_cache_warmup import warmup_login_cache_async
+            login_cache_result = await warmup_login_cache_async()
+            if login_cache_result.success:
+                logger.info(
+                    "🔑 Login cache warmup completado: redis=%s pipeline=%s duration_ms=%.2f",
+                    login_cache_result.redis_connected,
+                    login_cache_result.pipeline_tested,
+                    login_cache_result.duration_ms,
+                )
+            elif login_cache_result.error:
+                logger.debug(
+                    "🔑 Login cache warmup skipped: %s",
+                    login_cache_result.error,
+                )
+        except Exception as e:
+            logger.debug(f"🔑 Login cache warmup no disponible: {e}")
+        
+        logger.info("🌡️ Startup warmups completados")
+    else:
+        logger.debug("⚡ Startup warmups omitidos (gate returned False)")
 
     # HTTP Metrics Store startup
     _http_metrics_store = None
@@ -265,30 +348,34 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ DB diagnostics no disponible: {e}")
 
-    # Iniciar scheduler y registrar jobs
-    try:
-        from app.shared.scheduler import get_scheduler
-
-        scheduler = get_scheduler()
-
-        # Job 1: limpieza de caché (si existe)
+    # Iniciar scheduler y registrar jobs (skip if SKIP_DB_INIT for tests)
+    _skip_scheduler = os.getenv("SKIP_DB_INIT", "0").lower() in ("1", "true", "yes")
+    if not _skip_scheduler:
         try:
-            from app.shared.scheduler.jobs import register_cache_cleanup_job
-            register_cache_cleanup_job(scheduler)
-        except Exception as e:
-            logger.debug(f"Cache cleanup job no disponible: {e}")
+            from app.shared.scheduler import get_scheduler
 
-        # Job 2: expiración de checkout intents
-        try:
-            from app.modules.billing.jobs import register_expire_intents_job
-            register_expire_intents_job()
-        except Exception as e:
-            logger.debug(f"Expire intents job no disponible: {e}")
+            scheduler = get_scheduler()
 
-        scheduler.start()
-        logger.info("⏰ Scheduler iniciado con jobs programados")
-    except Exception as e:
-        logger.warning(f"⚠️ No se pudo iniciar scheduler: {e}")
+            # Job 1: limpieza de caché (si existe)
+            try:
+                from app.shared.scheduler.jobs import register_cache_cleanup_job
+                register_cache_cleanup_job(scheduler)
+            except Exception as e:
+                logger.debug(f"Cache cleanup job no disponible: {e}")
+
+            # Job 2: expiración de checkout intents
+            try:
+                from app.modules.billing.jobs import register_expire_intents_job
+                register_expire_intents_job()
+            except Exception as e:
+                logger.debug(f"Expire intents job no disponible: {e}")
+
+            scheduler.start()
+            logger.info("⏰ Scheduler iniciado con jobs programados")
+        except Exception as e:
+            logger.warning(f"⚠️ No se pudo iniciar scheduler: {e}")
+    else:
+        logger.debug("⏰ Scheduler omitido (SKIP_DB_INIT)")
 
     logger.info("🟢 Backend de DoxAI iniciado.")
     try:
@@ -298,15 +385,16 @@ async def lifespan(app: FastAPI):
         logger.info("🔴 Iniciando shutdown ordenado...")
         with anyio.CancelScope(shield=True):
             try:
-                # Detener scheduler primero
-                try:
-                    from app.shared.scheduler import get_scheduler
+                # Detener scheduler primero (only if it was started)
+                if not _skip_scheduler:
+                    try:
+                        from app.shared.scheduler import get_scheduler
 
-                    scheduler = get_scheduler()
-                    scheduler.shutdown(wait=True)
-                    logger.info("⏰ Scheduler detenido")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error deteniendo scheduler: {e}")
+                        scheduler = get_scheduler()
+                        scheduler.shutdown(wait=True)
+                        logger.info("⏰ Scheduler detenido")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error deteniendo scheduler: {e}")
                 
                 # HTTP Metrics Store shutdown
                 try:
@@ -317,7 +405,9 @@ async def lifespan(app: FastAPI):
                     logger.warning(f"⚠️ Error deteniendo HTTP Metrics Store: {e}")
 
                 logger.info("🚫 Cancelling active analysis jobs...")
-                await job_registry.cancel_all_tasks(timeout=30.0)
+                # Use shorter timeout for graceful shutdown (2s for tests, 30s for prod)
+                _job_timeout = 2.0 if _skip_scheduler else 30.0
+                await job_registry.cancel_all_tasks(timeout=_job_timeout)
 
                 # PayPal clients cleanup (legacy payments module removed)
                 # No action needed - billing uses Stripe only

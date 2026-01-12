@@ -151,34 +151,47 @@ class UserRepository:
         """
         from sqlalchemy import text
         from app.modules.auth.schemas.login_user_dto import LoginUserDTO
+        from app.shared.queries.login_lookup import LOGIN_LOOKUP_BY_EMAIL_SQL
         
         norm_email = (email or "").strip().lower()
         if not norm_email:
             return None
 
-        # SQL mínimo: solo columnas necesarias para login + AND deleted_at IS NULL
-        core_sql = text("""
-            SELECT
-                user_id,
-                auth_user_id,
-                user_email,
-                user_password_hash,
-                user_role,
-                user_status,
-                user_is_activated,
-                deleted_at,
-                user_full_name
-            FROM public.app_users
-            WHERE user_email = :email
-              AND deleted_at IS NULL
-            LIMIT 1
-        """)
+        core_sql = text(LOGIN_LOOKUP_BY_EMAIL_SQL.strip())
         
         result = await self._db.execute(core_sql, {"email": norm_email})
         row_mapping = result.mappings().first()
         
         if row_mapping:
             return LoginUserDTO.from_mapping(dict(row_mapping))
+        return None
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # get_password_hash_by_id: Lookup MÍNIMO para cache HIT path
+    # ─────────────────────────────────────────────────────────────────────────
+    async def get_password_hash_by_id(self, user_id: int) -> Optional[str]:
+        """
+        Obtiene SOLO el password_hash de un usuario por PK.
+        Optimizado para el path de cache HIT en login.
+        
+        Solo 1 columna, solo 1 statement.
+        
+        Args:
+            user_id: PK del usuario (INT)
+            
+        Returns:
+            password_hash string o None si no existe/deleted
+        """
+        from sqlalchemy import text
+        from app.shared.queries.login_lookup import LOGIN_PASSWORD_HASH_BY_ID_SQL
+        
+        core_sql = text(LOGIN_PASSWORD_HASH_BY_ID_SQL.strip())
+        
+        result = await self._db.execute(core_sql, {"user_id": user_id})
+        row = result.first()
+        
+        if row:
+            return row[0]  # user_password_hash
         return None
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -411,18 +424,24 @@ class UserRepository:
         Actualiza un usuario existente, confirmando la transacción.
 
         Usa merge() para manejar entidades potencialmente desprendidas.
-        Invalidates auth context cache after save.
+        Invalidates auth context cache AND login user cache after save.
         """
         managed = await self._db.merge(user)
         await self._db.commit()
         await self._db.refresh(managed)
         
-        # Invalidate auth context cache (any user data might have changed)
+        # Invalidate caches (any user data might have changed)
         try:
             from app.shared.security.auth_context_cache import invalidate_auth_context_cache
+            from app.shared.security.login_user_cache import invalidate_login_user_cache
+            
             auth_user_id = getattr(managed, "auth_user_id", None)
+            user_email = getattr(managed, "user_email", None)
+            
             if auth_user_id:
                 await invalidate_auth_context_cache(auth_user_id)
+            if user_email:
+                await invalidate_login_user_cache(user_email)
         except Exception:
             pass  # Best-effort, silent
         
@@ -435,19 +454,25 @@ class UserRepository:
     ) -> AppUser:
         """
         Cambia el estatus lógico del usuario y persiste el cambio.
-        Invalidates auth context cache after status change.
+        Invalidates auth context cache AND login user cache after status change.
         """
         user.user_status = status
         managed = await self._db.merge(user)
         await self._db.commit()
         await self._db.refresh(managed)
         
-        # Invalidate auth context cache (user_status changed)
+        # Invalidate caches (user_status changed)
         try:
             from app.shared.security.auth_context_cache import invalidate_auth_context_cache
+            from app.shared.security.login_user_cache import invalidate_login_user_cache
+            
             auth_user_id = getattr(managed, "auth_user_id", None)
+            user_email = getattr(managed, "user_email", None)
+            
             if auth_user_id:
                 await invalidate_auth_context_cache(auth_user_id)
+            if user_email:
+                await invalidate_login_user_cache(user_email)
         except Exception:
             pass  # Best-effort, silent
         

@@ -175,9 +175,18 @@ class PasswordResetService:
 
         # Actualizamos password y marcamos token como usado
         # Campo correcto en AppUser es user_password_hash
+        old_email = user.user_email  # Para invalidación
         user.user_password_hash = new_password_hash
         await self.user_service.save(user)
         await self.reset_repo.mark_as_used(reset)
+        
+        # Invalidate login cache (password changed) - SSOT invalidation
+        try:
+            from app.shared.security.login_user_cache import invalidate_login_user_cache
+            if old_email:
+                await invalidate_login_user_cache(old_email)
+        except Exception:
+            pass  # Best-effort, silent
 
         user_id = str(user.user_id)
         user_email = user.user_email or ""

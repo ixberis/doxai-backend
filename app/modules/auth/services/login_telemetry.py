@@ -140,16 +140,21 @@ class LoginTelemetry:
         
         # Ensure all expected keys exist (with 0 defaults)
         # NOTE: rate_limit_email_ms/ip_ms removed - combined mode uses only rate_limit_total_ms
+        # Cache field names use "login_user_cache_" prefix for clarity
         default_timings = [
             "rate_limit_total_ms",
             "rate_limit_reset_ms",
             "redis_rtt_ms",
+            "login_user_cache_get_ms",
+            "login_user_cache_set_ms",
+            "password_hash_lookup_ms",
             "lookup_user_ms",
             "argon2_verify_ms",
             "legacy_ssot_fix_ms",
             "issue_token_ms",
             "session_create_ms",
             "backoff_ms",
+            "activation_check_ms",
         ]
         for key in default_timings:
             self.timings.setdefault(key, 0.0)
@@ -205,11 +210,11 @@ class LoginTelemetry:
         
         log_msg = (
             "login_timing_breakdown email=%s mode=%s result=%s "
-            "auth_user_id_present=%s used_legacy_ssot_fix=%s "
-            "total_ms=%.2f lookup_user_ms=%.2f argon2_verify_ms=%.2f "
-            "legacy_ssot_fix_ms=%.2f issue_token_ms=%.2f session_create_ms=%.2f "
+            "auth_user_id_present=%s used_legacy_ssot_fix=%s login_user_cache_hit=%s early_reject=%s "
+            "total_ms=%.2f login_user_cache_get_ms=%.2f password_hash_lookup_ms=%.2f lookup_user_ms=%.2f "
+            "argon2_verify_ms=%.2f legacy_ssot_fix_ms=%.2f issue_token_ms=%.2f session_create_ms=%.2f "
             "rate_limit_total_ms=%.2f redis_rtt_ms=%.2f rate_limit_reset_ms=%.2f "
-            "rate_limit_roundtrips=%d backoff_ms=%.2f"
+            "rate_limit_roundtrips=%d backoff_ms=%.2f login_user_cache_set_ms=%.2f"
         )
         log_args = (
             self.email_masked,
@@ -217,7 +222,11 @@ class LoginTelemetry:
             result,
             self.flags.get("auth_user_id_present", False),
             used_legacy_ssot_fix,
+            self.flags.get("login_user_cache_hit", False),
+            self.flags.get("early_reject", False),
             total_ms,
+            self.timings.get("login_user_cache_get_ms", 0),
+            self.timings.get("password_hash_lookup_ms", 0),
             self.timings.get("lookup_user_ms", 0),
             self.timings.get("argon2_verify_ms", 0),
             self.timings.get("legacy_ssot_fix_ms", 0),
@@ -228,6 +237,7 @@ class LoginTelemetry:
             self.timings.get("rate_limit_reset_ms", 0),
             rate_limit_roundtrips,
             self.timings.get("backoff_ms", 0),
+            self.timings.get("login_user_cache_set_ms", 0),
         )
         
         # Determine log level

@@ -193,11 +193,15 @@ class ActivationService:
         await self.user_repo.save(user)
         await self.activation_repo.mark_as_used(activation)
         
-        # Invalidate auth context cache (user_status/is_activated changed)
+        # Invalidate BOTH caches (user_status/is_activated changed) - SSOT invalidation
+        # NOTE: user_repo.save() already invalidates, but we ensure it here for safety
         try:
             from app.shared.security.auth_context_cache import invalidate_auth_context_cache
+            from app.shared.security.login_user_cache import invalidate_login_user_cache
             if user.auth_user_id:
                 await invalidate_auth_context_cache(user.auth_user_id)
+            if user.user_email:
+                await invalidate_login_user_cache(user.user_email)
         except Exception:
             pass  # Best-effort, silent
 

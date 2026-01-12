@@ -47,6 +47,17 @@ async def warmup_redis_async() -> RedisWarmupResult:
     Returns:
         RedisWarmupResult con detalles del warmup
     """
+    import os
+    
+    # Early exit if Redis is not configured (avoid connection timeout)
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if not redis_url:
+        return RedisWarmupResult(
+            success=False,
+            duration_ms=0,
+            error="redis_not_configured",
+        )
+    
     logger.info("redis_warmup_started")
     
     try:

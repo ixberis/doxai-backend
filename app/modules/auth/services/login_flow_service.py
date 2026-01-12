@@ -14,13 +14,14 @@ Flujo de login y refresh de tokens:
 
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
-Updated: 11/01/2026 - LoginTelemetry + combined rate limiting (1 roundtrip)
+Updated: 12/01/2026 - Timing oracle protection via dummy verify
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, Dict, Mapping, Optional
 
@@ -46,6 +47,29 @@ logger = logging.getLogger(__name__)
 
 # Progressive backoff delays (seconds) based on attempt count
 BACKOFF_DELAYS = [0, 0.2, 0.4, 0.8, 1.2, 2.0]  # Max 2 seconds
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Timing oracle protection: dummy Argon2 hash for user_not_found path
+# ─────────────────────────────────────────────────────────────────────────────
+# When a user is not found, we run verify_password against this dummy hash
+# to make the response time indistinguishable from a wrong password.
+# This prevents email enumeration via timing attacks.
+#
+# Config: LOGIN_DUMMY_VERIFY_ON_USER_NOT_FOUND
+#   - "true" (default): always run dummy verify (recommended for prod)
+#   - "false": skip dummy verify (faster dev/test, NOT for prod)
+# ─────────────────────────────────────────────────────────────────────────────
+LOGIN_DUMMY_VERIFY_ENABLED = os.getenv(
+    "LOGIN_DUMMY_VERIFY_ON_USER_NOT_FOUND", "true"
+).lower() in ("1", "true", "yes")
+
+# Pre-computed Argon2id hash for dummy verification (hash of random string)
+# This hash was generated with: hash_password("__dummy_password_do_not_use__")
+DUMMY_ARGON2_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$"
+    "c2FsdF9mb3JfZHVtbXlfaGFzaA$"
+    "dGhpc19pc19hX2R1bW15X2hhc2hfZm9yX3RpbWluZ19vcmFjbGVfcHJvdGVjdGlvbg"
+)
 
 
 def _get_backoff_delay(attempt_count: int) -> float:
@@ -230,13 +254,142 @@ class LoginFlowService:
                 detail=detail,
             )
 
-        # ─── Fase: DB Query (buscar usuario) - CORE MODE ───
-        with telemetry.measure("lookup_user_ms"):
-            user = await self.user_service.get_by_email_core_login(email)
+        # ─── Fase: User Lookup (con cache) ───
+        # Estrategia: Cache contiene user_id + status flags (NO password_hash, email, name)
+        # Cache HIT → PK lookup para password_hash → Argon2 verify
+        # Cache MISS → Full email lookup → SET cache
+        # NOTA: Solo 1 Argon2 verify por request (el normal)
+        
+        from app.shared.security.login_user_cache import (
+            get_login_user_cache,
+            LoginUserCacheData,
+        )
+        from app.shared.security.login_cache_metrics import (
+            record_cache_hit,
+            record_cache_miss,
+            record_cache_error,
+            record_early_reject,
+            observe_cache_get_latency,
+            observe_cache_set_latency,
+            observe_password_hash_lookup_latency,
+        )
+        from app.modules.auth.repositories import UserRepository
+        
+        user = None
+        password_hash: Optional[str] = None
+        cache_hit = False
+        early_reject_reason: Optional[str] = None
+        
+        login_cache = get_login_user_cache()
+        
+        # Cache GET
+        with telemetry.measure("login_user_cache_get_ms"):
+            cached_data, cache_result = await login_cache.get_cached(email)
+        
+        # Record Prometheus metrics for cache GET
+        observe_cache_get_latency(cache_result.duration_ms / 1000)  # ms to seconds
+        
+        telemetry.set_flag("login_user_cache_hit", cache_result.cache_hit)
+        if cache_result.fallback_reason:
+            telemetry.set_flag("cache_fallback_reason", cache_result.fallback_reason)
+        
+        # Record cache hit/miss/error metrics (SINGLE POINT - no double counting)
+        # Canonical semantics:
+        # - hit_total: cache returned valid data
+        # - miss_total: ONLY when fallback_reason="cache_miss" (key genuinely not found)
+        # - error_total: cache operation failed (redis_error, redis_unavailable, etc.)
+        # 
+        # Error cases do NOT increment miss_total to keep metrics semantically clean:
+        # miss_total should reflect "key not in cache", not "cache unavailable"
+        if cache_result.cache_hit:
+            record_cache_hit()
+        elif cache_result.error:
+            # Error path: only record error, NOT miss
+            error_type = cache_result.fallback_reason or "redis_error"
+            record_cache_error(error_type)  # Will normalize to VALID_ERROR_TYPES
+        elif cache_result.fallback_reason == "cache_miss":
+            # Clean miss path: key not found, no errors
+            # CANONICAL: only increment miss_total when fallback_reason is exactly "cache_miss"
+            record_cache_miss()
+        # Note: cache_disabled case (fallback_reason="cache_disabled") does not increment
+        # miss_total - it's not a cache miss, the cache was intentionally disabled
+        
+        if cache_result.cache_hit and cached_data:
+            cache_hit = True
+            
+            # Check early reject condition - lo procesamos DESPUÉS del Argon2 verify
+            if not cached_data.can_proceed_to_password_check:
+                if cached_data.is_deleted:
+                    early_reject_reason = "account_deleted"
+                    record_early_reject("deleted")
+                else:
+                    early_reject_reason = "account_not_activated"
+                    record_early_reject("not_activated")
+                telemetry.set_flag("early_reject", True)
+            
+            # Cache HIT path: PK lookup para password_hash solamente
+            with telemetry.measure("password_hash_lookup_ms"):
+                repo = UserRepository(self.db)
+                password_hash = await repo.get_password_hash_by_id(cached_data.user_id)
+            
+            # Record password hash lookup latency
+            pk_lookup_ms = telemetry.timings.get("password_hash_lookup_ms", 0)
+            observe_password_hash_lookup_latency(pk_lookup_ms / 1000)  # ms to seconds
+            
+            # lookup_user_ms = 0 en cache HIT (no email lookup)
+            telemetry.mark_timing("lookup_user_ms", 0.0)
+            
+            if password_hash:
+                # Construir objeto user-like para compatibilidad con el resto del flujo
+                user = cached_data  # LoginUserCacheData tiene los campos necesarios
+            else:
+                # User deleted o no existe - invalidar cache y fallar
+                await login_cache.invalidate(email)
+                user = None
+                cache_hit = False  # Force full lookup
+        
+        # Cache MISS path: Full email lookup
+        if not cache_hit or user is None:
+            with telemetry.measure("lookup_user_ms"):
+                user = await self.user_service.get_by_email_core_login(email)
+            
+            # password_hash_lookup_ms = 0 en cache MISS (full lookup incluye hash)
+            telemetry.mark_timing("password_hash_lookup_ms", 0.0)
+            
+            if user:
+                password_hash = getattr(user, "user_password_hash", None)
+                
+                # SET cache (best-effort, async-safe) - PAYLOAD MÍNIMO
+                with telemetry.measure("login_user_cache_set_ms"):
+                    cache_data = LoginUserCacheData(
+                        user_id=user.user_id,
+                        auth_user_id=user.auth_user_id,
+                        user_status=user.user_status,
+                        user_is_activated=user.user_is_activated,
+                        deleted_at=user.deleted_at,
+                    )
+                    set_result = await login_cache.set_cached(email, cache_data)
+                
+                # Record cache SET latency
+                observe_cache_set_latency(set_result.duration_ms / 1000)  # ms to seconds
+                
+                # Record SET error if any (normalized label)
+                if set_result.error:
+                    record_cache_error("set_error")  # Normalized by record_cache_error
         
         telemetry.set_flag("found", user is not None)
         
         if not user:
+            # ─── Timing Oracle Protection ───
+            # Run dummy Argon2 verify to make timing indistinguishable from wrong password
+            if LOGIN_DUMMY_VERIFY_ENABLED:
+                with telemetry.measure("argon2_verify_ms"):
+                    verify_password(password, DUMMY_ARGON2_HASH)
+                telemetry.set_flag("dummy_verify", True)
+            else:
+                telemetry.mark_timing("argon2_verify_ms", 0.0)
+                telemetry.set_flag("dummy_verify", False)
+            
             # Backoff for failures
             await self._apply_backoff_if_needed(
                 email, rl_decision.email_count, is_failure=True, telemetry=telemetry
@@ -262,8 +415,8 @@ class LoginFlowService:
                 detail="Credenciales inválidas.",
             )
 
-        # Obtener hash de contraseña desde el DTO (LoginUserDTO)
-        password_hash = getattr(user, "user_password_hash", None)
+        # password_hash ya está asignado desde cache HIT o cache MISS path
+        # NO hacer re-fetch aquí
 
         if password_hash is None:
             logger.error(
@@ -283,8 +436,40 @@ class LoginFlowService:
             )
 
         # ─── Fase: Password Verify (Argon2id) ───
+        # CRITICAL: Always run Argon2 verify even if we know user will be rejected
+        # This prevents timing oracle attacks
         with telemetry.measure("argon2_verify_ms"):
             password_valid = verify_password(password, password_hash)
+        
+        # ─── Check early reject AFTER Argon2 (timing consistent) ───
+        # ZERO ENUMERATION: Return same 401 for ALL failure cases
+        # Internal logging preserves the actual reason for debugging
+        if early_reject_reason:
+            await self._apply_backoff_if_needed(
+                email, rl_decision.email_count, is_failure=True, telemetry=telemetry
+            )
+            
+            # Log actual reason internally (for debugging/audit)
+            if early_reject_reason == "account_deleted":
+                reason_text = "Cuenta eliminada"
+                result_type = "account_deleted"
+            else:
+                reason_text = "Cuenta no activada"
+                result_type = "account_not_activated"
+            
+            AuditService.log_login_failed(
+                email=email,
+                ip_address=ip_address,
+                reason=reason_text,
+                user_agent=user_agent,
+            )
+            
+            telemetry.finalize(_request, result=result_type)
+            # ZERO ENUMERATION: Same 401 + same message as wrong password
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Credenciales inválidas.",
+            )
         
         if not password_valid:
             # Backoff for failures
@@ -312,9 +497,10 @@ class LoginFlowService:
                 detail="Credenciales inválidas.",
             )
 
-        # ─── Fase: Activation Check ───
+        # ─── Fase: Activation Check (for cache MISS path) ───
+        # ZERO ENUMERATION: Return same 401 for inactive accounts
         with telemetry.measure("activation_check_ms"):
-            is_active = user.user_is_activated and not user.is_deleted
+            is_active = user.user_is_activated and not getattr(user, "is_deleted", False)
         
         if not is_active:
             # Backoff for failures
@@ -322,21 +508,21 @@ class LoginFlowService:
                 email, rl_decision.email_count, is_failure=True, telemetry=telemetry
             )
             
+            # Log actual reason internally
+            reason_text = "Cuenta no activada" if not user.user_is_activated else "Cuenta eliminada"
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
-                reason="Cuenta no activada" if not user.user_is_activated else "Cuenta eliminada",
+                reason=reason_text,
                 user_agent=user_agent,
             )
             
             result_type = "account_not_activated" if not user.user_is_activated else "account_deleted"
             telemetry.finalize(_request, result=result_type)
+            # ZERO ENUMERATION: Same 401 + same message
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "message": "La cuenta aún no ha sido activada.",
-                    "error_code": "ACCOUNT_NOT_ACTIVATED",
-                },
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Credenciales inválidas.",
             )
 
         # Login exitoso - reset rate limit counters (async, 1 roundtrip)
