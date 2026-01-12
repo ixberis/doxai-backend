@@ -207,6 +207,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Error en warm-up: {e}")
 
+    # DB warmup (pool/TLS/primera query) - ANTES de Redis para calentar Postgres
+    try:
+        from app.shared.database.db_warmup import warmup_db_async
+        db_result = await warmup_db_async()
+        if db_result.success:
+            if db_result.skipped:
+                logger.info("🗄️ DB warmup omitido (SKIP_DB_INIT)")
+            else:
+                logger.info(
+                    "🗄️ DB warmup completado: duration_ms=%.2f",
+                    db_result.duration_ms,
+                )
+        else:
+            logger.warning(
+                "⚠️ DB warmup falló: error=%s duration_ms=%.2f",
+                db_result.error,
+                db_result.duration_ms,
+            )
+    except Exception as e:
+        logger.warning(f"⚠️ DB warmup no disponible: {e}")
+
     # Redis warmup (rate limiter connection + LUA scripts)
     try:
         from app.shared.security.redis_warmup import warmup_redis_async

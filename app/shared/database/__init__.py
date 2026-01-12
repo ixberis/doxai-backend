@@ -44,5 +44,7 @@ __all__ = [
     "DB_SESSION_STATEMENT_TIMEOUT_MS",
     "DB_APPLY_SESSION_TIMEOUT_PER_REQUEST",
 ]
+# NOTE: db_warmup module is NOT exported here to avoid circular imports.
+# Import directly: from app.shared.database.db_warmup import warmup_db_async
 
 # Fin del archivo backend/app/shared/database/__init__.py
