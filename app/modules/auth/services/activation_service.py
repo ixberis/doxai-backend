@@ -135,8 +135,8 @@ class ActivationService:
                 "credits_assigned": 0,
             }
 
-        # Ya usado
-        if activation.status == ActivationStatus.used:
+        # Ya consumido
+        if activation.status == ActivationStatus.consumed:
             user = await self._get_user(activation.user_id)
             if user and getattr(user, "user_is_activated", False):
                 return {
@@ -169,7 +169,7 @@ class ActivationService:
         user = await self._get_user(activation.user_id)
         if not user:
             # Inconsistencia: hay registro de activación pero no usuario
-            await self.activation_repo.mark_as_used(activation)
+            await self.activation_repo.mark_as_consumed(activation)
             return {
                 "code": "TOKEN_INVALID",
                 "message": "Usuario asociado no encontrado.",
@@ -178,7 +178,7 @@ class ActivationService:
 
         # Si ya estaba activado, no intentamos reasignar créditos
         if getattr(user, "user_is_activated", False):
-            await self.activation_repo.mark_as_used(activation)
+            await self.activation_repo.mark_as_consumed(activation)
             return {
                 "code": "ALREADY_ACTIVATED",
                 "message": "La cuenta ya se encontraba activada.",
@@ -191,7 +191,7 @@ class ActivationService:
         user.user_is_activated = True
         user.user_status = UserStatus.active
         await self.user_repo.save(user)
-        await self.activation_repo.mark_as_used(activation)
+        await self.activation_repo.mark_as_consumed(activation)
         
         # Invalidate BOTH caches (user_status/is_activated changed) - SSOT invalidation
         # NOTE: user_repo.save() already invalidates, but we ensure it here for safety

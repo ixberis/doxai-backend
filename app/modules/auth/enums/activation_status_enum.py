@@ -5,7 +5,7 @@ backend/app/modules/auth/enums/activation_status_enum.py
 Enum de estados de activación de cuenta.
 Usado como tipo ENUM en PostgreSQL (activation_status_enum).
 
-Estados: sent, used, expired, revoked
+Estados: sent, consumed, expired, revoked
 
 Autor: Ixchel Beristain
 Fecha: 23/10/2025
@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 
 class ActivationStatus(StrEnum):
     sent = "sent"
-    used = "used"
+    consumed = "consumed"
     expired = "expired"
     revoked = "revoked"
 

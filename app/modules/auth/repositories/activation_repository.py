@@ -12,6 +12,8 @@ Fecha: 19/11/2025
 
 from __future__ import annotations
 
+import logging
+import warnings
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -131,6 +133,33 @@ class ActivationRepository:
     # ------------------------------------------------------------------
     # Actualizaciones
     # ------------------------------------------------------------------
+    async def mark_as_consumed(
+        self,
+        activation: AccountActivation,
+        *,
+        consumed_at: Optional[datetime] = None,
+    ) -> AccountActivation:
+        """
+        Marca un registro de activación como consumido.
+
+        Args:
+            activation: Instancia existente de AccountActivation.
+            consumed_at: Momento de consumo; por defecto now UTC.
+        """
+        if consumed_at is None:
+            consumed_at = datetime.now(timezone.utc)
+
+        activation.status = ActivationStatus.consumed
+        activation.consumed_at = consumed_at
+
+        managed = await self._db.merge(activation)
+        await self._db.commit()
+        await self._db.refresh(managed)
+        return managed
+
+    # ------------------------------------------------------------------
+    # Deprecated (wrapper para compatibilidad interna)
+    # ------------------------------------------------------------------
     async def mark_as_used(
         self,
         activation: AccountActivation,
@@ -138,22 +167,22 @@ class ActivationRepository:
         used_at: Optional[datetime] = None,
     ) -> AccountActivation:
         """
-        Marca un registro de activación como usado/consumido.
-
-        Args:
-            activation: Instancia existente de AccountActivation.
-            used_at: Momento de uso; por defecto now UTC.
+        DEPRECATED: Usar mark_as_consumed() en su lugar.
+        
+        Este wrapper existe para compatibilidad temporal con código
+        legacy que aún use 'mark_as_used'. Emite un DeprecationWarning.
         """
-        if used_at is None:
-            used_at = datetime.now(timezone.utc)
-
-        activation.status = ActivationStatus.used
-        activation.consumed_at = used_at
-
-        managed = await self._db.merge(activation)
-        await self._db.commit()
-        await self._db.refresh(managed)
-        return managed
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "mark_as_used is deprecated; use mark_as_consumed instead",
+            extra={"activation_id": getattr(activation, "id", None)},
+        )
+        warnings.warn(
+            "mark_as_used is deprecated, use mark_as_consumed",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.mark_as_consumed(activation, consumed_at=used_at)
 
 
 __all__ = ["ActivationRepository"]
