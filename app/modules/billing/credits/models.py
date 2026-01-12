@@ -56,11 +56,7 @@ class Wallet(Base):
         index=True,
     )
 
-    user_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger,
-        nullable=True,
-        index=True,
-    )
+    # BD 2.0 SSOT: user_id legacy eliminado, solo auth_user_id
 
     balance: Mapped[int] = mapped_column(
         Integer,
@@ -120,11 +116,7 @@ class CreditTransaction(Base):
         index=True,
     )
 
-    user_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger,
-        nullable=True,
-        index=True,
-    )
+    # BD 2.0 SSOT: user_id legacy eliminado, solo auth_user_id
 
     payment_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,
@@ -218,11 +210,7 @@ class UsageReservation(Base):
         index=True,
     )
 
-    user_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger,
-        nullable=True,
-        index=True,
-    )
+    # BD 2.0 SSOT: user_id legacy eliminado, solo auth_user_id
 
     credits_reserved: Mapped[int] = mapped_column(
         Integer,
