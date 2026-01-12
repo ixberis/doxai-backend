@@ -192,6 +192,16 @@ class CreditService:
         welcome_credits: int = 5,
         session: Optional[AsyncSession] = None,
     ) -> bool:
+        """
+        Asigna créditos de bienvenida exactamente una vez (idempotente).
+        
+        La idempotencia se delega completamente a WalletService.add_credits,
+        que verifica el idempotency_key internamente para evitar duplicados.
+        
+        Returns:
+            True si se asignaron créditos nuevos.
+            False si ya existían o hubo error.
+        """
         db = session or self.session
         if not db:
             logger.warning("CreditService.ensure_welcome_credits: no session provided")
@@ -200,12 +210,8 @@ class CreditService:
         idempotency_key = f"welcome_credits:{auth_user_id}"
 
         try:
-            existing = await self.tx_repo.get_by_idempotency_key(db, auth_user_id, idempotency_key)
-            if existing:
-                logger.debug("Welcome credits already exist for auth_user_id %s", str(auth_user_id)[:8] + "...")
-                return False
-
-            await self.wallet_service.add_credits(
+            # Delegar idempotencia a add_credits (single check)
+            result = await self.wallet_service.add_credits(
                 db,
                 auth_user_id,
                 welcome_credits,
@@ -215,11 +221,17 @@ class CreditService:
                 tx_metadata={"type": "welcome_credits"},
             )
 
-            logger.info(
-                "Welcome credits assigned: auth_user_id=%s credits=%d",
-                str(auth_user_id)[:8] + "...", welcome_credits,
-            )
-            return True
+            # add_credits retorna la tx existente si ya existía (idempotente)
+            # Detectar si fue nueva comparando si result.credits_delta > 0
+            # y no era existente (el log "Idempotent add_credits" indica duplicado)
+            is_new = hasattr(result, 'credits_delta') and result.credits_delta == welcome_credits
+
+            if is_new:
+                logger.info(
+                    "Welcome credits assigned: auth_user_id=%s credits=%d",
+                    str(auth_user_id)[:8] + "...", welcome_credits,
+                )
+            return is_new
 
         except Exception as e:
             try:

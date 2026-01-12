@@ -32,7 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_async_session
 from app.shared.config.settings_payments import get_payments_settings
-from app.modules.auth.dependencies import get_current_user_id
+
+# CANONICAL: Use get_current_user_ctx (Core mode) for auth
+# Returns AuthContextDTO with user_id (int) and auth_user_id (UUID)
+# Avoids int(uuid_string) ValueError that caused 401s
+from app.modules.auth.services import get_current_user_ctx
+from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
 from .credit_packages import get_credit_packages, get_package_by_id, CreditPackage
 from .schemas import (
@@ -138,7 +143,7 @@ async def start_checkout(
     request: Request,
     payload: BillingCheckoutRequest,
     session: AsyncSession = Depends(get_async_session),
-    user_id_str: str = Depends(get_current_user_id),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode auth
 ) -> BillingCheckoutResponse:
     """
     Inicia un checkout de créditos prepagados.
@@ -147,7 +152,7 @@ async def start_checkout(
         request: Request para construir URLs
         payload: package_id + idempotency_key
         session: Sesión de base de datos
-        user_id_str: User ID del JWT (via get_current_user_id)
+        ctx: AuthContextDTO con user_id (int) y auth_user_id (UUID)
         
     Returns:
         BillingCheckoutResponse con checkout_url
@@ -158,15 +163,8 @@ async def start_checkout(
     """
     settings = get_payments_settings()
     
-    # Convertir user_id a int (DB column es integer/bigint)
-    try:
-        user_id = int(user_id_str)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # CANONICAL: user_id ya es int desde AuthContextDTO (no necesita conversión)
+    user_id = ctx.user_id
     
     repo = CheckoutIntentRepository()
     
@@ -345,9 +343,10 @@ def _is_intent_expired(intent: CheckoutIntent) -> bool:
     """,
 )
 async def get_checkout_status(
+    request: Request,
     intent_id: int,
     session: AsyncSession = Depends(get_async_session),
-    user_id_str: str = Depends(get_current_user_id),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode auth
 ) -> CheckoutStatusResponse:
     """
     Obtiene el estado de un checkout intent.
@@ -355,7 +354,7 @@ async def get_checkout_status(
     Args:
         intent_id: ID del intent a consultar
         session: Sesión de base de datos
-        user_id_str: User ID del JWT
+        ctx: AuthContextDTO con user_id (int)
         
     Returns:
         CheckoutStatusResponse con estado actual
@@ -364,15 +363,9 @@ async def get_checkout_status(
         401: No autenticado
         404: Intent no existe o no pertenece al usuario
     """
-    # Convertir user_id a int
-    try:
-        user_id = int(user_id_str)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # CANONICAL: user_id ya es int desde AuthContextDTO
+    user_id = ctx.user_id
+    
     
     # Buscar intent por ID y verificar ownership
     result = await session.execute(
@@ -428,10 +421,11 @@ async def get_checkout_status(
     """,
 )
 async def list_checkouts(
+    request: Request,
     limit: int = Query(default=20, ge=1, le=100, description="Límite por página"),
     offset: int = Query(default=0, ge=0, description="Offset para paginación"),
     session: AsyncSession = Depends(get_async_session),
-    user_id_str: str = Depends(get_current_user_id),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode auth
 ) -> CheckoutHistoryResponse:
     """
     Lista los checkouts del usuario con paginación.
@@ -440,7 +434,7 @@ async def list_checkouts(
         limit: Límite de resultados (1-100)
         offset: Offset para paginación
         session: Sesión de base de datos
-        user_id_str: User ID del JWT
+        ctx: AuthContextDTO con user_id (int)
         
     Returns:
         CheckoutHistoryResponse con items paginados
@@ -448,15 +442,9 @@ async def list_checkouts(
     Raises:
         401: No autenticado
     """
-    # Convertir user_id a int
-    try:
-        user_id = int(user_id_str)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # CANONICAL: user_id ya es int desde AuthContextDTO
+    user_id = ctx.user_id
+    
     
     # Contar total
     count_result = await session.execute(
@@ -513,9 +501,10 @@ async def list_checkouts(
     """,
 )
 async def get_checkout_receipt(
+    request: Request,
     intent_id: int,
     session: AsyncSession = Depends(get_async_session),
-    user_id_str: str = Depends(get_current_user_id),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode auth
 ) -> CheckoutReceiptResponse:
     """
     Obtiene el recibo de un checkout completado.
@@ -523,7 +512,7 @@ async def get_checkout_receipt(
     Args:
         intent_id: ID del intent a consultar
         session: Sesión de base de datos
-        user_id_str: User ID del JWT
+        ctx: AuthContextDTO con user_id (int)
         
     Returns:
         CheckoutReceiptResponse con detalles del pago
@@ -533,15 +522,9 @@ async def get_checkout_receipt(
         404: Intent no existe o no pertenece al usuario
         409: Intent no está completado
     """
-    # Convertir user_id a int
-    try:
-        user_id = int(user_id_str)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # CANONICAL: user_id ya es int desde AuthContextDTO
+    user_id = ctx.user_id
+    
     
     # Buscar intent por ID y verificar ownership
     result = await session.execute(
@@ -609,9 +592,10 @@ async def get_checkout_receipt(
     },
 )
 async def get_checkout_receipt_pdf(
+    request: Request,
     intent_id: int,
     session: AsyncSession = Depends(get_async_session),
-    user_id_str: str = Depends(get_current_user_id),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode auth
 ) -> Response:
     """
     Genera y descarga un recibo PDF de un checkout completado.
@@ -619,7 +603,7 @@ async def get_checkout_receipt_pdf(
     Args:
         intent_id: ID del intent a consultar
         session: Sesión de base de datos
-        user_id_str: User ID del JWT
+        ctx: AuthContextDTO con user_id (int)
         
     Returns:
         Response con PDF binario
@@ -629,15 +613,9 @@ async def get_checkout_receipt_pdf(
         404: Intent no existe o no pertenece al usuario
         409: Intent no está completado
     """
-    # Convertir user_id a int
-    try:
-        user_id = int(user_id_str)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # CANONICAL: user_id ya es int desde AuthContextDTO
+    user_id = ctx.user_id
+    
     
     # Buscar intent por ID y verificar ownership
     result = await session.execute(
@@ -765,11 +743,12 @@ async def get_checkout_receipt_pdf(
     """,
 )
 async def list_receipts(
+    request: Request,
     status_filter: str = Query(default="completed", description="Filtrar por status (solo 'completed' soportado)"),
     limit: int = Query(default=50, ge=1, le=100, description="Límite por página"),
     cursor: Optional[str] = Query(default=None, description="Cursor para paginación"),
     session: AsyncSession = Depends(get_async_session),
-    user_id_str: str = Depends(get_current_user_id),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode auth
 ) -> ReceiptListResponse:
     """
     Lista los recibos de compras completadas.
@@ -779,7 +758,7 @@ async def list_receipts(
         limit: Límite de resultados (1-100)
         cursor: Cursor opcional para paginación
         session: Sesión de base de datos
-        user_id_str: User ID del JWT
+        ctx: AuthContextDTO con user_id (int)
         
     Returns:
         ReceiptListResponse con items y next_cursor
@@ -787,15 +766,9 @@ async def list_receipts(
     Raises:
         401: No autenticado
     """
-    # Convertir user_id a int
-    try:
-        user_id = int(user_id_str)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "message": "Invalid user_id in token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # CANONICAL: user_id ya es int desde AuthContextDTO
+    user_id = ctx.user_id
+    
     
     # Solo soportamos status=completed para recibos
     if status_filter != "completed":
