@@ -49,16 +49,23 @@ LOGIN_USER_CACHE_KEY_SECRET = os.getenv("LOGIN_USER_CACHE_KEY_SECRET", "")
 @dataclass
 class LoginUserCacheData:
     """
-    Datos cacheados para login (NO incluye password_hash, email, full_name).
+    Datos cacheados para login (NO incluye password_hash, email, full_name - son PII).
     
     Payload MÍNIMO para:
     1. Early reject (status checks)
     2. Lookup por PK para password_hash
+    3. Response building (user_role - no es PII)
+    
+    NOTA: user_role se incluye porque NO es PII y es necesario para:
+    - Claims del JWT
+    - Response de login
+    - Validación de permisos
     """
     user_id: int
     auth_user_id: UUID
     user_status: str
     user_is_activated: bool
+    user_role: str = "user"  # Default seguro, no PII
     deleted_at: Optional[datetime] = None
     
     @property
@@ -112,14 +119,17 @@ def _serialize_login_user_data(data: LoginUserCacheData) -> str:
     """
     Serialize LoginUserCacheData to JSON for Redis storage.
     
-    PAYLOAD MÍNIMO: solo user_id, auth_user_id, user_status, user_is_activated, deleted_at
-    NO incluye: password_hash, user_email, user_full_name, user_role
+    PAYLOAD MÍNIMO: user_id, auth_user_id, user_status, user_is_activated, user_role, deleted_at
+    NO incluye: password_hash, user_email, user_full_name (PII)
+    
+    NOTA: user_role se incluye porque NO es PII y es necesario para JWT claims.
     """
     payload = {
         "user_id": data.user_id,
         "auth_user_id": str(data.auth_user_id),
         "user_status": data.user_status,
         "user_is_activated": data.user_is_activated,
+        "user_role": data.user_role,
         "deleted_at": data.deleted_at.isoformat() if data.deleted_at else None,
     }
     return json.dumps(payload)
@@ -129,8 +139,10 @@ def _deserialize_login_user_data(raw: str) -> Optional[LoginUserCacheData]:
     """
     Deserialize JSON from Redis to LoginUserCacheData.
     
-    PAYLOAD MÍNIMO: solo user_id, auth_user_id, user_status, user_is_activated, deleted_at
+    PAYLOAD MÍNIMO: user_id, auth_user_id, user_status, user_is_activated, user_role, deleted_at
     Returns None if parsing fails.
+    
+    NOTA: user_role tiene fallback a "user" para compatibilidad con cache entries antiguas.
     """
     try:
         parsed = json.loads(raw)
@@ -144,11 +156,15 @@ def _deserialize_login_user_data(raw: str) -> Optional[LoginUserCacheData]:
         if parsed.get("deleted_at"):
             deleted_at = datetime.fromisoformat(parsed["deleted_at"])
         
+        # user_role fallback para cache entries antiguas sin este campo
+        user_role = parsed.get("user_role", "user")
+        
         return LoginUserCacheData(
             user_id=int(parsed["user_id"]),
             auth_user_id=auth_user_id,
             user_status=parsed["user_status"],
             user_is_activated=bool(parsed["user_is_activated"]),
+            user_role=user_role,
             deleted_at=deleted_at,
         )
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:

@@ -359,13 +359,14 @@ class LoginFlowService:
             if user:
                 password_hash = getattr(user, "user_password_hash", None)
                 
-                # SET cache (best-effort, async-safe) - PAYLOAD MÍNIMO
+                # SET cache (best-effort, async-safe) - PAYLOAD MÍNIMO + user_role (no PII)
                 with telemetry.measure("login_user_cache_set_ms"):
                     cache_data = LoginUserCacheData(
                         user_id=user.user_id,
                         auth_user_id=user.auth_user_id,
                         user_status=user.user_status,
                         user_is_activated=user.user_is_activated,
+                        user_role=getattr(user, "user_role", None) or "user",
                         deleted_at=user.deleted_at,
                     )
                     set_result = await login_cache.set_cached(email, cache_data)
@@ -585,10 +586,32 @@ class LoginFlowService:
         else:
             telemetry.set_flag("used_legacy_ssot_fix", False)
 
+        # ─────────────────────────────────────────────────────────────────────────
+        # CACHE HIT FIX: user puede ser LoginUserCacheData (sin PII) o LoginUserDTO
+        # Para audit y response, usamos email del payload y user_role del cache/DTO
+        # 
+        # SEGURIDAD:
+        # - email: SIEMPRE del payload (no se cachea por privacidad)
+        # - user_role: del cache o DTO (incluido en cache desde v2, no es PII)
+        # - user_full_name: fallback a "" (NO se cachea, PII)
+        # ─────────────────────────────────────────────────────────────────────────
+        
+        # Email: usar del payload (ya disponible, NO del cache por seguridad)
+        user_email_for_response = email  # Del payload, normalizado
+        
+        # user_role: priorizar del user (cache o DTO), con fallback seguro
+        # En cache HIT v2+, user_role está disponible. En cache antiguo, fallback a "user"
+        user_role_for_response = getattr(user, "user_role", None) or "user"
+        
+        # user_full_name: NO está en cache (PII), fallback a ""
+        # Si necesitas el nombre real, se podría hacer mini-lookup pero no es crítico
+        user_full_name_for_response = getattr(user, "user_full_name", None) or ""
+
         # Record successful login - AuditService (best effort)
+        # Usar email del payload, NO de user (que puede ser LoginUserCacheData)
         AuditService.log_login_success(
             user_id=str(user.user_id),
-            email=user.user_email,
+            email=user_email_for_response,  # Del payload, no del cache
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -632,9 +655,9 @@ class LoginFlowService:
             "user": {
                 "user_id": str(user.user_id),
                 "auth_user_id": str(auth_user_id),
-                "user_email": user.user_email,
-                "user_full_name": user.user_full_name,
-                "user_role": user.user_role,
+                "user_email": user_email_for_response,
+                "user_full_name": user_full_name_for_response,
+                "user_role": user_role_for_response,
                 "user_status": user.user_status,
             },
         }
