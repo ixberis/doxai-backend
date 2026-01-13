@@ -72,6 +72,7 @@ class IEmailSender(Protocol):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         activation_datetime_utc: Optional[str] = None,
+        auth_user_id: Optional[UUID] = None,
     ) -> None: ...
     
     async def send_password_reset_success_email(
@@ -155,14 +156,16 @@ class StubEmailSender:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         activation_datetime_utc: Optional[str] = None,
+        auth_user_id: Optional[UUID] = None,
     ) -> None:
         logger.info(
-            f"[CONSOLE EMAIL] Admin notice → {to_email} | user={user_email} id={user_id} credits={credits_assigned}"
+            f"[CONSOLE EMAIL] Admin notice → {to_email} | user={user_email} id={user_id} credits={credits_assigned} auth_user_id={auth_user_id}"
         )
         print(
             f"[STUB EMAIL] Admin activation notice → {to_email}\n"
             f"  User: {user_email} ({user_name})\n"
             f"  ID: {user_id}\n"
+            f"  AuthUserID: {auth_user_id}\n"
             f"  Credits: {credits_assigned}\n"
             f"  IP: {ip_address or 'N/A'}\n"
             f"  DateTime: {activation_datetime_utc or 'N/A'}"

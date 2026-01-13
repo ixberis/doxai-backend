@@ -187,12 +187,15 @@ async def send_admin_activation_notice_safely(
     credits_assigned: int,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    auth_user_id: Optional[UUID] = None,
 ) -> bool:
     """
     Envía notificación al admin cuando un usuario activa su cuenta.
     
     Best-effort: no lanza excepción, solo retorna False si falla.
     Loggea warning con contexto si falla.
+    
+    DB 2.0: Propaga auth_user_id (del usuario activado) para tracking en auth_email_events.
     
     Args:
         email_sender: Implementación de IEmailSender
@@ -203,6 +206,7 @@ async def send_admin_activation_notice_safely(
         credits_assigned: Créditos asignados
         ip_address: IP del usuario (opcional)
         user_agent: User agent del navegador (opcional)
+        auth_user_id: UUID del usuario activado (para tracking)
     
     Returns:
         True si el email se envió correctamente, False en caso contrario.
@@ -219,6 +223,7 @@ async def send_admin_activation_notice_safely(
             ip_address=ip_address,
             user_agent=user_agent,
             activation_datetime_utc=activation_datetime,
+            auth_user_id=auth_user_id,
         )
         
         logger.info(

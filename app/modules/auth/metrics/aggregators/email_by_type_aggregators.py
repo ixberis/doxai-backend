@@ -36,12 +36,14 @@ class EmailByTypeAggregators:
     """
     
     # Tipos de email conocidos (para incluir aunque tengan 0 eventos)
+    # IMPORTANTE: Usar valores CANÓNICOS de public.auth_email_type (NO legacy)
     KNOWN_EMAIL_TYPES = [
-        "account_activation",
-        "account_created",
-        "password_reset_request",
+        "activation",              # NO account_activation
+        "password_reset",          # NO password_reset_request
         "password_reset_success",
         "welcome",
+        "purchase_confirmation",
+        "admin_activation_notice",
     ]
     
     def __init__(self, db: AsyncSession):

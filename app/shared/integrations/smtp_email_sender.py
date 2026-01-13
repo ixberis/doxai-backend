@@ -458,6 +458,7 @@ class SMTPEmailSender:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         activation_datetime_utc: Optional[str] = None,
+        auth_user_id: Optional["UUID"] = None,  # SSOT - no usado en SMTP pero requerido por interfaz
     ) -> None:
         """
         Envía notificación al admin cuando un usuario activa su cuenta.
@@ -471,6 +472,7 @@ class SMTPEmailSender:
             ip_address: IP del usuario (opcional)
             user_agent: User agent del navegador (opcional)
             activation_datetime_utc: Fecha/hora de activación (opcional, default=now)
+            auth_user_id: UUID del usuario activado (para paridad con MailerSend, no usado en SMTP)
         """
         html, text, used_template = self._build_admin_activation_notice_body(
             user_email=user_email,
@@ -483,10 +485,11 @@ class SMTPEmailSender:
         )
 
         logger.info(
-            "[SMTP] admin activation notice: to=%s user=%s user_id=%s template=%s",
+            "[SMTP] admin activation notice: to=%s user=%s user_id=%s auth_user_id=%s template=%s",
             to_email,
             user_email[:3] + "***" if user_email else "unknown",
             user_id,
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
             "loaded" if used_template else "fallback",
         )
 

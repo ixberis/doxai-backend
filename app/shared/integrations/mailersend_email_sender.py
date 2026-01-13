@@ -692,18 +692,27 @@ class MailerSendEmailSender:
         user_id: Optional[int] = None,  # legacy param kept for callsites/tests (not persisted)
     ) -> None:
         """Envía email de activación de cuenta con instrumentación (SSOT auth_user_id)."""
-        email_type = "account_activation"
+        # IMPORTANTE: Usar SIEMPRE el valor canónico del enum SQL (activation, NO account_activation)
+        email_type = "activation"
         token_ctx = hashlib.sha256(activation_token.encode()).hexdigest()[:16]
         idempotency_key = self._generate_idempotency_key(email_type, auth_user_id, token_ctx)
+
+        # ESTABILIZAR correlation_id: generar UNA sola vez y reutilizar en pending/sent/failed
+        if not correlation_id:
+            correlation_id = self._generate_deterministic_correlation_id(
+                email_type=email_type,
+                idempotency_key=idempotency_key,
+            )
 
         html, text, used_template = self._build_activation_body(full_name, activation_token)
 
         logger.info(
-            "[MailerSend] activation email: to=%s user=%s token=%s template=%s",
+            "[MailerSend] activation email: to=%s user=%s token=%s template=%s correlation_id=%s",
             to_email,
             full_name or "Usuario",
             mask_token(activation_token),
             "loaded" if used_template else "fallback",
+            correlation_id,
         )
 
         await self._log_email_event(
@@ -758,9 +767,17 @@ class MailerSendEmailSender:
         user_id: Optional[int] = None,  # legacy param kept (not persisted)
     ) -> None:
         """Envía email de reset de contraseña con instrumentación (SSOT auth_user_id)."""
-        email_type = "password_reset_request"
+        # IMPORTANTE: Usar SIEMPRE el valor canónico del enum SQL (password_reset, NO password_reset_request)
+        email_type = "password_reset"
         token_ctx = hashlib.sha256(reset_token.encode()).hexdigest()[:16]
         idempotency_key = self._generate_idempotency_key(email_type, auth_user_id, token_ctx)
+        
+        # ESTABILIZAR correlation_id: generar UNA sola vez y reutilizar en pending/sent/failed
+        if not correlation_id:
+            correlation_id = self._generate_deterministic_correlation_id(
+                email_type=email_type,
+                idempotency_key=idempotency_key,
+            )
 
         html, text, used_template = self._build_password_reset_body(full_name, reset_token)
 
@@ -828,14 +845,22 @@ class MailerSendEmailSender:
         ctx = str(credits_assigned)
         idempotency_key = self._generate_idempotency_key(email_type, auth_user_id, ctx)
 
+        # ESTABILIZAR correlation_id: generar UNA sola vez y reutilizar en pending/sent/failed
+        if not correlation_id:
+            correlation_id = self._generate_deterministic_correlation_id(
+                email_type=email_type,
+                idempotency_key=idempotency_key,
+            )
+
         html, text, used_template = self._build_welcome_body(full_name, credits_assigned)
 
         logger.info(
-            "[MailerSend] welcome email: to=%s user=%s credits=%d template=%s",
+            "[MailerSend] welcome email: to=%s user=%s credits=%d template=%s correlation_id=%s",
             to_email,
             full_name or "Usuario",
             credits_assigned,
             "loaded" if used_template else "fallback",
+            correlation_id,
         )
 
         await self._log_email_event(
@@ -890,13 +915,27 @@ class MailerSendEmailSender:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         activation_datetime_utc: Optional[str] = None,
+        auth_user_id: Optional[UUID] = None,
     ) -> None:
         """
         Envía notificación al admin cuando un usuario activa su cuenta.
-        Nota: este correo es operativo/admin; NO se instrumenta en auth_email_events
-        (si lo quieres instrumentar, lo podemos meter como email_type=admin_activation_notice
-        y agregar el enum).
+        
+        INSTRUMENTADO en auth_email_events con email_type=admin_activation_notice.
+        El auth_user_id corresponde al USUARIO ACTIVADO (no al admin).
+        Esto permite correlacionar webhooks de MailerSend con el evento.
         """
+        email_type = "admin_activation_notice"
+        
+        # Contexto único basado en el usuario activado (garantiza idempotencia por activación)
+        ctx = f"{user_id}:{user_email}"
+        idempotency_key = self._generate_idempotency_key(email_type, auth_user_id, ctx)
+        
+        # Correlation estable
+        correlation_id = self._generate_deterministic_correlation_id(
+            email_type=email_type,
+            idempotency_key=idempotency_key,
+        )
+        
         html, text, used_template = self._build_admin_activation_notice_body(
             user_email=user_email,
             user_name=user_name,
@@ -907,20 +946,60 @@ class MailerSendEmailSender:
             activation_datetime_utc=activation_datetime_utc,
         )
 
+        subject = f"Cuenta activada en DoxAI - {user_email}"
+
         logger.info(
-            "[MailerSend] admin activation notice: to=%s user=%s user_id=%s template=%s",
+            "[MailerSend] admin activation notice: to=%s user=%s user_id=%s template=%s correlation_id=%s",
             to_email,
             (user_email[:3] + "***") if user_email else "unknown",
             user_id,
             "loaded" if used_template else "fallback",
+            correlation_id,
         )
 
-        await self._send_email(
-            to_email,
-            f"Cuenta activada en DoxAI - {user_email}",
-            html,
-            text,
+        # Log PENDING
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            auth_user_id=auth_user_id,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
+
+        start_time = time.perf_counter()
+        try:
+            message_id = await self._send_email(to_email, subject, html, text)
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+
+            # Log SENT
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                auth_user_id=auth_user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+            )
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            err_code = getattr(e, "error_code", "unknown_error")
+
+            # Log FAILED
+            await self._log_email_event(
+                email_type=email_type,
+                status="failed",
+                to_email=to_email,
+                auth_user_id=auth_user_id,
+                latency_ms=latency_ms,
+                error_code=str(err_code),
+                error_message=str(e)[:500],
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+            )
+            raise
 
     async def send_password_reset_success_email(
         self,

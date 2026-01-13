@@ -187,6 +187,7 @@ class ActivationFlowService:
                         credits_assigned=credits_assigned,
                         ip_address=payload.get("ip_address"),
                         user_agent=payload.get("user_agent"),
+                        auth_user_id=user.auth_user_id,  # SSOT para tracking en auth_email_events
                     )
                     
                     if admin_email_sent:
