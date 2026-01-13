@@ -137,10 +137,13 @@ async def get_activation_metrics(
     """
     Obtiene métricas de activación para un rango de fechas.
     
-    Si no se especifican fechas, usa los últimos 30 días.
+    Si no se especifican fechas, usa los últimos 30 días (today - 29 days).
+    El rango es half-open: [from_ts, to_ts) donde to_ts = to_date + 1 day.
     """
-    to_dt = _parse_date(to_date, "to", default_offset_days=0)
-    from_dt = _parse_date(from_date, "from", default_offset_days=30) if from_date else (to_dt - timedelta(days=30))
+    # Parse explicit dates first (no default offset when provided)
+    to_dt = _parse_date(to_date, "to") if to_date else date.today()
+    # 30 days = today + 29 previous days (NOT today - 30)
+    from_dt = _parse_date(from_date, "from") if from_date else (to_dt - timedelta(days=29))
     _validate_range(from_dt, to_dt)
     
     logger.info("activation_metrics_request from=%s to=%s", from_dt, to_dt)
@@ -179,10 +182,13 @@ async def get_password_reset_metrics(
     """
     Obtiene métricas de password reset para un rango de fechas.
     
-    Si no se especifican fechas, usa los últimos 30 días.
+    Si no se especifican fechas, usa los últimos 30 días (today - 29 days).
+    El rango es half-open: [from_ts, to_ts) donde to_ts = to_date + 1 day.
     """
-    to_dt = _parse_date(to_date, "to", default_offset_days=0)
-    from_dt = _parse_date(from_date, "from", default_offset_days=30) if from_date else (to_dt - timedelta(days=30))
+    # Parse explicit dates first (no default offset when provided)
+    to_dt = _parse_date(to_date, "to") if to_date else date.today()
+    # 30 days = today + 29 previous days (NOT today - 30)
+    from_dt = _parse_date(from_date, "from") if from_date else (to_dt - timedelta(days=29))
     _validate_range(from_dt, to_dt)
     
     logger.info("password_reset_metrics_request from=%s to=%s", from_dt, to_dt)
@@ -221,9 +227,14 @@ async def get_users_analytics(
     
     Incluye métricas de calidad de activación, conversión y estados críticos.
     No devuelve lista individual de usuarios (ver Admin -> Users para eso).
+    
+    Si no se especifican fechas, usa los últimos 30 días (today - 29 days).
+    El rango es half-open: [from_ts, to_ts) donde to_ts = to_date + 1 day.
     """
-    to_dt = _parse_date(to_date, "to", default_offset_days=0)
-    from_dt = _parse_date(from_date, "from", default_offset_days=30) if from_date else (to_dt - timedelta(days=30))
+    # Parse explicit dates first (no default offset when provided)
+    to_dt = _parse_date(to_date, "to") if to_date else date.today()
+    # 30 days = today + 29 previous days (NOT today - 30)
+    from_dt = _parse_date(from_date, "from") if from_date else (to_dt - timedelta(days=29))
     _validate_range(from_dt, to_dt)
     
     logger.info("users_analytics_request from=%s to=%s", from_dt, to_dt)
