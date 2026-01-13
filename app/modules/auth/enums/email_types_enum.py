@@ -20,14 +20,20 @@ from typing import Tuple
 
 
 class AuthEmailType(StrEnum):
-    """Enum con los tipos de email de autenticación soportados.
+    """Enum con los tipos de email soportados (auth + billing).
     
     IMPORTANTE: Estos valores DEBEN coincidir 1:1 con public.auth_email_type en SQL.
+    
+    Auth emails:
+      - activation, password_reset, password_reset_success, welcome
+    Billing emails:
+      - purchase_confirmation
     """
     ACTIVATION = "activation"
     PASSWORD_RESET = "password_reset"
     PASSWORD_RESET_SUCCESS = "password_reset_success"
     WELCOME = "welcome"
+    PURCHASE_CONFIRMATION = "purchase_confirmation"
 
 
 # Tupla para uso directo en queries SQL (fuente de verdad centralizada)
@@ -47,6 +53,7 @@ EMAIL_TYPE_ALIASES: dict[str, str] = {
     "password_reset": "password_reset",
     "password_reset_success": "password_reset_success",
     "welcome": "welcome",
+    "purchase_confirmation": "purchase_confirmation",
 }
 
 

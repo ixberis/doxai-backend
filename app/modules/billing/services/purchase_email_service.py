@@ -7,21 +7,30 @@ Servicio para envío de emails de confirmación de compra.
 Responsabilidades:
 - Generar tokens públicos para recibos
 - Construir contexto de email
-- Enviar email via EmailSender
+- Enviar email via MailerSend con instrumentación en auth_email_events
 - Marcar invoice como email_sent (idempotencia)
 - Loguear eventos operativos (billing.email.sent / billing.email.failed)
 
+DB 2.0 SSOT:
+- Los eventos de email se registran en auth_email_events con email_type='purchase_confirmation'
+- Usa auth_user_id (UUID) para tracking
+- correlation_id se genera automáticamente si no viene
+
 Autor: DoxAI
 Fecha: 2026-01-01
+Actualizado: 2026-01-13 - Instrumentación completa en auth_email_events
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, TYPE_CHECKING
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +41,7 @@ from ..admin.operation.event_logger import BillingOperationEventLogger
 
 if TYPE_CHECKING:
     from app.shared.integrations.email_sender import IEmailSender
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -234,13 +244,21 @@ async def send_purchase_confirmation_email(
     user_email: str,
     user_name: Optional[str] = None,
     email_sender: Optional["IEmailSender"] = None,
+    auth_user_id: Optional[UUID] = None,
 ) -> bool:
     """
-    Envía email de confirmación de compra.
+    Envía email de confirmación de compra con instrumentación en auth_email_events.
     
     Idempotente: no reenvía si ya se envió (purchase_email_sent_at).
     Best-effort: errores de email se loguean pero no se propagan.
-    Loguea eventos operativos (billing.email.sent / billing.email.failed).
+    
+    DB 2.0 SSOT:
+    - Registra evento en auth_email_events con email_type='purchase_confirmation'
+    - Usa auth_user_id (UUID) para tracking
+    - correlation_id autogenerado si no viene
+    
+    IMPORTANTE: Usa método PÚBLICO send_purchase_confirmation_email del sender
+    para garantizar instrumentación completa (NO usa _send_email privado).
     
     Args:
         session: Sesión de base de datos
@@ -249,29 +267,43 @@ async def send_purchase_confirmation_email(
         user_email: Email destino
         user_name: Nombre del usuario (opcional)
         email_sender: Sender a usar (opcional, carga de settings si no se provee)
+        auth_user_id: UUID del usuario (SSOT, se obtiene de intent si no se provee)
         
     Returns:
         True si se envió, False si ya estaba enviado o falló
     """
     event_logger = BillingOperationEventLogger(session)
+    email_type = "purchase_confirmation"
+    
+    # SSOT: obtener auth_user_id de intent si no se provee
+    if auth_user_id is None:
+        auth_user_id = getattr(intent, "auth_user_id", None)
+    
+    # Generar correlation_id único para esta transacción
+    correlation_id = f"email:{email_type}:{uuid4().hex}"
+    
+    # Generar idempotency_key estable basado en invoice
+    idem_ctx = f"inv:{invoice.id}:{intent.id}"
+    idem_raw = f"{email_type}:{str(auth_user_id) if auth_user_id else 'no_auth'}:{idem_ctx}"
+    idempotency_key = hashlib.sha256(idem_raw.encode()).hexdigest()[:64]
     
     # Idempotencia: verificar si ya se envió
     if invoice.purchase_email_sent_at:
         logger.info(
-            "Purchase email already sent: invoice=%s sent_at=%s",
+            "purchase_confirmation_email_already_sent: invoice=%s sent_at=%s",
             invoice.invoice_number,
             invoice.purchase_email_sent_at,
         )
         return False
     
+    # Obtener email sender (MailerSend en producción)
+    if email_sender is None:
+        from app.shared.integrations.email_sender import get_email_sender
+        email_sender = get_email_sender()
+    
     try:
         # Asegurar que tenga token público
         await ensure_public_token(session, invoice)
-        
-        # Obtener email sender
-        if email_sender is None:
-            from app.shared.integrations.email_sender import get_email_sender
-            email_sender = get_email_sender()
         
         # Construir contexto
         context = build_email_context(invoice, intent, user_name, user_email)
@@ -287,18 +319,24 @@ async def send_purchase_confirmation_email(
             import html as html_lib
             html = f"<pre>{html_lib.escape(text)}</pre>"
         
-        # Enviar email
-        await email_sender._send_email(
+        # ─────────────────────────────────────────────────────────────────
+        # Enviar via método PÚBLICO del sender (instrumentación incluida)
+        # El sender maneja: pending → send → sent/failed
+        # ─────────────────────────────────────────────────────────────────
+        message_id = await email_sender.send_purchase_confirmation_email(
             to_email=user_email,
             subject="Confirmación de compra de créditos — DoxAI",
             html_body=html,
             text_body=text,
+            auth_user_id=auth_user_id,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
         )
         
-        # Marcar como enviado
+        # Marcar invoice como enviado
         invoice.purchase_email_sent_at = datetime.now(timezone.utc)
         
-        # Log evento operativo (fire-and-forget, en la misma transacción)
+        # Log evento operativo legacy (fire-and-forget)
         await event_logger.log_email_sent(
             invoice_id=invoice.id,
             intent_id=intent.id,
@@ -307,19 +345,21 @@ async def send_purchase_confirmation_email(
         await session.commit()
         
         logger.info(
-            "purchase_confirmation_email_sent: invoice=%s to=%s intent=%s",
+            "purchase_confirmation_email_sent: invoice=%s to=%s intent=%s provider_message_id=%s correlation_id=%s auth_user_id=%s",
             invoice.invoice_number,
             user_email[:3] + "***" if user_email else "unknown",
             intent.id,
+            message_id,
+            correlation_id,
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
         )
         
         return True
         
     except Exception as e:
-        # Clasificar error
         error_code = _classify_email_error(e)
         
-        # Log evento operativo (fire-and-forget)
+        # Log evento operativo legacy (fire-and-forget)
         try:
             await event_logger.log_email_failed(
                 invoice_id=invoice.id,
@@ -328,18 +368,18 @@ async def send_purchase_confirmation_email(
             )
             await session.commit()
         except Exception:
-            # Si falla el log, no propagar
             pass
         
-        # Best-effort: loguear error pero no propagar
         logger.error(
-            "purchase_confirmation_email_failed: invoice=%s to=%s error=%s error_code=%s",
+            "purchase_confirmation_email_failed: invoice=%s to=%s error=%s error_code=%s correlation_id=%s",
             invoice.invoice_number,
             user_email[:3] + "***" if user_email else "unknown",
             str(e),
             error_code,
+            correlation_id,
         )
         return False
+
 
 
 def _build_fallback_text(context: Dict[str, Any]) -> str:

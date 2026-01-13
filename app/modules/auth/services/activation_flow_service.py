@@ -14,7 +14,8 @@ Fecha: 19/11/2025
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -275,10 +276,12 @@ class ActivationFlowService:
 
         try:
             # Usar el servicio inyectado para enviar el email
+            # DB 2.0 SSOT: Propagar auth_user_id para persistencia de eventos
             await self.welcome_email_service.send_welcome_email(
                 email=user.user_email,
                 full_name=user.user_full_name,
                 credits_assigned=credits_assigned,
+                auth_user_id=getattr(user, "auth_user_id", None),
             )
 
             # Éxito: marcar como enviado
@@ -382,22 +385,29 @@ class ActivationFlowService:
             return {"message": generic_message}
 
         # Usuario existe y no está activo -> generar token y enviar email
+        # DB 2.0 SSOT: Obtener auth_user_id para propagación
+        auth_user_id = getattr(user, "auth_user_id", None)
+        
         token = await self.activation_service.issue_activation_token(
             user_id=str(user.user_id),
+            auth_user_id=auth_user_id,
         )
 
         logger.info(
-            "activation_resend_sent user_id=%s ip=%s",
+            "activation_resend_sent user_id=%s auth_user_id=%s ip=%s",
             user.user_id,
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
             ip_address,
         )
 
         # Envío best-effort (no falla si el email no se puede enviar)
+        # DB 2.0 SSOT: Propagar auth_user_id para persistencia de eventos
         email_sent = await self._send_activation_email(
             email=user.user_email,
             full_name=user.user_full_name,
             token=token,
             user_id=int(user.user_id),
+            auth_user_id=auth_user_id,
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -421,11 +431,14 @@ class ActivationFlowService:
         full_name: str,
         token: str,
         user_id: int,
-        ip_address: str,
-        user_agent: str,
+        auth_user_id: Optional[UUID] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> bool:
         """
         Wrapper para enviar activation email (inyectable para tests).
+        
+        DB 2.0 SSOT: Propaga auth_user_id para persistencia de eventos.
         """
         return await send_activation_email_safely(
             self.email_sender,
@@ -433,6 +446,7 @@ class ActivationFlowService:
             full_name=full_name,
             token=token,
             user_id=user_id,
+            auth_user_id=auth_user_id,
             ip_address=ip_address,
             user_agent=user_agent,
         )

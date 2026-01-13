@@ -6,9 +6,12 @@ backend/app/modules/auth/utils/email_helpers.py
 Helpers de alto nivel para envío de correos relacionados con Auth
 (activación, bienvenida, restablecimiento de contraseña, notificación admin).
 
+DB 2.0 SSOT: Todos los helpers ahora aceptan auth_user_id para garantizar
+que los eventos de email se persistan correctamente.
+
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
-Actualizado: 2025-12-20
+Actualizado: 2026-01-13 - SSOT auth_user_id propagation
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from fastapi import HTTPException, status
 
@@ -30,15 +34,19 @@ async def send_activation_email_or_raise(
     email: str,
     full_name: Optional[str],
     token: str,
+    auth_user_id: Optional[UUID] = None,
 ) -> None:
     """
     Envía correo de activación y lanza HTTPException si falla.
+    
+    DB 2.0: Propaga auth_user_id al sender para persistencia de eventos.
     """
     try:
         await email_sender.send_activation_email(
             to_email=email,
             full_name=full_name or "",
             activation_token=token,
+            auth_user_id=auth_user_id,
         )
     except HTTPException:
         raise
@@ -55,16 +63,20 @@ async def send_welcome_email_safely(
     email: str,
     full_name: Optional[str],
     credits_assigned: int,
+    auth_user_id: Optional[UUID] = None,
 ) -> None:
     """
     Envía correo de bienvenida. No lanza excepción hacia arriba,
     solo ignora el error (el caller puede hacer logging si lo requiere).
+    
+    DB 2.0: Propaga auth_user_id al sender para persistencia de eventos.
     """
     try:
         await email_sender.send_welcome_email(
             to_email=email,
             full_name=full_name or "",
             credits_assigned=credits_assigned,
+            auth_user_id=auth_user_id,
         )
     except Exception:
         return
@@ -77,6 +89,7 @@ async def send_activation_email_safely(
     full_name: Optional[str],
     token: str,
     user_id: Optional[int] = None,
+    auth_user_id: Optional[UUID] = None,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
 ) -> bool:
@@ -84,6 +97,8 @@ async def send_activation_email_safely(
     Envía correo de activación (reenvío) de forma best-effort.
     
     No lanza excepción hacia arriba. Loggea el resultado.
+    
+    DB 2.0: Propaga auth_user_id al sender para persistencia de eventos.
     
     Logs:
         - activation_resend_email_sent to=... user_id=...
@@ -94,7 +109,8 @@ async def send_activation_email_safely(
         email: Email destino
         full_name: Nombre del usuario
         token: Token de activación
-        user_id: ID del usuario (para logs)
+        user_id: ID del usuario (para logs, legacy)
+        auth_user_id: UUID del usuario (SSOT para eventos de email)
         ip_address: IP del usuario (para logs)
         user_agent: User agent (para logs)
     
@@ -108,21 +124,24 @@ async def send_activation_email_safely(
             to_email=email,
             full_name=full_name or "",
             activation_token=token,
+            auth_user_id=auth_user_id,
         )
         
         logger.info(
-            "activation_resend_email_sent to=%s user_id=%s ip=%s",
+            "activation_resend_email_sent to=%s user_id=%s auth_user_id=%s ip=%s",
             email_masked,
             user_id,
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
             ip_address or "unknown",
         )
         return True
         
     except Exception as e:
         logger.warning(
-            "activation_resend_email_failed to=%s user_id=%s ip=%s error=%s",
+            "activation_resend_email_failed to=%s user_id=%s auth_user_id=%s ip=%s error=%s",
             email_masked,
             user_id,
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
             ip_address or "unknown",
             str(e)[:200],
         )
@@ -135,15 +154,19 @@ async def send_password_reset_email_or_raise(
     email: str,
     full_name: Optional[str],
     reset_token: str,
+    auth_user_id: Optional[UUID] = None,
 ) -> None:
     """
     Envía correo de restablecimiento y lanza HTTPException si falla.
+    
+    DB 2.0: Propaga auth_user_id al sender para persistencia de eventos.
     """
     try:
         await email_sender.send_password_reset_email(
             to_email=email,
             full_name=full_name or "",
             reset_token=reset_token,
+            auth_user_id=auth_user_id,
         )
     except HTTPException:
         raise

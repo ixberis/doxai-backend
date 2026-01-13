@@ -178,7 +178,7 @@ class MailerSendEmailSender:
         error_message: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         correlation_id: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[str]:
         """
         Log email event to auth_email_events table using a SEPARATE session.
 
@@ -186,34 +186,53 @@ class MailerSendEmailSender:
         
         IMPORTANTE: Normaliza email_type a valor canónico SQL antes de INSERT.
         Acepta aliases legacy (account_activation → activation).
+        
+        AUTO-CORRELATION: Si correlation_id no se provee, se genera automáticamente
+        con formato: email:{canonical_email_type}:{uuid4().hex}
 
         Silently fails if no session factory or on error (doesn't block email sending).
+        
+        Returns:
+            event_id (str) del evento creado/actualizado, o None si falla.
         """
+        from uuid import uuid4 as generate_uuid
+        
         # Normalizar email_type a valor canónico SQL
         try:
             from app.modules.auth.enums import normalize_email_type
             canonical_email_type = normalize_email_type(email_type)
         except ValueError as e:
             logger.error("auth_email_event_insert_invalid_type: %s", str(e))
-            return
+            return None
         except ImportError:
             # Fallback si no se puede importar (edge case)
             canonical_email_type = email_type
         
+        # GARANTÍA: correlation_id nunca es None
+        # Si no viene, generamos uno con formato canónico
+        if correlation_id is None:
+            correlation_id = f"email:{canonical_email_type}:{generate_uuid().hex}"
+            logger.debug(
+                "auth_email_event_correlation_id_generated: correlation_id=%s",
+                correlation_id,
+            )
+        
         session_factory = self._get_event_session_factory()
         if session_factory is None:
             logger.warning(
-                "auth_email_event_insert_skipped: no session_factory type=%s status=%s",
+                "auth_email_event_insert_skipped: no session_factory type=%s status=%s correlation_id=%s",
                 canonical_email_type,
                 status,
+                correlation_id,
             )
-            return
+            return None
 
         logger.info(
-            "auth_email_event_insert_started: type=%s status=%s auth_user_id=%s domain=%s",
+            "email_event_insert_started: event_id=pending type=%s status=%s auth_user_id_prefix=%s correlation_id=%s domain=%s",
             canonical_email_type,
             status,
-            (str(auth_user_id)[:8] + "...") if auth_user_id else None,
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
+            correlation_id,
             self._extract_domain(to_email),
         )
 
@@ -263,6 +282,11 @@ class MailerSendEmailSender:
                     """
                 )
 
+                # CAST auth_user_id como UUID para garantizar tipo correcto
+                auth_user_id_param = None
+                if auth_user_id is not None:
+                    auth_user_id_param = auth_user_id if isinstance(auth_user_id, UUID) else UUID(str(auth_user_id))
+
                 result = await log_session.execute(
                     q,
                     {
@@ -270,7 +294,7 @@ class MailerSendEmailSender:
                         "status": status,
                         "status_check": status,
                         "recipient_domain": self._extract_domain(to_email),
-                        "auth_user_id": str(auth_user_id) if auth_user_id else None,
+                        "auth_user_id": auth_user_id_param,
                         "provider_message_id": provider_message_id,
                         "latency_ms": latency_ms,
                         "error_code": error_code,
@@ -285,20 +309,27 @@ class MailerSendEmailSender:
                 await log_session.commit()
 
             logger.info(
-                "auth_email_event_insert_success: event_id=%s type=%s status=%s latency_ms=%s",
+                "email_event_insert_success: event_id=%s type=%s status=%s provider_message_id=%s correlation_id=%s auth_user_id_prefix=%s latency_ms=%s",
                 event_id,
-                canonical_email_type,  # Log valor canónico
+                canonical_email_type,
                 status,
+                provider_message_id,
+                correlation_id,
+                (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
                 latency_ms,
             )
+            
+            return str(event_id) if event_id else None
 
         except Exception as e:
             logger.exception(
-                "auth_email_event_insert_failed: type=%s status=%s error=%s",
+                "auth_email_event_insert_failed: type=%s status=%s correlation_id=%s error=%s",
                 email_type,
                 status,
+                correlation_id,
                 str(e),
             )
+            return None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Settings factory
@@ -975,9 +1006,225 @@ class MailerSendEmailSender:
             )
             raise
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Generic tracked email sender (reusable for any email_type)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _generate_stable_idempotency_key(
+        email_type: str,
+        auth_user_id: Optional[UUID],
+        to_email: str,
+        subject: str,
+    ) -> str:
+        """
+        Generate a STABLE idempotency key for deduplication (deterministic).
+
+        Uses ONLY stable fields (NOT body content) to ensure retries with
+        template/body changes don't create duplicate rows.
+
+        Args:
+            email_type: Tipo de email (purchase_confirmation, etc.)
+            auth_user_id: UUID del usuario (o None)
+            to_email: Email destino
+            subject: Asunto del email
+
+        Returns:
+            SHA-256 hash truncated to 64 chars (stable between retries)
+        """
+        # Normalize inputs for consistency
+        normalized_email = (to_email or "").lower().strip()
+        normalized_subject = (subject or "").strip()
+        
+        raw = (
+            f"{email_type}:"
+            f"{str(auth_user_id) if auth_user_id else 'no_auth'}:"
+            f"{normalized_email}:"
+            f"{normalized_subject}"
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()[:64]
+    
+    @staticmethod
+    def _generate_deterministic_correlation_id(
+        email_type: str,
+        idempotency_key: str,
+    ) -> str:
+        """
+        Generate a deterministic correlation_id from idempotency_key.
+        
+        This ensures logs and DB always align, even on retries.
+        
+        Format: email:{email_type}:{idem_key_prefix}
+        
+        Returns:
+            Deterministic correlation_id string
+        """
+        return f"email:{email_type}:{idempotency_key[:16]}"
+
+    async def send_tracked_email(
+        self,
+        email_type: str,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+        *,
+        auth_user_id: Optional[UUID] = None,
+        correlation_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> str:
+        """
+        Envía cualquier email con instrumentación completa (pending → sent/failed).
+
+        Este método es REUTILIZABLE para cualquier tipo de email que necesite
+        tracking en auth_email_events.
+
+        Flow:
+        1. Genera idempotency_key ESTABLE si no viene (deterministic, no time.time())
+        2. Loguea evento 'pending' en auth_email_events
+        3. Envía el email via MailerSend
+        4. Actualiza a 'sent' con provider_message_id (o 'failed' si hay error)
+
+        Args:
+            email_type: Tipo de email (purchase_confirmation, etc.) - debe existir en enum SQL
+            to_email: Email destino
+            subject: Asunto del email
+            html_body: Cuerpo HTML
+            text_body: Cuerpo texto plano
+            auth_user_id: UUID del usuario (SSOT)
+            correlation_id: ID de correlación (autogenerado si no viene)
+            idempotency_key: Clave de idempotencia (autogenerada si no viene)
+
+        Returns:
+            provider_message_id del email enviado
+
+        Raises:
+            RuntimeError/MailerSendError: Si falla el envío
+        """
+        # STABLE idempotency_key (deterministic, NOT time-based, NO body content)
+        if not idempotency_key:
+            idempotency_key = self._generate_stable_idempotency_key(
+                email_type=email_type,
+                auth_user_id=auth_user_id,
+                to_email=to_email,
+                subject=subject,
+            )
+        
+        # DETERMINISTIC correlation_id from idempotency_key (ensures log/DB alignment on retries)
+        if not correlation_id:
+            correlation_id = self._generate_deterministic_correlation_id(
+                email_type=email_type,
+                idempotency_key=idempotency_key,
+            )
+
+        logger.info(
+            "[MailerSend] send_tracked_email: type=%s to=%s subject=%s auth_user_id_prefix=%s idem_key_prefix=%s",
+            email_type,
+            (to_email[:3] + "***") if to_email else "unknown",
+            subject[:40] if subject else "N/A",
+            (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
+            idempotency_key[:12] + "...",
+        )
+
+        # PASO 1: Log evento PENDING
+        await self._log_email_event(
+            email_type=email_type,
+            status="pending",
+            to_email=to_email,
+            auth_user_id=auth_user_id,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+        )
+
+        start_time = time.perf_counter()
+        try:
+            # PASO 2: Enviar email
+            message_id = await self._send_email(to_email, subject, html_body, text_body)
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+
+            # PASO 3: Actualizar a SENT con provider_message_id
+            await self._log_email_event(
+                email_type=email_type,
+                status="sent",
+                to_email=to_email,
+                auth_user_id=auth_user_id,
+                provider_message_id=message_id,
+                latency_ms=latency_ms,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+            )
+
+            return message_id
+
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            err_code = getattr(e, "error_code", "unknown_error")
+
+            # Best-effort: log failed event, then re-raise original error
+            try:
+                await self._log_email_event(
+                    email_type=email_type,
+                    status="failed",
+                    to_email=to_email,
+                    auth_user_id=auth_user_id,
+                    latency_ms=latency_ms,
+                    error_code=str(err_code),
+                    error_message=str(e)[:500],
+                    idempotency_key=idempotency_key,
+                    correlation_id=correlation_id,
+                )
+            except Exception as log_err:
+                logger.warning(
+                    "send_tracked_email_failed_event_log_error: type=%s error=%s",
+                    email_type,
+                    str(log_err),
+                )
+            raise
+
+    async def send_purchase_confirmation_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+        *,
+        auth_user_id: Optional[UUID] = None,
+        correlation_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> str:
+        """
+        Envía email de confirmación de compra con instrumentación completa.
+
+        Wrapper sobre send_tracked_email con email_type='purchase_confirmation'.
+
+        Args:
+            to_email: Email destino
+            subject: Asunto del email
+            html_body: Cuerpo HTML
+            text_body: Cuerpo texto plano
+            auth_user_id: UUID del usuario (SSOT)
+            correlation_id: ID de correlación (autogenerado si no viene)
+            idempotency_key: Clave de idempotencia (autogenerada si no viene, STABLE)
+
+        Returns:
+            provider_message_id del email enviado
+
+        Raises:
+            RuntimeError: Si falla el envío
+        """
+        return await self.send_tracked_email(
+            email_type="purchase_confirmation",
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+            auth_user_id=auth_user_id,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+        )
+
 
 __all__ = ["MailerSendEmailSender", "MailerSendError"]
 
 # Fin del archivo backend/app/shared/integrations/mailersend_email_sender.py
-
 

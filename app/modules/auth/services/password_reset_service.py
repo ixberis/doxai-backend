@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 from app.modules.auth.repositories import PasswordResetRepository
 from app.modules.auth.services.user_service import UserService
@@ -120,11 +123,13 @@ class PasswordResetService:
         )
 
         # Enviamos correo - capturamos cualquier excepción para no romper el endpoint
+        # DB 2.0 SSOT: Propagar auth_user_id para persistencia de eventos
         await self._send_reset_email_safely(
             email=user.user_email,
             token=token,
             reset_record=reset_record,
             user_id=user_id,
+            auth_user_id=getattr(user, "auth_user_id", None),
         )
 
         return {
@@ -201,10 +206,12 @@ class PasswordResetService:
         )
 
         # Enviar email de notificación (best-effort, no debe fallar el reset)
+        # DB 2.0 SSOT: Propagar auth_user_id para persistencia de eventos
         await self._send_reset_success_email_safely(
             user_email=user_email,
             user_id=user_id,
             full_name=user_name,
+            auth_user_id=getattr(user, "auth_user_id", None),
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -236,11 +243,14 @@ class PasswordResetService:
         token: str,
         reset_record: Any,
         user_id: int,
+        auth_user_id: Optional["UUID"] = None,
     ) -> None:
         """
         Envía el correo de restablecimiento de forma segura.
         Captura cualquier excepción y actualiza el tracking en DB.
         NUNCA lanza excepciones - el endpoint siempre responde 200.
+        
+        DB 2.0 SSOT: Propaga auth_user_id al sender para persistencia de eventos.
         """
         masked_email = _mask_email(email)
         
@@ -249,6 +259,7 @@ class PasswordResetService:
                 to_email=email,
                 full_name="",
                 reset_token=token,
+                auth_user_id=auth_user_id,
             )
             
             # Éxito: actualizar tracking
@@ -257,9 +268,10 @@ class PasswordResetService:
             await self.db.commit()
             
             logger.info(
-                "password_reset_email_sent email=%s user_id=%s",
+                "password_reset_email_sent email=%s user_id=%s auth_user_id=%s",
                 masked_email,
                 user_id,
+                (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
             )
             
         except Exception as e:
@@ -288,12 +300,15 @@ class PasswordResetService:
         user_email: str,
         user_id: str,
         full_name: str,
+        auth_user_id: Optional["UUID"] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
     ) -> None:
         """
         Envía email de notificación de reset exitoso (best-effort).
         No lanza excepciones; loguea warning en caso de fallo.
+        
+        DB 2.0 SSOT: Propaga auth_user_id al sender para persistencia de eventos.
         """
         if not user_email:
             logger.warning(
@@ -311,17 +326,20 @@ class PasswordResetService:
                 ip_address=ip_address,
                 user_agent=user_agent,
                 reset_datetime_utc=reset_datetime,
+                auth_user_id=auth_user_id,
             )
             logger.info(
-                "password_reset_success_email_sent to=%s user_id=%s",
+                "password_reset_success_email_sent to=%s user_id=%s auth_user_id=%s",
                 _mask_email(user_email),
                 user_id,
+                (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
             )
         except Exception as e:
             logger.warning(
-                "password_reset_success_email_failed to=%s user_id=%s error=%s",
+                "password_reset_success_email_failed to=%s user_id=%s auth_user_id=%s error=%s",
                 _mask_email(user_email),
                 user_id,
+                (str(auth_user_id)[:8] + "...") if auth_user_id else "None",
                 str(e)[:200],
             )
 
