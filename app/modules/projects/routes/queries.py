@@ -57,27 +57,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 SORT_COLUMN_WHITELIST = {
     # Legacy aliases (frontend antiguo) - loggear warning cuando se usen
-    "project_updated_at": "updated_at",
-    "project_created_at": "created_at",
-    "project_ready_at": "ready_at",
-    # Nombres directos de columna (nuevos/preferidos)
+    # SOLO valores canónicos (nombres directos de columna)
     "updated_at": "updated_at",
     "created_at": "created_at",
     "ready_at": "ready_at",
     "archived_at": "archived_at",
 }
 
-# Set de aliases legacy para detectar uso
-LEGACY_SORT_ALIASES = {"project_updated_at", "project_created_at", "project_ready_at"}
-
-
-def _log_legacy_alias_warning(ordenar_por: str, operation: str, mapped_to: str):
-    """Loggea warning cuando se usa un alias legacy de ordenamiento."""
-    if ordenar_por in LEGACY_SORT_ALIASES:
-        logger.warning(
-            "legacy_sort_key_used op=%s key=%s mapped=%s",
-            operation, ordenar_por, mapped_to
-        )
+# Set de valores legacy RECHAZADOS (para validación explícita y error 400)
+REJECTED_LEGACY_SORT_KEYS: frozenset[str] = frozenset({
+    "project_updated_at",
+    "project_created_at",
+    "project_ready_at",
+})
 
 
 def _get_auth_user_id(user) -> UUID:
@@ -260,7 +252,7 @@ async def list_projects_for_user(
 )
 async def list_active_projects(
     request: Request,
-    ordenar_por: str = Query("project_updated_at", description="Columna para ordenar"),
+    ordenar_por: str = Query("updated_at", description="Columna para ordenar (canónico)"),
     asc: bool = Query(False, description="Orden ascendente (default: descendente)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -277,8 +269,19 @@ async def list_active_projects(
         # NO se necesita fase auth extra - ctx ya está disponible con timings en request.state
         auth_user_id = ctx.auth_user_id
 
-        # Fase: Validation (pre_ms)
+        # Fase: Validation (pre_ms) - RECHAZAR legacy con 400
         with telemetry.measure("pre_ms"):
+            # Rechazar valores legacy explícitamente
+            if ordenar_por in REJECTED_LEGACY_SORT_KEYS:
+                telemetry.finalize(request, status_code=400, result="legacy_rejected")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": f"ordenar_por '{ordenar_por}' is legacy and rejected. Use canonical: {', '.join(SORT_COLUMN_WHITELIST.keys())}",
+                        "error_code": "LEGACY_SORT_KEY_REJECTED",
+                    }
+                )
+            
             if ordenar_por not in SORT_COLUMN_WHITELIST:
                 telemetry.finalize(request, status_code=400, result="validation_error")
                 raise HTTPException(
@@ -289,7 +292,6 @@ async def list_active_projects(
                     }
                 )
             mapped_column = SORT_COLUMN_WHITELIST[ordenar_por]
-            _log_legacy_alias_warning(ordenar_por, "list_active_projects", mapped_column)
 
         # Fase: DB Query (BD 2.0: solo auth_user_id, NO user_email)
         with telemetry.measure("db_ms"):
@@ -344,7 +346,7 @@ async def list_active_projects(
 )
 async def list_closed_projects(
     request: Request,
-    ordenar_por: str = Query("project_updated_at", description="Columna para ordenar"),
+    ordenar_por: str = Query("updated_at", description="Columna para ordenar (canónico)"),
     asc: bool = Query(False, description="Orden ascendente (default: descendente)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -360,8 +362,19 @@ async def list_closed_projects(
         # BD 2.0 SSOT: auth_user_id ya resuelto por get_current_user_ctx (Core)
         auth_user_id = ctx.auth_user_id
 
-        # Fase: Validation (pre_ms)
+        # Fase: Validation (pre_ms) - RECHAZAR legacy con 400
         with telemetry.measure("pre_ms"):
+            # Rechazar valores legacy explícitamente
+            if ordenar_por in REJECTED_LEGACY_SORT_KEYS:
+                telemetry.finalize(request, status_code=400, result="legacy_rejected")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": f"ordenar_por '{ordenar_por}' is legacy and rejected. Use canonical: {', '.join(SORT_COLUMN_WHITELIST.keys())}",
+                        "error_code": "LEGACY_SORT_KEY_REJECTED",
+                    }
+                )
+            
             if ordenar_por not in SORT_COLUMN_WHITELIST:
                 telemetry.finalize(request, status_code=400, result="validation_error")
                 raise HTTPException(
@@ -372,7 +385,6 @@ async def list_closed_projects(
                     }
                 )
             mapped_column = SORT_COLUMN_WHITELIST[ordenar_por]
-            _log_legacy_alias_warning(ordenar_por, "list_closed_projects", mapped_column)
 
         # Fase: DB Query (BD 2.0: solo auth_user_id, NO user_email)
         with telemetry.measure("db_ms"):

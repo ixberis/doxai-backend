@@ -197,10 +197,10 @@ class MailerSendEmailSender:
         """
         from uuid import uuid4 as generate_uuid
         
-        # Normalizar email_type a valor canónico SQL
+        # Validar email_type es canónico (rechaza legacy)
         try:
-            from app.modules.auth.enums import normalize_email_type
-            canonical_email_type = normalize_email_type(email_type)
+            from app.modules.auth.enums import validate_email_type
+            canonical_email_type = validate_email_type(email_type)
         except ValueError as e:
             logger.error("auth_email_event_insert_invalid_type: %s", str(e))
             return None

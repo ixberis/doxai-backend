@@ -38,19 +38,17 @@ _SESSIONLOCAL_IMPORT_PATH = "app.shared.database.database"
 from app.modules.auth.enums import (
     AuthEmailType,
     AUTH_EMAIL_TYPES,
-    normalize_email_type,
+    validate_email_type,
 )
 
-# Tipos de email soportados (Literal para type hints, alineado con SQL canon)
-# Acepta aliases legacy para compatibilidad, pero se normalizan antes de INSERT
+# Tipos de email soportados (Literal para type hints, SOLO canónicos)
 EmailType = Literal[
     "activation",
     "password_reset", 
     "password_reset_success",
     "welcome",
-    # Aliases legacy (se normalizan internamente)
-    "account_activation",
-    "password_reset_request",
+    "purchase_confirmation",
+    "admin_activation_notice",
 ]
 
 # Status de evento
@@ -206,9 +204,9 @@ class EmailEventLogger:
             logger.warning("email_event_log_skipped: no session factory available")
             return None
         
-        # Normalizar email_type a valor canónico SQL
+        # Validar email_type es canónico (rechaza legacy)
         try:
-            canonical_email_type = normalize_email_type(event.email_type)
+            canonical_email_type = validate_email_type(event.email_type)
         except ValueError as e:
             logger.error("email_event_log_invalid_type: %s", str(e))
             return None

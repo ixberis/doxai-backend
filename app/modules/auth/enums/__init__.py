@@ -28,7 +28,12 @@ from .login_failure_reason_enum import LoginFailureReason, as_pg_enum as login_f
 from .token_type_enum import TokenType, as_pg_enum as token_type_pg_enum
 
 # ===== EMAIL =====
-from .email_types_enum import AuthEmailType, AUTH_EMAIL_TYPES, EMAIL_TYPE_ALIASES, normalize_email_type
+from .email_types_enum import (
+    AuthEmailType,
+    AUTH_EMAIL_TYPES,
+    REJECTED_LEGACY_EMAIL_TYPES,
+    validate_email_type,
+)
 from .email_event_status_enum import (
     AuthEmailEventStatus,
     EMAIL_OPERATIONAL_STATUSES,
@@ -80,8 +85,8 @@ __all__ = [
     # Email Enums
     "AuthEmailType",
     "AUTH_EMAIL_TYPES",
-    "EMAIL_TYPE_ALIASES",
-    "normalize_email_type",
+    "REJECTED_LEGACY_EMAIL_TYPES",
+    "validate_email_type",
     "AuthEmailEventStatus",
     "EMAIL_OPERATIONAL_STATUSES",
     "EMAIL_DELIVERABILITY_STATUSES",

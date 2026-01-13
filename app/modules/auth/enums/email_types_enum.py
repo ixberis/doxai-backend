@@ -2,18 +2,22 @@
 """
 backend/app/modules/auth/enums/email_types_enum.py
 
-Tipos de emails de autenticación - fuente de verdad.
+Tipos de emails de autenticación - fuente de verdad CANÓNICA.
 
 Estos valores corresponden EXACTAMENTE al enum `auth_email_type` en Postgres.
-Canon único sin duplicados semánticos:
-  - activation (NO account_activation)
-  - password_reset (NO password_reset_request)
+SOLO valores canónicos, SIN aliases legacy:
+  - activation
+  - password_reset
   - password_reset_success
   - welcome
+  - purchase_confirmation
+  - admin_activation_notice
+
+IMPORTANTE: El sistema RECHAZA valores legacy (account_activation, password_reset_request).
 
 Autor: Sistema
 Fecha: 2026-01-06
-Updated: 2026-01-13 - Alineación canónica con SQL (sin duplicados)
+Updated: 2026-01-13 - ELIMINACIÓN TOTAL de aliases legacy
 """
 from enum import StrEnum
 from typing import Tuple
@@ -43,61 +47,56 @@ class AuthEmailType(StrEnum):
 AUTH_EMAIL_TYPES: Tuple[str, ...] = tuple(e.value for e in AuthEmailType)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Aliases para compatibilidad temporal (normalización a canon)
-# Permite que código legacy use nombres antiguos sin romper
-# ─────────────────────────────────────────────────────────────────────────────
-EMAIL_TYPE_ALIASES: dict[str, str] = {
-    # Legacy → Canon
-    "account_activation": "activation",
-    "password_reset_request": "password_reset",
-    # Canon → Canon (pass-through)
-    "activation": "activation",
-    "password_reset": "password_reset",
-    "password_reset_success": "password_reset_success",
-    "welcome": "welcome",
-    "purchase_confirmation": "purchase_confirmation",
-    "admin_activation_notice": "admin_activation_notice",
-}
+# Set de valores legacy RECHAZADOS (existieron en producción, ahora prohibidos)
+# - account_activation: usado en v1, reemplazado por 'activation'
+# - password_reset_request: usado en v1, reemplazado por 'password_reset'
+REJECTED_LEGACY_EMAIL_TYPES: frozenset[str] = frozenset({
+    "account_activation",
+    "password_reset_request",
+})
 
 
-def normalize_email_type(email_type: str) -> str:
+def validate_email_type(email_type: str) -> str:
     """
-    Normaliza un email_type a su valor canónico SQL.
+    Valida que email_type sea un valor canónico SQL.
     
-    Acepta aliases legacy y retorna el valor canónico para inserción en BD.
+    RECHAZA valores legacy con error explícito.
     
     Args:
-        email_type: Valor original (puede ser alias o canónico)
+        email_type: Valor a validar (debe ser canónico)
         
     Returns:
-        Valor canónico (activation, password_reset, etc.)
+        El mismo valor si es canónico
         
     Raises:
-        ValueError: Si el valor no es reconocido
+        ValueError: Si el valor es legacy o desconocido
         
     Examples:
-        >>> normalize_email_type("account_activation")
+        >>> validate_email_type("activation")
         'activation'
-        >>> normalize_email_type("password_reset_request")
-        'password_reset'
-        >>> normalize_email_type("activation")
-        'activation'
+        >>> validate_email_type("account_activation")  # FALLA
+        ValueError: Legacy email_type 'account_activation' rejected...
     """
-    canonical = EMAIL_TYPE_ALIASES.get(email_type)
-    if canonical is None:
+    if email_type in REJECTED_LEGACY_EMAIL_TYPES:
+        raise ValueError(
+            f"Legacy email_type '{email_type}' rejected. "
+            f"Use canonical value instead. Valid: {list(AUTH_EMAIL_TYPES)}"
+        )
+    
+    if email_type not in AUTH_EMAIL_TYPES:
         raise ValueError(
             f"Invalid email_type '{email_type}'. "
-            f"Valid values: {list(EMAIL_TYPE_ALIASES.keys())}"
+            f"Valid values: {list(AUTH_EMAIL_TYPES)}"
         )
-    return canonical
+    
+    return email_type
 
 
 __all__ = [
     "AuthEmailType",
     "AUTH_EMAIL_TYPES",
-    "EMAIL_TYPE_ALIASES",
-    "normalize_email_type",
+    "REJECTED_LEGACY_EMAIL_TYPES",
+    "validate_email_type",
 ]
 
 # Fin del archivo
