@@ -150,15 +150,25 @@ def _try_import_router(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# AUTH
+# AUTH (CRITICAL - FAIL FAST IN PRODUCTION)
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth routers se montan en AMBAS capas (api y public) para compatibilidad
 # EXCEPCIÓN: rutas /_internal/* van SOLO en public (sin prefix /api)
 # para que sean accesibles en /_internal/... directamente.
+#
+# FAIL-FAST POLICY:
+# - En producción (ENVIRONMENT=production): raise RuntimeError, app NO arranca
+# - En desarrollo/tests: log warning explícito, continuar sin auth
+_is_production = os.environ.get("ENVIRONMENT", "").lower() == "production"
+
 try:
     from app.modules.auth.routes import get_auth_routers
 
-    for r in get_auth_routers():
+    _auth_routers = list(get_auth_routers())
+    if not _auth_routers:
+        raise RuntimeError("get_auth_routers() retornó lista vacía - auth no disponible")
+    
+    for r in _auth_routers:
         name = _get_router_name(r)
         # Routers internos (/_internal/*) solo en PUBLIC (sin /api prefix)
         # Esto permite acceso directo a /_internal/auth/metrics/snapshot
@@ -168,8 +178,24 @@ try:
             # Routers públicos en ambas capas
             _include_once(api, r, "auth", _mounted_api)
             _include_once(public, r, "auth", _mounted_public)
+    
+    logger.info("✅ Auth routers montados correctamente (%d routers)", len(_auth_routers))
+
 except Exception as e:
-    logger.warning("Auth routers no montados: %s", e)
+    if _is_production:
+        # PRODUCTION: Fail-fast - la app NO debe arrancar sin auth
+        logger.critical(
+            "❌ CRITICAL: Auth routers FAILED to mount in PRODUCTION - aborting startup",
+            exc_info=True,
+        )
+        raise RuntimeError(f"Auth routers failed to mount: {e}") from e
+    else:
+        # DEV/TEST: Warning explícito pero continuar (para tests parciales)
+        logger.warning(
+            "⚠️ Auth routers no montados (ENVIRONMENT=%s): %s",
+            os.environ.get("ENVIRONMENT", "unset"),
+            e,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
