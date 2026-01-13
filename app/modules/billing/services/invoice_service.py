@@ -74,23 +74,30 @@ def _build_bill_to(
     Construye sección "Bill to" del recibo.
     
     Lógica para determinar el nombre del receptor:
-    - Si hay perfil fiscal activo/verificado:
-      - Si use_razon_social=True → usar razon_social
-      - Si use_razon_social=False → usar user_name
+    - Si hay perfil fiscal con use_razon_social=True y razon_social:
+      → usar razon_social (compras a nombre de empresa)
+    - Si hay perfil fiscal con use_razon_social=False:
+      → usar user_name (compras a nombre personal)
     - Si no hay perfil → user_name o email del usuario
     - Edge case (sin datos) → "Usuario #{uuid_prefix}"
+    
+    IMPORTANTE: Para recibos comerciales (no CFDI), usamos el perfil fiscal
+    sin importar el status (draft/active/verified). El status es solo
+    para validación de datos fiscales obligatorios para CFDI.
     
     SSOT: Uses auth_user_id (UUID) as primary identifier.
     """
     uuid_prefix = str(auth_user_id)[:8]
     
-    # Caso A: Tax profile activo/verificado
-    if tax_profile and tax_profile.status in ("active", "verified"):
+    # Caso A: Tax profile con datos fiscales
+    # Usamos el perfil si existe, sin importar status (recibo comercial, no CFDI)
+    if tax_profile:
         # Determinar nombre según use_razon_social
         if tax_profile.use_razon_social and tax_profile.razon_social:
+            # Compra a nombre de empresa: usar razón social
             recipient_name = tax_profile.razon_social
         else:
-            # use_razon_social=False → usar nombre del usuario
+            # Compra a nombre personal: usar nombre del usuario
             recipient_name = user_name or f"Usuario #{uuid_prefix}"
         
         return {
@@ -100,6 +107,7 @@ def _build_bill_to(
             "tax_regime": tax_profile.regimen_fiscal_clave,
             "postal_code": tax_profile.domicilio_fiscal_cp,
             "billing_email": tax_profile.email_facturacion,
+            "tax_profile_status": tax_profile.status,  # Para logging/debug
         }
     
     # Caso B: Sin tax profile pero con datos de usuario
@@ -257,10 +265,10 @@ async def get_or_create_invoice(
         
         if needs_backfill and (user_name or user_email):
             # Obtener tax profile para el backfill using auth_user_id
+            # NO filtramos por status: recibo comercial puede usar cualquier perfil
             tax_result = await session.execute(
                 select(UserTaxProfile).where(
                     UserTaxProfile.auth_user_id == auth_user_id,
-                    UserTaxProfile.status.in_(["active", "verified"]),
                 )
             )
             tax_profile = tax_result.scalar_one_or_none()
@@ -290,10 +298,11 @@ async def get_or_create_invoice(
         return existing
     
     # Obtener perfil fiscal del usuario (si existe) using auth_user_id
+    # NO filtramos por status: recibo comercial puede usar cualquier perfil
+    # El status (draft/active/verified) es solo para validación CFDI
     tax_result = await session.execute(
         select(UserTaxProfile).where(
             UserTaxProfile.auth_user_id == auth_user_id,
-            UserTaxProfile.status.in_(["active", "verified"]),
         )
     )
     tax_profile = tax_result.scalar_one_or_none()
@@ -316,12 +325,28 @@ async def get_or_create_invoice(
         tax_profile=tax_profile,
     )
     
+    # Log detallado para diagnóstico de tax profile
+    if tax_profile:
+        logger.info(
+            "invoice_snapshot_tax_profile_used: auth_user_id=%s use_razon_social=%s razon_social_present=%s rfc_present=%s status=%s",
+            str(auth_user_id)[:8] + "...",
+            tax_profile.use_razon_social,
+            bool(tax_profile.razon_social),
+            bool(tax_profile.rfc),
+            tax_profile.status,
+        )
+    else:
+        logger.info(
+            "invoice_snapshot_tax_profile_missing: auth_user_id=%s fallback_name=%s",
+            str(auth_user_id)[:8] + "...",
+            user_name or "Usuario #" + str(auth_user_id)[:8],
+        )
+    
     logger.debug(
-        "Building invoice snapshot: auth_user_id=%s bill_to_name=%s bill_to_email=%s tax_profile=%s",
+        "Building invoice snapshot: auth_user_id=%s bill_to_name=%s bill_to_email=%s",
         str(auth_user_id)[:8] + "...",
         bill_to.get("name"),
         bill_to.get("billing_email") or bill_to.get("email"),
-        tax_profile.status if tax_profile else None,
     )
     
     snapshot = {

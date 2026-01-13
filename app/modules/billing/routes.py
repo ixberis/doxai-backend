@@ -647,9 +647,10 @@ async def get_checkout_receipt_pdf(
         )
     
     # Usar snapshot de invoice (preferido) en lugar de legacy ReceiptData
-    from .services.invoice_service import get_or_create_invoice
+    from .services.invoice_service import get_or_create_invoice, _build_bill_to
     from .utils.pdf_receipt_generator import generate_invoice_pdf, InvoiceSnapshot
     from app.modules.auth.models import AppUser
+    from app.modules.user_profile.models.tax_profile import UserTaxProfile
     
     # Obtener datos del usuario para bill_to
     user_result = await session.execute(
@@ -670,14 +671,38 @@ async def get_checkout_receipt_pdf(
     )
     
     if invoice and invoice.snapshot_json:
-        # Construir InvoiceSnapshot desde JSON guardado
         snap = invoice.snapshot_json
+        
+        # OPCIÓN A: Recalcular bill_to con tax profile ACTUAL al generar receipt
+        # Esto permite que el recibo refleje datos fiscales actualizados post-compra
+        tax_result = await session.execute(
+            select(UserTaxProfile).where(UserTaxProfile.auth_user_id == auth_user_id)
+        )
+        current_tax_profile = tax_result.scalar_one_or_none()
+        
+        # Recalcular bill_to con datos actuales
+        fresh_bill_to = _build_bill_to(
+            auth_user_id=auth_user_id,
+            user_email=user_email,
+            user_name=user_name,
+            tax_profile=current_tax_profile,
+        )
+        
+        logger.info(
+            "receipt_bill_to_recalculated: auth_user_id=%s snapshot_name=%s fresh_name=%s use_razon_social=%s",
+            str(auth_user_id)[:8] + "...",
+            snap.get("bill_to", {}).get("name"),
+            fresh_bill_to.get("name"),
+            current_tax_profile.use_razon_social if current_tax_profile else None,
+        )
+        
+        # Construir InvoiceSnapshot usando bill_to recalculado
         snapshot = InvoiceSnapshot(
             invoice_number=invoice.invoice_number,
             issued_at=invoice.issued_at,
             paid_at=invoice.paid_at,
             issuer=snap.get("issuer", {}),
-            bill_to=snap.get("bill_to", {}),
+            bill_to=fresh_bill_to,  # Usar bill_to recalculado
             line_items=snap.get("line_items", []),
             totals=snap.get("totals", {}),
             payment_details=snap.get("payment_details", {}),

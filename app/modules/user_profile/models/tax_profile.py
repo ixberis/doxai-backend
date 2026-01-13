@@ -63,9 +63,10 @@ class UserTaxProfile(Base):
     )
     
     # BD 2.0 SSOT: auth_user_id (UUID) es el identificador canónico
-    auth_user_id: Mapped[Optional[UUID]] = mapped_column(
+    # DB schema: NOT NULL UNIQUE (required for FK constraint)
+    auth_user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        nullable=True,  # Nullable para migración gradual, pero requerido en código
+        nullable=False,  # Alineado con DB: NOT NULL
         unique=True,
         index=True,
         doc="UUID del usuario (BD 2.0 SSOT).",

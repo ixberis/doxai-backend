@@ -208,8 +208,43 @@ async def get_public_receipt_pdf(
     
     # Generar PDF desde snapshot
     from .utils.pdf_receipt_generator import generate_invoice_pdf, InvoiceSnapshot
+    from .services.invoice_service import _build_bill_to
+    from app.modules.user_profile.models.tax_profile import UserTaxProfile
+    from app.modules.auth.models import AppUser
     
     snap = invoice.snapshot_json or {}
+    
+    # OPCIÓN A: Recalcular bill_to con tax profile ACTUAL
+    auth_user_id = invoice.auth_user_id
+    
+    # Obtener tax profile actual
+    tax_result = await session.execute(
+        select(UserTaxProfile).where(UserTaxProfile.auth_user_id == auth_user_id)
+    )
+    current_tax_profile = tax_result.scalar_one_or_none()
+    
+    # Obtener datos del usuario
+    user_result = await session.execute(
+        select(AppUser).where(AppUser.auth_user_id == auth_user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    user_name = user.user_full_name if user else None
+    user_email = user.user_email if user else None
+    
+    # Recalcular bill_to con datos actuales
+    fresh_bill_to = _build_bill_to(
+        auth_user_id=auth_user_id,
+        user_email=user_email,
+        user_name=user_name,
+        tax_profile=current_tax_profile,
+    )
+    
+    logger.info(
+        "public_receipt_bill_to_recalculated: invoice=%s snapshot_name=%s fresh_name=%s",
+        invoice.invoice_number,
+        snap.get("bill_to", {}).get("name"),
+        fresh_bill_to.get("name"),
+    )
     
     # Sanitize issuer for PDF: only name/country, NO email (privacy by design)
     issuer_public = _sanitize_dict_for_public(
@@ -217,9 +252,9 @@ async def get_public_receipt_pdf(
         {"name", "country"},  # email excluded for public PDF
     )
     
-    # Sanitize bill_to for PDF: only name, no RFC/address/email
+    # Sanitize fresh_bill_to for PDF: only name, no RFC/address/email
     bill_to_public = _sanitize_dict_for_public(
-        snap.get("bill_to", {}),
+        fresh_bill_to,  # Usar bill_to recalculado
         {"name"},
     )
     

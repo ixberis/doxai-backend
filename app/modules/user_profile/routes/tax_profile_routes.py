@@ -13,9 +13,14 @@ OPTIMIZADO (2026-01-11):
 - Usa RequestTelemetry para instrumentación canónica
 - BD 2.0 SSOT: auth_user_id como identificador de ownership
 
+HOTFIX 2026-01-13:
+- Persistencia garantizada con flush/commit/refresh/verificación
+- Logs estructurados para trazabilidad
+- Manejo explícito de errores de constraint
+
 Autor: DoxAI
 Fecha: 2025-12-31
-Actualizado: 2026-01-11 - Core ctx + RequestTelemetry + BD 2.0 SSOT
+Actualizado: 2026-01-13 - Persistencia garantizada
 """
 
 from __future__ import annotations
@@ -23,8 +28,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError, DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database import get_db_timed
@@ -49,31 +55,24 @@ logger = logging.getLogger(__name__)
 )
 async def get_tax_profile(
     request: Request,
-    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
     db: AsyncSession = Depends(get_db_timed),
 ) -> Optional[TaxProfileResponse]:
     """Obtiene el perfil fiscal del usuario."""
     from app.shared.observability.request_telemetry import RequestTelemetry
     
     telemetry = RequestTelemetry.create("profile.tax-profile")
-    
-    # BD 2.0 SSOT: auth_user_id es el identificador canónico
     auth_uid = ctx.auth_user_id
     
     try:
-        # Fase: DB Query (BD 2.0 SSOT: filtrar por auth_user_id)
         with telemetry.measure("db_ms"):
             result = await db.execute(
                 select(UserTaxProfile).where(UserTaxProfile.auth_user_id == auth_uid)
             )
             profile = result.scalar_one_or_none()
         
-        # Fase: Serialization
         with telemetry.measure("ser_ms"):
-            if profile is None:
-                response = None
-            else:
-                response = TaxProfileResponse.model_validate(profile)
+            response = TaxProfileResponse.model_validate(profile) if profile else None
         
         telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}...")
         telemetry.set_flag("has_profile", profile is not None)
@@ -83,10 +82,7 @@ async def get_tax_profile(
         
     except Exception as e:
         telemetry.finalize(request, status_code=500, result="error")
-        logger.exception(
-            "query_error op=get_tax_profile auth_user_id=%s error=%s",
-            f"{str(auth_uid)[:8]}...", str(e)
-        )
+        logger.exception("query_error op=get_tax_profile auth_user_id=%s", f"{str(auth_uid)[:8]}...")
         raise
 
 
@@ -99,74 +95,125 @@ async def get_tax_profile(
 async def upsert_tax_profile(
     request: Request,
     data: TaxProfileUpsertRequest,
-    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
     db: AsyncSession = Depends(get_db_timed),
 ) -> TaxProfileResponse:
-    """Crea o actualiza el perfil fiscal."""
+    """Crea o actualiza el perfil fiscal con persistencia garantizada."""
     from app.shared.observability.request_telemetry import RequestTelemetry
     
     telemetry = RequestTelemetry.create("profile.tax-profile-upsert")
     
-    # BD 2.0 SSOT: auth_user_id es el identificador canónico
     auth_uid = ctx.auth_user_id
-    user_id = ctx.user_id  # Legacy FK para JOINs internos
+    auth_uid_str = str(auth_uid)
+    user_id = ctx.user_id
+    
+    logger.info(
+        "tax_profile_upsert_attempt: auth_user_id=%s user_id=%s",
+        f"{auth_uid_str[:8]}...", user_id,
+    )
     
     try:
-        # Fase: DB Query (lookup por auth_user_id - BD 2.0 SSOT)
+        # PASO 1: Lookup por auth_user_id (BD 2.0 SSOT)
         with telemetry.measure("db_lookup_ms"):
             result = await db.execute(
                 select(UserTaxProfile).where(UserTaxProfile.auth_user_id == auth_uid)
             )
             profile = result.scalar_one_or_none()
         
-        # Capturar si es nuevo ANTES de modificar
         was_new = profile is None
         
-        # Fase: Business logic + DB write
+        logger.info(
+            "tax_profile_lookup: auth_user_id=%s found=%s",
+            f"{auth_uid_str[:8]}...", not was_new,
+        )
+        
+        # PASO 2: INSERT o UPDATE
         with telemetry.measure("db_write_ms"):
             if was_new:
-                # Crear nuevo con ambos IDs (BD 2.0 SSOT + legacy FK)
                 profile = UserTaxProfile(
-                    auth_user_id=auth_uid,  # BD 2.0 SSOT
-                    user_id=user_id,  # Legacy FK para JOINs internos
+                    auth_user_id=auth_uid,
+                    user_id=user_id,
                     status=TaxProfileStatus.DRAFT.value,
                     use_razon_social=False,
                 )
                 db.add(profile)
+                logger.info(
+                    "tax_profile_insert_executed: auth_user_id=%s user_id=%s",
+                    f"{auth_uid_str[:8]}...", user_id,
+                )
+            else:
+                logger.info(
+                    "tax_profile_update_executed: auth_user_id=%s profile_id=%s",
+                    f"{auth_uid_str[:8]}...", profile.id,
+                )
             
-            # Actualizar campos
+            # Aplicar campos del request
             for field, value in data.model_dump(exclude_unset=True).items():
                 setattr(profile, field, value)
             
-            # Actualizar status a active si hay RFC y régimen
-            if profile.rfc and profile.regimen_fiscal_clave:
-                profile.status = TaxProfileStatus.ACTIVE.value
-            
+            # PASO 3: flush + commit + refresh
+            await db.flush()
             await db.commit()
             await db.refresh(profile)
         
-        # Fase: Serialization
+        # PASO 4: Verificación post-commit con raw SQL
+        with telemetry.measure("db_verify_ms"):
+            verify_result = await db.execute(
+                text("SELECT id FROM public.user_tax_profiles WHERE auth_user_id = :auth_uid"),
+                {"auth_uid": auth_uid}
+            )
+            persisted_row = verify_result.fetchone()
+            
+            if not persisted_row:
+                logger.error(
+                    "tax_profile_verify_failed: auth_user_id=%s reason=row_not_found_after_commit",
+                    f"{auth_uid_str[:8]}...",
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Error crítico: datos no persistidos. Contacte soporte.",
+                )
+        
+        # PASO 5: Serializar respuesta
         with telemetry.measure("ser_ms"):
             response = TaxProfileResponse.model_validate(profile)
         
-        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}...")
-        telemetry.set_flag("is_new", was_new)  # Corregido: usar was_new, no profile is not None
+        telemetry.set_flag("auth_user_id", f"{auth_uid_str[:8]}...")
+        telemetry.set_flag("is_new", was_new)
+        telemetry.set_flag("profile_id", profile.id)
         telemetry.finalize(request, status_code=200, result="success")
         
+        log_action = "tax_profile_created" if was_new else "tax_profile_updated"
         logger.info(
-            "Tax profile upserted: auth_user_id=%s is_new=%s rfc=%s status=%s",
-            f"{str(auth_uid)[:8]}...", was_new, profile.rfc, profile.status
+            "%s: auth_user_id=%s profile_id=%s rfc=%s use_razon_social=%s razon_social=%s",
+            log_action,
+            f"{auth_uid_str[:8]}...", profile.id, profile.rfc,
+            profile.use_razon_social, profile.razon_social,
         )
         
         return response
-        
+    
+    except HTTPException:
+        raise
+    
+    except (IntegrityError, DBAPIError) as e:
+        await db.rollback()
+        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+        logger.error(
+            "tax_profile_upsert_failed: auth_user_id=%s reason=db_error error=%s",
+            f"{auth_uid_str[:8]}...", error_msg,
+        )
+        telemetry.finalize(request, status_code=500, result="error")
+        raise HTTPException(status_code=500, detail="Error al guardar perfil fiscal.")
+    
     except Exception as e:
+        await db.rollback()
         telemetry.finalize(request, status_code=500, result="error")
         logger.exception(
-            "query_error op=upsert_tax_profile auth_user_id=%s error=%s",
-            f"{str(auth_uid)[:8]}...", str(e)
+            "tax_profile_upsert_failed: auth_user_id=%s reason=unexpected error=%s",
+            f"{auth_uid_str[:8]}...", str(e),
         )
-        raise
+        raise HTTPException(status_code=500, detail="Error inesperado al guardar perfil fiscal.")
 
 
 __all__ = ["router"]
