@@ -268,14 +268,16 @@ class AuthAggregators:
         """
         Cuenta usuarios distintos con al menos 1 checkout completado.
         
-        Fuente de verdad: billing.checkout_intents con status='completed'.
-        Fallback: public.credit_transactions con operation_code='CHECKOUT'.
+        SSOT BD 2.0: auth_user_id (UUID) - NO user_id.
+        
+        Fuente primaria: public.checkout_intents con status='completed'.
+        Fallback: public.credit_transactions con operation_code='CHECKOUT'
+                  (canónico: checkout_service usa 'CHECKOUT' al completar).
         """
         try:
-            # Primary: checkout_intents with status='completed'
             q = text("""
-                SELECT COUNT(DISTINCT user_id) 
-                FROM billing.checkout_intents 
+                SELECT COUNT(DISTINCT auth_user_id) 
+                FROM public.checkout_intents 
                 WHERE status = 'completed'
             """)
             res = await self.db.execute(q)
@@ -283,12 +285,16 @@ class AuthAggregators:
             if row and row[0] is not None:
                 return int(row[0])
         except Exception as e:
-            logger.debug("get_paying_users_total (checkout_intents) failed: %s", e)
+            logger.debug("get_paying_users_total primary failed: %s", e)
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
         
-        # Fallback: credit_transactions with operation_code='CHECKOUT'
+        # Fallback: credit_transactions.operation_code='CHECKOUT' (canónico)
         try:
             q = text("""
-                SELECT COUNT(DISTINCT user_id) 
+                SELECT COUNT(DISTINCT auth_user_id) 
                 FROM public.credit_transactions 
                 WHERE operation_code = 'CHECKOUT'
             """)
@@ -297,7 +303,7 @@ class AuthAggregators:
             if row and row[0] is not None:
                 return int(row[0])
         except Exception as e:
-            logger.debug("get_paying_users_total (credit_transactions) failed: %s", e)
+            logger.debug("get_paying_users_total fallback failed: %s", e)
         
         return 0
 
@@ -447,9 +453,10 @@ class AuthAggregators:
         
         # Query usuarios con pago en el rango
         # Fuente: public.checkout_intents.completed_at (status='completed')
+        # SSOT BD 2.0: auth_user_id (UUID), NOT user_id
         try:
             q = text("""
-                SELECT COUNT(DISTINCT user_id)
+                SELECT COUNT(DISTINCT auth_user_id)
                 FROM public.checkout_intents
                 WHERE status = 'completed'
                   AND completed_at IS NOT NULL
