@@ -183,13 +183,19 @@ async def upsert_tax_profile(
         telemetry.set_flag("profile_id", profile.id)
         telemetry.finalize(request, status_code=200, result="success")
         
-        log_action = "tax_profile_created" if was_new else "tax_profile_updated"
-        logger.info(
-            "%s: auth_user_id=%s profile_id=%s rfc=%s use_razon_social=%s razon_social=%s",
-            log_action,
-            f"{auth_uid_str[:8]}...", profile.id, profile.rfc,
-            profile.use_razon_social, profile.razon_social,
-        )
+        # Logs explícitos para auditoría (no usar variables dinámicas)
+        if was_new:
+            logger.info(
+                "tax_profile_created: auth_user_id=%s profile_id=%s rfc=%s use_razon_social=%s razon_social=%s",
+                f"{auth_uid_str[:8]}...", profile.id, profile.rfc,
+                profile.use_razon_social, profile.razon_social,
+            )
+        else:
+            logger.info(
+                "tax_profile_updated: auth_user_id=%s profile_id=%s rfc=%s use_razon_social=%s razon_social=%s",
+                f"{auth_uid_str[:8]}...", profile.id, profile.rfc,
+                profile.use_razon_social, profile.razon_social,
+            )
         
         return response
     
