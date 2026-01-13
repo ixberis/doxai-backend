@@ -220,7 +220,7 @@ class ActivationOperationalAggregator:
             q = text("""
                 SELECT COUNT(*)
                 FROM public.auth_email_events
-                WHERE email_type = 'account_activation'
+                WHERE email_type = 'activation'
                   AND status = 'sent'
                   AND created_at >= :from_ts
                   AND created_at < :to_ts
@@ -310,7 +310,7 @@ class ActivationOperationalAggregator:
                 FROM (
                     SELECT user_id, COUNT(*) AS cnt
                     FROM public.auth_email_events
-                    WHERE email_type = 'account_activation'
+                    WHERE email_type = 'activation'
                       AND status = 'sent'
                       AND created_at >= :from_ts
                       AND created_at < :to_ts
@@ -334,7 +334,7 @@ class ActivationOperationalAggregator:
             try:
                 q = text("""
                     SELECT COUNT(*) FROM public.auth_email_events
-                    WHERE email_type = 'account_activation'
+                    WHERE email_type = 'activation'
                       AND status = 'sent'
                       AND created_at >= :from_ts
                       AND created_at < :to_ts

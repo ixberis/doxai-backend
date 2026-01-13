@@ -186,15 +186,162 @@ class ActivationService:
             }
 
         # ---------------------------------------------------------
-        # 1) Activar usuario
+        # 1) Activar usuario (flush, no commit yet)
         # ---------------------------------------------------------
         user.user_is_activated = True
         user.user_status = UserStatus.active
-        await self.user_repo.save(user)
-        await self.activation_repo.mark_as_consumed(activation)
+        await self.user_repo.save(user)  # Uses flush internally
+        await self.activation_repo.mark_as_consumed(activation)  # Uses flush internally
         
-        # Invalidate BOTH caches (user_status/is_activated changed) - SSOT invalidation
-        # NOTE: user_repo.save() already invalidates, but we ensure it here for safety
+        # ---------------------------------------------------------
+        # 2) Asignar créditos de bienvenida (idempotente, SSOT)
+        #    Best-effort: si falla, log + warning pero NO romper activación
+        # ---------------------------------------------------------
+        credits_assigned = 0
+        warnings = []
+        welcome_credits_error = None
+
+        # Exponer user_id (INT) para flujos legacy de notificación, si aplica
+        try:
+            user_id_int = int(user.user_id)
+        except Exception:
+            user_id_int = getattr(user, "user_id", None)
+
+        # SSOT requerido para créditos (BD 2.0: auth_user_id UUID)
+        auth_user_id: Optional[UUID] = getattr(user, "auth_user_id", None)
+
+        if self.welcome_credits > 0 and auth_user_id is not None:
+            # Structured observability log: attempt
+            logger.info(
+                "welcome_credits_attempt auth_user_id=%s credits=%d",
+                str(auth_user_id)[:8] + "...", self.welcome_credits,
+            )
+            
+            try:
+                # ensure_welcome_credits uses flush() internally, not commit()
+                # This keeps everything in the same transaction
+                created = await self.credit_service.ensure_welcome_credits(
+                    auth_user_id=auth_user_id,
+                    welcome_credits=self.welcome_credits,
+                    session=self.db,
+                )
+                
+                if created:
+                    credits_assigned = self.welcome_credits
+                    # Structured observability log: success (new credits)
+                    logger.info(
+                        "welcome_credits_success auth_user_id=%s credits=%d",
+                        str(auth_user_id)[:8] + "...", credits_assigned,
+                    )
+                else:
+                    # Idempotency: credits already existed, wallet exists too
+                    logger.info(
+                        "welcome_credits_already_assigned auth_user_id=%s",
+                        str(auth_user_id)[:8] + "...",
+                    )
+                    
+            except Exception as e:
+                # Capture error but don't fail activation
+                welcome_credits_error = e
+                logger.error(
+                    "welcome_credits_failed auth_user_id=%s credits=%d error=%s",
+                    str(auth_user_id)[:8] + "...", self.welcome_credits, str(e),
+                    exc_info=True,
+                )
+                warnings.append("welcome_credits_failed")
+                
+        elif self.welcome_credits > 0 and auth_user_id is None:
+            logger.warning(
+                "welcome_credits_skipped_missing_auth_user_id user_id=%s",
+                user_id_int,
+            )
+            warnings.append("welcome_credits_failed")
+
+        # ---------------------------------------------------------
+        # 3) COMMIT FINAL: persiste activación + wallet + créditos
+        #    Si welcome_credits falló, hacemos rollback parcial y
+        #    re-commit solo la activación.
+        # ---------------------------------------------------------
+        if welcome_credits_error is not None:
+            # Rollback the failed credits operation
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            
+            # Re-fetch user and activation from DB to avoid detached/expired instances
+            # after rollback (SQLAlchemy async safety)
+            refetched_user = await self._get_user(user_id_int)
+            refetched_activation = await self.activation_repo.get_by_id(activation.id)
+            
+            if refetched_user is None:
+                # Edge case: user was deleted during activation - this shouldn't happen
+                logger.error(
+                    "activation_recovery_failed user_not_found user_id=%s",
+                    user_id_int,
+                )
+                raise RuntimeError(f"User {user_id_int} not found after rollback")
+            
+            # Idempotency: check if activation is already consumed
+            if refetched_activation is not None:
+                from app.modules.auth.enums import ActivationStatus
+                if refetched_activation.status == ActivationStatus.consumed:
+                    # Already consumed - no need to re-apply, just commit current state
+                    logger.info(
+                        "activation_already_consumed_after_rollback activation_id=%s",
+                        activation.id,
+                    )
+                else:
+                    # Re-apply activation changes on fresh instances
+                    refetched_user.user_is_activated = True
+                    refetched_user.user_status = UserStatus.active
+                    await self.user_repo.save(refetched_user)
+                    await self.activation_repo.mark_as_consumed(refetched_activation)
+            else:
+                # Activation record missing - still activate user
+                refetched_user.user_is_activated = True
+                refetched_user.user_status = UserStatus.active
+                await self.user_repo.save(refetched_user)
+                logger.warning(
+                    "activation_record_missing_after_rollback activation_id=%s user_id=%s",
+                    activation.id, user_id_int,
+                )
+            
+            try:
+                await self.db.commit()
+                logger.info(
+                    "activation_committed_without_credits auth_user_id=%s",
+                    str(auth_user_id)[:8] + "..." if auth_user_id else user_id_int,
+                )
+            except Exception as commit_err:
+                logger.error(
+                    "activation_commit_failed auth_user_id=%s error=%s",
+                    str(auth_user_id)[:8] + "..." if auth_user_id else user_id_int,
+                    str(commit_err),
+                    exc_info=True,
+                )
+                raise  # This is critical - activation must succeed
+        else:
+            # Happy path: commit everything together
+            try:
+                await self.db.commit()
+                logger.info(
+                    "activation_committed_with_credits auth_user_id=%s credits=%d",
+                    str(auth_user_id)[:8] + "..." if auth_user_id else user_id_int,
+                    credits_assigned,
+                )
+            except Exception as commit_err:
+                logger.error(
+                    "activation_commit_failed auth_user_id=%s error=%s",
+                    str(auth_user_id)[:8] + "..." if auth_user_id else user_id_int,
+                    str(commit_err),
+                    exc_info=True,
+                )
+                raise  # This is critical - activation must succeed
+
+        # ---------------------------------------------------------
+        # 4) Cache invalidation (best-effort, after commit)
+        # ---------------------------------------------------------
         try:
             from app.shared.security.auth_context_cache import invalidate_auth_context_cache
             from app.shared.security.login_user_cache import invalidate_login_user_cache
@@ -205,55 +352,11 @@ class ActivationService:
         except Exception:
             pass  # Best-effort, silent
 
-        # ---------------------------------------------------------
-        # 2) Asignar créditos de bienvenida (idempotente, SSOT)
-        # ---------------------------------------------------------
-        credits_assigned = 0
-        warnings = []
-
-        # Exponer user_id (INT) para flujos legacy de notificación, si aplica
-        try:
-            user_id_int = int(user.user_id)
-        except Exception:
-            user_id_int = getattr(user, "user_id", None)
-
-        # SSOT requerido para créditos
-        auth_user_id: Optional[UUID] = getattr(user, "auth_user_id", None)
-
-        try:
-            if self.welcome_credits > 0 and auth_user_id is not None:
-                created = await self.credit_service.ensure_welcome_credits(
-                    auth_user_id=auth_user_id,
-                    welcome_credits=self.welcome_credits,
-                )
-                if created:
-                    credits_assigned = self.welcome_credits
-            elif self.welcome_credits > 0 and auth_user_id is None:
-                logger.warning(
-                    "welcome_credits_skipped_missing_auth_user_id: user_id=%s",
-                    user_id_int,
-                )
-        except Exception as e:
-            # No rompemos la activación si hay un problema con créditos,
-            # pero debemos evitar dejar la transacción abortada.
-            try:
-                await self.db.rollback()
-            except Exception:
-                pass
-
-            logger.error(
-                "Error asignando créditos de bienvenida (SSOT) al usuario %s: %s",
-                str(auth_user_id)[:8] + "..." if auth_user_id else user_id_int,
-                e,
-                exc_info=True,
-            )
-            warnings.append("welcome_credits_failed")
-
         result = {
             "code": "ACCOUNT_ACTIVATED",
             "message": "La cuenta se activó exitosamente.",
             "credits_assigned": credits_assigned,
-            "user_id": user_id_int,  # útil para otros flows (admin notice, etc.)
+            "user_id": user_id_int,
         }
 
         if warnings:

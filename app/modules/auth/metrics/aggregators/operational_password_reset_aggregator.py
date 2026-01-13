@@ -229,6 +229,7 @@ class PasswordResetOperationalAggregator:
         
         # Intentar fuente instrumentada primero
         try:
+            # Usar valor canónico 'password_reset' (alineado con SQL auth_email_type)
             q = text("""
                 SELECT COUNT(*)
                 FROM public.auth_email_events

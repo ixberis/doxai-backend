@@ -206,9 +206,16 @@ class CreditService:
         La idempotencia se delega completamente a WalletService.add_credits,
         que verifica el idempotency_key internamente para evitar duplicados.
         
+        IMPORTANTE: Este método usa flush() internamente, NO commit().
+        El caller (ActivationService) es responsable del commit final.
+        Esto permite transacción atómica: activación + wallet + créditos.
+        
         Returns:
             True si se asignaron créditos nuevos.
-            False si ya existían o hubo error.
+            False si ya existían (idempotencia).
+            
+        Raises:
+            Exception: Propaga errores al caller para manejo transaccional.
         """
         db = session or self.session
         if not db:
@@ -217,37 +224,29 @@ class CreditService:
 
         idempotency_key = f"welcome_credits:{auth_user_id}"
 
-        try:
-            # add_credits now returns (tx, created: bool)
-            tx, is_new = await self.wallet_service.add_credits(
-                db,
-                auth_user_id,
-                welcome_credits,
-                operation_code="SIGNUP_BONUS",
-                description=f"Créditos de bienvenida ({welcome_credits})",
-                idempotency_key=idempotency_key,
-                tx_metadata={"type": "welcome_credits"},
+        # add_credits uses flush() internally, not commit()
+        # This allows the caller to control the transaction boundary
+        tx, is_new = await self.wallet_service.add_credits(
+            db,
+            auth_user_id,
+            welcome_credits,
+            operation_code="SIGNUP_BONUS",
+            description=f"Créditos de bienvenida ({welcome_credits})",
+            idempotency_key=idempotency_key,
+            tx_metadata={"type": "welcome_credits"},
+        )
+
+        if is_new:
+            logger.info(
+                "Welcome credits assigned: auth_user_id=%s credits=%d",
+                str(auth_user_id)[:8] + "...", welcome_credits,
             )
-
-            if is_new:
-                logger.info(
-                    "Welcome credits assigned: auth_user_id=%s credits=%d",
-                    str(auth_user_id)[:8] + "...", welcome_credits,
-                )
-            return is_new
-
-        except Exception as e:
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-            logger.error(
-                "CreditService.ensure_welcome_credits failed for auth_user_id=%s: %s",
+        else:
+            logger.info(
+                "Welcome credits idempotent (already exist): auth_user_id=%s",
                 str(auth_user_id)[:8] + "...",
-                str(e),
-                exc_info=True,
             )
-            return False
+        return is_new
 
     async def get_balance(
         self,

@@ -34,13 +34,23 @@ _factory_warning_logged = False
 # Canonical import path for SessionLocal (source of truth)
 _SESSIONLOCAL_IMPORT_PATH = "app.shared.database.database"
 
-# Tipos de email soportados
+# Import canonical email types from enums (SSOT)
+from app.modules.auth.enums import (
+    AuthEmailType,
+    AUTH_EMAIL_TYPES,
+    normalize_email_type,
+)
+
+# Tipos de email soportados (Literal para type hints, alineado con SQL canon)
+# Acepta aliases legacy para compatibilidad, pero se normalizan antes de INSERT
 EmailType = Literal[
-    "account_activation",
-    "account_created", 
-    "password_reset_request",
+    "activation",
+    "password_reset", 
     "password_reset_success",
-    "welcome"
+    "welcome",
+    # Aliases legacy (se normalizan internamente)
+    "account_activation",
+    "password_reset_request",
 ]
 
 # Status de evento
@@ -181,6 +191,10 @@ class EmailEventLogger:
         para que rollback en el flujo principal NO pierda los logs de email.
         Esto es crítico para métricas.
         
+        IMPORTANTE: El email_type se normaliza automáticamente al valor canónico SQL.
+        Aliases legacy (account_activation, password_reset_request) son aceptados
+        pero convertidos a (activation, password_reset) antes de INSERT.
+        
         Args:
             event: Datos del evento
             
@@ -190,6 +204,13 @@ class EmailEventLogger:
         session_factory = self._get_event_session_factory()
         if session_factory is None:
             logger.warning("email_event_log_skipped: no session factory available")
+            return None
+        
+        # Normalizar email_type a valor canónico SQL
+        try:
+            canonical_email_type = normalize_email_type(event.email_type)
+        except ValueError as e:
+            logger.error("email_event_log_invalid_type: %s", str(e))
             return None
         
         try:
@@ -235,7 +256,7 @@ class EmailEventLogger:
                 """)
                 
                 result = await log_session.execute(q, {
-                    "email_type": event.email_type,
+                    "email_type": canonical_email_type,  # Usar valor normalizado
                     "status": event.status,
                     "status_check": event.status,  # Separate param for CASE statement
                     "recipient_domain": event.recipient_domain,
@@ -258,7 +279,7 @@ class EmailEventLogger:
             logger.info(
                 "email_event_recorded: event_id=%s email_type=%s status=%s latency_ms=%s",
                 event_id,
-                event.email_type,
+                canonical_email_type,  # Log valor canónico
                 event.status,
                 event.latency_ms,
             )
@@ -307,12 +328,12 @@ class EmailEventTimer:
         return int((self._end - self._start) * 1000)
 
 
-# Mapeo de métodos de email a email_type
-EMAIL_METHOD_TO_TYPE: dict[str, EmailType] = {
-    "send_activation_email": "account_activation",
-    "send_password_reset_email": "password_reset_request",
-    "send_password_reset_success_email": "password_reset_success",
-    "send_welcome_email": "welcome",
+# Mapeo de métodos de email a email_type (usa valores canónicos SQL)
+EMAIL_METHOD_TO_TYPE: dict[str, str] = {
+    "send_activation_email": AuthEmailType.ACTIVATION.value,  # "activation"
+    "send_password_reset_email": AuthEmailType.PASSWORD_RESET.value,  # "password_reset"
+    "send_password_reset_success_email": AuthEmailType.PASSWORD_RESET_SUCCESS.value,
+    "send_welcome_email": AuthEmailType.WELCOME.value,
     # admin notice no se trackea en métricas de auth
 }
 

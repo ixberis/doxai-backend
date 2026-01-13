@@ -156,7 +156,7 @@ class FunctionalAggregators:
             q = text("""
                 SELECT COUNT(*) 
                 FROM public.auth_email_events
-                WHERE email_type = 'account_activation'
+                WHERE email_type = 'activation'
                   AND status = 'sent'
                   AND created_at >= :from_ts
                   AND created_at < :to_ts
@@ -224,7 +224,7 @@ class FunctionalAggregators:
                     FROM (
                         SELECT user_id, COUNT(*) as cnt
                         FROM public.auth_email_events
-                        WHERE email_type = 'account_activation'
+                        WHERE email_type = 'activation'
                           AND status = 'sent'
                           AND created_at >= :from_ts
                           AND created_at < :to_ts
@@ -579,7 +579,7 @@ class FunctionalAggregators:
             # Verificar si hay emails de activación ENVIADOS (mismo criterio que la métrica)
             q_check = text("""
                 SELECT COUNT(*) FROM public.auth_email_events
-                WHERE email_type = 'account_activation'
+                WHERE email_type = 'activation'
                   AND status = 'sent'
                   AND created_at >= :from_ts
                   AND created_at < :to_ts
@@ -595,7 +595,7 @@ class FunctionalAggregators:
                     FROM (
                         SELECT user_id
                         FROM public.auth_email_events
-                        WHERE email_type = 'account_activation'
+                        WHERE email_type = 'activation'
                           AND status = 'sent'
                           AND created_at >= :from_ts
                           AND created_at < :to_ts

@@ -77,6 +77,16 @@ class ActivationRepository:
     # ------------------------------------------------------------------
     # Lecturas
     # ------------------------------------------------------------------
+    async def get_by_id(self, activation_id: int) -> Optional[AccountActivation]:
+        """
+        Obtiene un registro de activación por ID.
+        
+        Útil para re-fetch después de rollback (SQLAlchemy async safety).
+        """
+        stmt = select(AccountActivation).where(AccountActivation.id == activation_id)
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_by_token(self, token: str) -> Optional[AccountActivation]:
         """
         Obtiene un registro de activación por token.

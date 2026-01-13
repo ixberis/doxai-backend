@@ -183,21 +183,35 @@ class MailerSendEmailSender:
         Log email event to auth_email_events table using a SEPARATE session.
 
         DB 2.0: Persist by SSOT auth_user_id (no user_id legacy).
+        
+        IMPORTANTE: Normaliza email_type a valor canónico SQL antes de INSERT.
+        Acepta aliases legacy (account_activation → activation).
 
         Silently fails if no session factory or on error (doesn't block email sending).
         """
+        # Normalizar email_type a valor canónico SQL
+        try:
+            from app.modules.auth.enums import normalize_email_type
+            canonical_email_type = normalize_email_type(email_type)
+        except ValueError as e:
+            logger.error("auth_email_event_insert_invalid_type: %s", str(e))
+            return
+        except ImportError:
+            # Fallback si no se puede importar (edge case)
+            canonical_email_type = email_type
+        
         session_factory = self._get_event_session_factory()
         if session_factory is None:
             logger.warning(
                 "auth_email_event_insert_skipped: no session_factory type=%s status=%s",
-                email_type,
+                canonical_email_type,
                 status,
             )
             return
 
         logger.info(
             "auth_email_event_insert_started: type=%s status=%s auth_user_id=%s domain=%s",
-            email_type,
+            canonical_email_type,
             status,
             (str(auth_user_id)[:8] + "...") if auth_user_id else None,
             self._extract_domain(to_email),
@@ -252,7 +266,7 @@ class MailerSendEmailSender:
                 result = await log_session.execute(
                     q,
                     {
-                        "email_type": email_type,
+                        "email_type": canonical_email_type,  # Usar valor normalizado
                         "status": status,
                         "status_check": status,
                         "recipient_domain": self._extract_domain(to_email),
@@ -273,7 +287,7 @@ class MailerSendEmailSender:
             logger.info(
                 "auth_email_event_insert_success: event_id=%s type=%s status=%s latency_ms=%s",
                 event_id,
-                email_type,
+                canonical_email_type,  # Log valor canónico
                 status,
                 latency_ms,
             )
