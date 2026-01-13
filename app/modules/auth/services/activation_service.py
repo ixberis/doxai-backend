@@ -283,8 +283,8 @@ class ActivationService:
                 raise RuntimeError(f"User {user_id_int} not found after rollback")
             
             # Idempotency: check if activation is already consumed
+            # NOTE: ActivationStatus is imported at module level (line 30)
             if refetched_activation is not None:
-                from app.modules.auth.enums import ActivationStatus
                 if refetched_activation.status == ActivationStatus.consumed:
                     # Already consumed - no need to re-apply, just commit current state
                     logger.info(
