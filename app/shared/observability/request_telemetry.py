@@ -107,7 +107,12 @@ class RequestTelemetry:
         
         MUST be called in all exit paths (success, error, exception).
         
-        Incorporates auth_timings from request.state.auth_timings if present.
+        IDEMPOTENCIA POR REQUEST:
+        - Usa request.state._request_telemetry_finalized como fuente de verdad
+        - Si ya se finalizó para este request (por cualquier instancia), retorna sin side effects
+        - self._finalized es guard secundario para casos sin request
+        
+        Esto permite llamar finalize() desde múltiples instancias o paths sin duplicar logs/state.
         
         Args:
             request: FastAPI Request object (can be None)
@@ -117,8 +122,23 @@ class RequestTelemetry:
         Returns:
             Dict with all timings and flags for optional diagnostics
         """
+        # ═══════════════════════════════════════════════════════════════════════
+        # IDEMPOTENCIA POR REQUEST (fuente de verdad)
+        # ═══════════════════════════════════════════════════════════════════════
+        if request is not None:
+            try:
+                if getattr(request.state, "_request_telemetry_finalized", False):
+                    # Ya finalizado por otra instancia o llamada previa
+                    self._finalized = True
+                    return self._build_summary()
+                # Marcar como finalizado para este request
+                request.state._request_telemetry_finalized = True
+            except Exception:
+                # Si request.state no está disponible, continuar con guard interno
+                pass
+        
+        # Guard interno (fallback si request es None o state no accesible)
         if self._finalized:
-            logger.warning("RequestTelemetry.finalize() called multiple times for route=%s", self.route_name)
             return self._build_summary()
         
         self._finalized = True

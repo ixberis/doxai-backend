@@ -20,14 +20,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
-from app.modules.auth.dependencies import require_admin
+from app.modules.auth.dependencies import require_admin_strict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/_internal/admin/users",
     tags=["admin-users"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin_strict)],
 )
 
 
@@ -656,7 +656,7 @@ async def update_user(
 async def delete_user(
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(require_admin),
+    current_user = Depends(require_admin_strict),
 ):
     """
     Soft delete a user (sets deleted_at timestamp).

@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 backend/app/modules/auth/services/token_service.py
@@ -13,12 +12,18 @@ SSOT Architecture (2025-01-07):
 - get_current_user retorna el objeto AppUser completo (retrocompatibilidad)
 - get_current_user_ctx retorna AuthContextDTO (nuevo, optimizado Core)
 
+ERROR CONTRACT (2026-01-13):
+- Missing/invalid/expired token: 401 error="invalid_token"
+- Invalid UUID sub: 401 error="invalid_user_id"
+- User not found: 401 error="user_not_found"
+- Inactive/locked user: 403 error="forbidden", message="User inactive or locked"
+
 Instrumentación (2026-01-11):
 - Auth dependency ahora mide jwt_decode_ms, user_lookup_ms, auth_dep_total_ms
 - Timings guardados en request.state.auth_timings para RequestTelemetry
 
 Autor: Ixchel Beristain
-Actualizado: 2026-01-11 (Instrumentación auth dependency + get_current_user_ctx)
+Actualizado: 2026-01-13 (Canonical error contract with dict details)
 """
 
 from __future__ import annotations
@@ -50,11 +55,16 @@ def _require_credentials(creds: HTTPAuthorizationCredentials | None) -> HTTPAuth
     
     FastAPI's HTTPBearer with auto_error=True returns 403 on missing credentials,
     which violates RFC 7235. This helper returns 401 Unauthorized instead.
+    
+    Returns canonical error dict for frontend compatibility.
     """
     if creds is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
+            detail={
+                "error": "invalid_token",
+                "message": "Missing authentication credentials",
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     return creds
@@ -125,6 +135,13 @@ async def _validate_and_get_user_ctx(
     
     NEW: Uses Redis cache for auth context (read-through with TTL).
     
+    CANONICAL ERROR CONTRACT:
+    - Invalid/expired token: 401 error="invalid_token"
+    - Missing sub: 401 error="invalid_token"
+    - Invalid UUID sub: 401 error="invalid_user_id"
+    - User not found: 401 error="user_not_found"
+    - Inactive/locked: 403 error="forbidden", message="User inactive or locked"
+    
     Guarda timings en request.state.auth_timings.
     """
     t_start = time.perf_counter()
@@ -152,13 +169,24 @@ async def _validate_and_get_user_ctx(
         _finalize("invalid_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido, expirado o de tipo incorrecto",
+            detail={
+                "error": "invalid_token",
+                "message": "Invalid, expired, or incorrect token type",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     sub = payload.get("sub")
     if not sub:
         _finalize("missing_sub")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token sin 'sub'")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "invalid_token",
+                "message": "Token missing 'sub' claim",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # ─── Fase: Parse UUID ───
     try:
@@ -168,7 +196,11 @@ async def _validate_and_get_user_ctx(
         _finalize("invalid_uuid_sub")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token con sub inválido (se requiere UUID)",
+            detail={
+                "error": "invalid_user_id",
+                "message": "Invalid user id format (UUID required)",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
     
     # ─── Fase: Try Redis Cache First ───
@@ -215,11 +247,24 @@ async def _validate_and_get_user_ctx(
     
     if not auth_context:
         _finalize("user_not_found")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "user_not_found",
+                "message": "User not found",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     if require_active_user and not auth_context.is_active:
         _finalize("inactive_user")
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo o bloqueado")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "message": "User inactive or locked",
+            },
+        )
     
     _finalize("uuid_core" if not timings["auth_ctx_cache_hit"] else "uuid_cached")
     return auth_context
@@ -235,6 +280,13 @@ async def get_current_user_ctx(
     
     Usar en rutas que solo necesitan contexto auth (user_id, auth_user_id, role, etc).
     NO soporta tokens legacy con sub INT - solo UUID.
+    
+    CANONICAL ERROR CONTRACT (emits dict details):
+    - Missing credentials: 401 error="invalid_token"
+    - Invalid/expired token: 401 error="invalid_token"
+    - Invalid UUID sub: 401 error="invalid_user_id"
+    - User not found: 401 error="user_not_found"
+    - Inactive/locked user: 403 error="forbidden", message="User inactive or locked"
     
     Instrumentación: guarda timings en request.state.auth_timings.
     """
@@ -291,13 +343,24 @@ async def _validate_and_get_user(
         _finalize("invalid_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido, expirado o de tipo incorrecto",
+            detail={
+                "error": "invalid_token",
+                "message": "Invalid, expired, or incorrect token type",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     sub = payload.get("sub")
     if not sub:
         _finalize("missing_sub")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token sin 'sub' (user_id)")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "invalid_token",
+                "message": "Token missing 'sub' claim",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user_service = UserService.with_session(db)
     user = None
@@ -345,12 +408,25 @@ async def _validate_and_get_user(
 
     if not user:
         _finalize("user_not_found")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "user_not_found",
+                "message": "User not found",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     if require_active_user:
         if not await user_service.is_active(user):
             _finalize("inactive_user")
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo o bloqueado")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "message": "User inactive or locked",
+                },
+            )
 
     _finalize("uuid" if timings["auth_mode"] == "orm" else "legacy_int")
     return user

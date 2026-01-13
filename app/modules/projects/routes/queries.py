@@ -273,7 +273,6 @@ async def list_active_projects(
         with telemetry.measure("pre_ms"):
             # Rechazar valores legacy explícitamente
             if ordenar_por in REJECTED_LEGACY_SORT_KEYS:
-                telemetry.finalize(request, status_code=400, result="legacy_rejected")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
@@ -283,7 +282,6 @@ async def list_active_projects(
                 )
             
             if ordenar_por not in SORT_COLUMN_WHITELIST:
-                telemetry.finalize(request, status_code=400, result="validation_error")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
@@ -326,8 +324,9 @@ async def list_active_projects(
         )
         
     except HTTPException as e:
-        # Finalize with actual status (idempotent if already finalized in validation)
-        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        # HTTPException: finalize con status real (validation_error o legacy_rejected)
+        result_type = "legacy_rejected" if e.status_code == 400 else "http_error"
+        telemetry.finalize(request, status_code=e.status_code, result=result_type)
         raise
     except Exception as e:
         telemetry.finalize(request, status_code=500, result="error")
@@ -366,7 +365,6 @@ async def list_closed_projects(
         with telemetry.measure("pre_ms"):
             # Rechazar valores legacy explícitamente
             if ordenar_por in REJECTED_LEGACY_SORT_KEYS:
-                telemetry.finalize(request, status_code=400, result="legacy_rejected")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
@@ -376,7 +374,6 @@ async def list_closed_projects(
                 )
             
             if ordenar_por not in SORT_COLUMN_WHITELIST:
-                telemetry.finalize(request, status_code=400, result="validation_error")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
@@ -419,7 +416,9 @@ async def list_closed_projects(
         )
         
     except HTTPException as e:
-        telemetry.finalize(request, status_code=e.status_code, result="http_error")
+        # HTTPException: finalize con status real (validation_error o legacy_rejected)
+        result_type = "legacy_rejected" if e.status_code == 400 else "http_error"
+        telemetry.finalize(request, status_code=e.status_code, result=result_type)
         raise
     except Exception as e:
         telemetry.finalize(request, status_code=500, result="error")

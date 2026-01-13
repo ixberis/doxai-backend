@@ -20,13 +20,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import ProgrammingError
 
 from app.shared.database.database import get_db
+from app.modules.auth.dependencies import require_admin_strict
 from .schemas import BillingFinanceSnapshot
 from .aggregators import BillingFinanceAggregators
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/_internal/admin/billing/finance", tags=["admin-billing-finance"])
+router = APIRouter(
+    prefix="/_internal/admin/billing/finance",
+    tags=["admin-billing-finance"],
+    dependencies=[Depends(require_admin_strict)],
+)
 
 
 @router.get("/summary", response_model=BillingFinanceSnapshot)

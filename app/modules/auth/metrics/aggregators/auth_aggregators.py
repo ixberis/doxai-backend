@@ -395,13 +395,14 @@ class AuthAggregators:
             logger.warning("get_auth_summary users_created failed: %s", e)
         
         # Query usuarios activados en el rango
-        # Fuente primaria: public.account_activations.consumed_at (status='used')
+        # Fuente primaria: public.account_activations.consumed_at (status='consumed')
+        # CANONICAL: status='consumed' is the only valid value for completed activations
         # Fallback: public.app_users.user_activated_at
         try:
             q = text("""
                 SELECT COUNT(DISTINCT user_id)
                 FROM public.account_activations
-                WHERE status = 'used'
+                WHERE status = 'consumed'
                   AND consumed_at IS NOT NULL
                   AND consumed_at >= :from_ts
                   AND consumed_at < :to_ts
@@ -417,6 +418,12 @@ class AuthAggregators:
                 )
         except Exception as e:
             logger.debug("get_auth_summary account_activations query failed, trying fallback: %s", e)
+            # CRITICAL: Rollback para evitar InFailedSQLTransactionError en fallback
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass  # Ignorar errores de rollback
+            
             # Fallback: usar app_users.user_activated_at
             try:
                 q_fallback = text("""

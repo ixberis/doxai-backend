@@ -199,11 +199,12 @@ class FunctionalAggregators:
             email_events_partial = False
         
         # 2. Activaciones completadas en el periodo (account_activations uses consumed_at)
+        # CANONICAL: status='consumed' is the only valid value for completed activations
         try:
             q = text("""
                 SELECT COUNT(DISTINCT user_id)
                 FROM public.account_activations
-                WHERE status = 'used'
+                WHERE status = 'consumed'
                   AND consumed_at >= :from_ts
                   AND consumed_at < :to_ts
             """)
@@ -240,11 +241,12 @@ class FunctionalAggregators:
                 logger.debug("resends count failed: %s", e)
         
         # 4. Tokens expirados sin usar en el periodo
+        # CANONICAL: status != 'consumed' means token was not used
         try:
             q = text("""
                 SELECT COUNT(*)
                 FROM public.account_activations
-                WHERE status != 'used'
+                WHERE status != 'consumed'
                   AND consumed_at IS NULL
                   AND expires_at < NOW()
                   AND expires_at >= :from_ts
@@ -258,13 +260,14 @@ class FunctionalAggregators:
             logger.warning("tokens_expired failed: %s", e)
         
         # 5. Tiempo promedio de activación (segundos)
+        # CANONICAL: status='consumed' is the only valid value for completed activations
         try:
             q = text("""
                 SELECT 
                     AVG(EXTRACT(EPOCH FROM (consumed_at - created_at))) as avg_seconds,
                     COUNT(*) as sample_count
                 FROM public.account_activations
-                WHERE status = 'used'
+                WHERE status = 'consumed'
                   AND consumed_at >= :from_ts
                   AND consumed_at < :to_ts
                   AND consumed_at > created_at
@@ -488,11 +491,12 @@ class FunctionalAggregators:
             logger.warning("users created_in_period failed: %s", e)
         
         # 2. Usuarios activados en el periodo
+        # CANONICAL: status='consumed' is the only valid value for completed activations
         try:
             q = text("""
                 SELECT COUNT(DISTINCT user_id)
                 FROM public.account_activations
-                WHERE status = 'used'
+                WHERE status = 'consumed'
                   AND consumed_at >= :from_ts
                   AND consumed_at < :to_ts
             """)
@@ -556,13 +560,14 @@ class FunctionalAggregators:
             logger.debug("not_activated_24h failed: %s", e)
         
         # 6. Percentil 95 de tiempo de activación (en horas)
+        # CANONICAL: status='consumed' is the only valid value for completed activations
         try:
             q = text("""
                 SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (
                     ORDER BY EXTRACT(EPOCH FROM (consumed_at - created_at)) / 3600.0
                 ) as p95_hours
                 FROM public.account_activations
-                WHERE status = 'used'
+                WHERE status = 'consumed'
                   AND consumed_at >= :from_ts
                   AND consumed_at < :to_ts
                   AND consumed_at > created_at
@@ -633,12 +638,13 @@ class FunctionalAggregators:
             logger.debug("activated_no_session failed: %s", e)
         
         # 9b. Activados en periodo sin sesión aún
+        # CANONICAL: status='consumed' is the only valid value for completed activations
         try:
             q = text("""
                 SELECT COUNT(DISTINCT aa.user_id)
                 FROM public.account_activations aa
                 JOIN public.app_users u ON aa.user_id = u.user_id
-                WHERE aa.status = 'used'
+                WHERE aa.status = 'consumed'
                   AND aa.consumed_at >= :from_ts
                   AND aa.consumed_at < :to_ts
                   AND u.deleted_at IS NULL

@@ -10,15 +10,19 @@ Endpoints:
 - POST /admin/cache/invalidate  - Invalidar por patrón
 - GET  /admin/cache/health      - Estado del caché
 
+PROTECTED: Requires admin role via require_admin_strict dependency.
+
 Autor: Ixchel Beristain
 Fecha: 05/11/2025
+Updated: 2026-01-13 (Use require_admin_strict for JWT-based auth)
 """
 
-from typing import Dict, Optional
-from fastapi import APIRouter, HTTPException, status, Depends, Header
+from typing import Dict
+from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.modules.files.services.cache import get_metadata_cache
+from app.modules.auth.dependencies import require_admin_strict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -26,6 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/admin/cache",
     tags=["Admin - Cache"],
+    dependencies=[Depends(require_admin_strict)],  # All routes require admin
 )
 
 
@@ -100,43 +105,6 @@ class HealthResponse(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Dependencia de Autenticación (simple para desarrollo)
-# ──────────────────────────────────────────────────────────────────────────────
-
-async def verify_admin_key(
-    x_admin_key: Optional[str] = Header(None, description="Clave de administración")
-) -> None:
-    """
-    Verifica que el request incluya una clave de administración válida.
-    
-    En producción, esto debería:
-    - Verificar JWT con rol admin
-    - Validar permisos específicos
-    - Auditar acceso
-    
-    Para desarrollo, usa una clave simple configurable vía env var.
-    """
-    import os
-    
-    # Obtener clave esperada de env var (default para desarrollo)
-    expected_key = os.getenv("ADMIN_API_KEY", "dev-admin-key-change-in-production")
-    
-    if not x_admin_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Admin-Key header",
-            headers={"WWW-Authenticate": "AdminKey"}
-        )
-    
-    if x_admin_key != expected_key:
-        logger.warning(f"Failed admin authentication attempt")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid admin key"
-        )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -146,13 +114,11 @@ async def verify_admin_key(
     summary="Obtener estadísticas del caché",
     description="Retorna estadísticas detalladas del caché de metadatos incluyendo hits, misses, evictions, etc."
 )
-async def get_cache_stats(
-    _: None = Depends(verify_admin_key)
-) -> CacheStatsResponse:
+async def get_cache_stats() -> CacheStatsResponse:
     """
     Obtiene estadísticas actuales del caché de metadatos.
     
-    Requiere header: `X-Admin-Key: <admin-key>`
+    Requires: Bearer token with admin role.
     """
     try:
         cache = get_metadata_cache()
@@ -176,15 +142,13 @@ async def get_cache_stats(
     summary="Limpiar todo el caché",
     description="Elimina todas las entradas del caché. Usar con precaución en producción."
 )
-async def clear_cache(
-    _: None = Depends(verify_admin_key)
-) -> ClearResponse:
+async def clear_cache() -> ClearResponse:
     """
     Limpia completamente el caché de metadatos.
     
     **Advertencia**: Esto causará cache misses hasta que se vuelva a llenar.
     
-    Requiere header: `X-Admin-Key: <admin-key>`
+    Requires: Bearer token with admin role.
     """
     try:
         cache = get_metadata_cache()
@@ -219,7 +183,6 @@ async def clear_cache(
 )
 async def invalidate_by_pattern(
     request: InvalidateRequest,
-    _: None = Depends(verify_admin_key)
 ) -> InvalidateResponse:
     """
     Invalida entradas del caché que coincidan con un patrón.
@@ -229,7 +192,7 @@ async def invalidate_by_pattern(
     - `"product_meta:"` - Todos los metadatos de archivos product
     - `"input_meta:user123"` - Metadatos de input de un usuario específico
     
-    Requiere header: `X-Admin-Key: <admin-key>`
+    Requires: Bearer token with admin role.
     """
     try:
         cache = get_metadata_cache()
@@ -262,9 +225,7 @@ async def invalidate_by_pattern(
     summary="Estado de salud del caché",
     description="Evalúa el estado de salud del caché y retorna advertencias si es necesario."
 )
-async def get_cache_health(
-    _: None = Depends(verify_admin_key)
-) -> HealthResponse:
+async def get_cache_health() -> HealthResponse:
     """
     Evalúa el estado de salud del caché.
     
@@ -273,7 +234,7 @@ async def get_cache_health(
     - **degraded**: Hit rate bajo o uso excesivo de memoria
     - **critical**: Problemas graves que requieren atención inmediata
     
-    Requiere header: `X-Admin-Key: <admin-key>`
+    Requires: Bearer token with admin role.
     """
     try:
         cache = get_metadata_cache()
@@ -326,15 +287,13 @@ async def get_cache_health(
     summary="Reiniciar estadísticas del caché",
     description="Reinicia los contadores de hits, misses, evictions e invalidations a cero."
 )
-async def reset_cache_stats(
-    _: None = Depends(verify_admin_key)
-) -> Dict[str, str]:
+async def reset_cache_stats() -> Dict[str, str]:
     """
     Reinicia las estadísticas del caché sin afectar las entradas almacenadas.
     
     Útil para medir rendimiento en períodos específicos.
     
-    Requiere header: `X-Admin-Key: <admin-key>`
+    Requires: Bearer token with admin role.
     """
     try:
         cache = get_metadata_cache()

@@ -10,18 +10,21 @@ Proporciona información sobre:
 - Estadísticas históricas de limpieza de caché
 - Control de jobs (pausar, reanudar, ejecutar manualmente)
 
+PROTECTED: Requires admin role via require_admin_strict dependency.
+
 Autor: DoxAI
 Fecha: 2025-11-05
+Updated: 2026-01-13 (Use require_admin_strict for JWT-based auth)
 """
 
-from fastapi import APIRouter, HTTPException, Header, Depends
-from typing import Optional, List, Protocol, runtime_checkable
+from fastapi import APIRouter, HTTPException, Depends
+from typing import Optional, Protocol, runtime_checkable
 from datetime import datetime, timedelta
-import os
 
 from app.shared.scheduler import get_scheduler, SchedulerService
 from app.modules.files.services.cache import get_metadata_cache
 from app.modules.admin.services.cache_stats_normalizer import normalize_cache_stats
+from app.modules.auth.dependencies import require_admin_strict
 
 
 @runtime_checkable
@@ -40,44 +43,24 @@ def get_scheduler_service() -> SchedulerServiceProtocol:
     """Dependency inyectable para obtener el scheduler."""
     return get_scheduler()
 
+
 router = APIRouter(
     prefix="/admin/scheduler",
-    tags=["admin-scheduler"]
+    tags=["admin-scheduler"],
+    dependencies=[Depends(require_admin_strict)],  # All routes require admin
 )
-
-# Autenticación simple con API key
-def verify_admin_key(x_admin_key: str = Header(...)):
-    """
-    Verifica que la API key de admin sea válida.
-    
-    Args:
-        x_admin_key: API key del header X-Admin-Key
-    
-    Raises:
-        HTTPException: Si la key no es válida
-    """
-    expected_key = os.getenv("ADMIN_API_KEY")
-    if not expected_key:
-        raise HTTPException(
-            status_code=500,
-            detail="ADMIN_API_KEY no configurado en el servidor"
-        )
-    if x_admin_key != expected_key:
-        raise HTTPException(
-            status_code=401,
-            detail="API key inválida"
-        )
 
 
 # ==================== JOBS ENDPOINTS ====================
 
 @router.get("/jobs")
 async def list_scheduled_jobs(
-    _: None = Depends(verify_admin_key),
     scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Lista todos los jobs programados activos.
+    
+    Requires: Bearer token with admin role.
     
     Returns:
         Dict con estado del scheduler y lista de jobs:
@@ -106,11 +89,12 @@ async def list_scheduled_jobs(
 @router.get("/jobs/{job_id}")
 async def get_job_status(
     job_id: str,
-    _: None = Depends(verify_admin_key),
     scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Obtiene información detallada de un job específico.
+    
+    Requires: Bearer token with admin role.
     
     Args:
         job_id: ID del job
@@ -149,11 +133,12 @@ async def get_job_status(
 @router.post("/jobs/{job_id}/pause")
 async def pause_job(
     job_id: str,
-    _: None = Depends(verify_admin_key),
     scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Pausa un job programado.
+    
+    Requires: Bearer token with admin role.
     
     Args:
         job_id: ID del job a pausar
@@ -181,11 +166,12 @@ async def pause_job(
 @router.post("/jobs/{job_id}/resume")
 async def resume_job(
     job_id: str,
-    _: None = Depends(verify_admin_key),
     scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Reanuda un job pausado.
+    
+    Requires: Bearer token with admin role.
     
     Args:
         job_id: ID del job a reanudar
@@ -213,11 +199,12 @@ async def resume_job(
 @router.post("/jobs/{job_id}/run-now")
 async def run_job_now(
     job_id: str,
-    _: None = Depends(verify_admin_key),
     scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Ejecuta un job manualmente de inmediato.
+    
+    Requires: Bearer token with admin role.
     
     Args:
         job_id: ID del job a ejecutar
@@ -260,10 +247,11 @@ async def run_job_now(
 @router.get("/stats/cache-cleanup")
 async def get_cache_cleanup_stats(
     days: int = 7,
-    _: None = Depends(verify_admin_key)
 ):
     """
     Obtiene estadísticas históricas de limpieza de caché.
+    
+    Requires: Bearer token with admin role.
     
     Args:
         days: Número de días de historial (default: 7)
@@ -356,11 +344,12 @@ async def get_cache_cleanup_stats(
 
 @router.get("/health")
 async def scheduler_health(
-    _: None = Depends(verify_admin_key),
     scheduler: SchedulerServiceProtocol = Depends(get_scheduler_service)
 ):
     """
     Verifica el estado de salud del scheduler.
+    
+    Requires: Bearer token with admin role.
     
     Returns:
         Dict con estado de salud:

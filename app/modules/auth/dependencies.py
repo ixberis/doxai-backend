@@ -2,17 +2,25 @@
 """
 backend/app/modules/auth/dependencies.py
 
-Dependencias de autenticación JWT para FastAPI.
+Dependencias de autenticación basadas en rol para FastAPI.
 
 Provee:
-- validate_jwt_token: Core logic para validar token (única fuente de verdad)
-- get_current_user_id: Dependencia FastAPI con oauth2_scheme
+- require_admin: Dependencia que requiere rol admin (usa get_current_user_ctx)
+- require_admin_strict: Alias de require_admin
 
-NOTA: La autenticación de servicio interno (InternalServiceAuth) está en
-app.shared.internal_auth para mantener separación de responsabilidades.
+NOTE: Esta module NO contiene lógica JWT. Toda la validación de tokens
+está en token_service.py. Este módulo solo expone dependencias de rol.
+
+CANONICAL ERROR CONTRACT (inherited from get_current_user_ctx):
+- Missing/invalid/expired token: 401 error="invalid_token"
+- Invalid UUID sub: 401 error="invalid_user_id"
+- User not found: 401 error="user_not_found"
+- Inactive/locked user: 403 error="forbidden", message="User inactive or locked"
+- Non-admin user: 403 error="forbidden", message="Admin access required"
 
 Autor: DoxAI
 Fecha: 2025-12-13
+Actualizado: 2026-01-13 (Solo dependencias de rol - sin JWT helpers)
 """
 
 from __future__ import annotations
@@ -21,114 +29,53 @@ import logging
 
 from fastapi import Depends, HTTPException, status
 
-from .security import oauth2_scheme, decode_access_token, TokenDecodeError
-
 logger = logging.getLogger(__name__)
 
 
-def validate_jwt_token(token: str) -> str:
+# ═══════════════════════════════════════════════════════════════════════════
+# require_admin: Canonical DI using get_current_user_ctx (PUBLIC ONLY)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _create_require_admin():
     """
-    Valida un JWT y extrae el user_id.
+    Crea la dependencia require_admin con DI canónica.
     
-    Esta es la ÚNICA FUENTE DE VERDAD para validación JWT.
-    Usada por get_current_user_id y otros módulos que necesitan validar tokens.
+    Usa factory pattern para evitar circular import con token_service.
+    La función retornada es la ÚNICA implementación de require_admin.
     
-    Args:
-        token: JWT token string (sin prefijo "Bearer ")
-    
-    Raises:
-        HTTPException 401: Si el token es inválido o expirado.
-    
-    Returns:
-        str: El user_id extraído del token JWT (claim 'sub').
+    NO usa funciones privadas (_bearer, _validate_and_get_user_ctx, etc).
+    SOLO usa get_current_user_ctx (público) que ya emite errores canónicos.
     """
-    try:
-        payload = decode_access_token(token)
-        user_id = payload.get("sub")
+    from app.modules.auth.services.token_service import get_current_user_ctx
+    from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+    
+    async def require_admin_impl(
+        ctx: AuthContextDTO = Depends(get_current_user_ctx),
+    ) -> str:
+        """
+        Dependencia que requiere rol admin.
         
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": "invalid_token",
-                    "message": "Token does not contain user identifier",
-                },
-                headers={"WWW-Authenticate": "Bearer"},
+        Usa get_current_user_ctx (Core mode + cache Redis) como DI canónica.
+        El AuthContextDTO ya contiene user_role, evitando queries redundantes.
+        
+        CANONICAL ERROR CONTRACT (inherited from get_current_user_ctx):
+        - Token faltante/inválido/expirado: 401 error="invalid_token"
+        - UUID inválido en sub: 401 error="invalid_user_id"
+        - Usuario no encontrado: 401 error="user_not_found"
+        - Usuario inactivo/bloqueado: 403 error="forbidden" message="User inactive or locked"
+        - Usuario no admin: 403 error="forbidden" message="Admin access required"
+        
+        Returns:
+            str: El auth_user_id del admin (UUID string)
+        """
+        # ctx ya está validado por get_current_user_ctx
+        # Solo verificar rol admin
+        if ctx.user_role != "admin":
+            logger.info(
+                "require_admin_forbidden auth_user_id=%s role=%s",
+                str(ctx.auth_user_id)[:8] + "...",
+                ctx.user_role,
             )
-        
-        return str(user_id)
-        
-    except TokenDecodeError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "invalid_token",
-                "message": str(e),
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from e
-
-
-async def get_current_user_id(
-    token: str = Depends(oauth2_scheme),
-) -> str:
-    """
-    Dependencia de autenticación para endpoints protegidos.
-    
-    Extrae y valida el JWT del header Authorization: Bearer <token>.
-    Usa validate_jwt_token como única fuente de verdad.
-    
-    Returns:
-        str: El user_id extraído del token JWT.
-    """
-    return validate_jwt_token(token)
-
-
-async def require_admin(
-    token: str = Depends(oauth2_scheme),
-) -> str:
-    """
-    Dependencia que requiere rol admin.
-    
-    Valida JWT y verifica que el usuario tenga rol 'admin' en app_users.
-    Para endpoints administrativos internos.
-    
-    Raises:
-        HTTPException 401: Token inválido o user_id no válido
-        HTTPException 403: Usuario no es admin
-    
-    Returns:
-        str: El user_id del admin
-    """
-    user_id = validate_jwt_token(token)
-    
-    # Convertir user_id a int (DB column es integer/bigint)
-    try:
-        uid_int = int(user_id)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "invalid_user_id",
-                "message": "Invalid user id format",
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Import here to avoid circular dependency
-    from app.shared.database.database import SessionLocal
-    from sqlalchemy import text
-    
-    async with SessionLocal() as db:
-        query = text("""
-            SELECT user_role::text 
-            FROM public.app_users 
-            WHERE user_id = :uid
-        """)
-        result = await db.execute(query, {"uid": uid_int})
-        row = result.first()
-        
-        if not row or row[0] != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
@@ -136,12 +83,21 @@ async def require_admin(
                     "message": "Admin access required",
                 },
             )
+        
+        return str(ctx.auth_user_id)
     
-    return user_id
+    return require_admin_impl
+
+
+# Única implementación exportada - usa SOLO APIs públicas
+require_admin = _create_require_admin()
+
+# Alias para compatibilidad - ambos son idénticos ahora
+# (get_current_user_ctx ya emite errores canónicos con dict)
+require_admin_strict = require_admin
 
 
 __all__ = [
-    "get_current_user_id",
-    "validate_jwt_token",
     "require_admin",
+    "require_admin_strict",  # Alias - same as require_admin
 ]

@@ -20,13 +20,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import ProgrammingError
 
 from app.shared.database.database import get_db
+from app.modules.auth.dependencies import require_admin_strict
 from .schemas import BillingOperationSnapshot
 from .aggregators import BillingOperationAggregators
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/_internal/admin/billing/operation", tags=["admin-billing-operation"])
+router = APIRouter(
+    prefix="/_internal/admin/billing/operation",
+    tags=["admin-billing-operation"],
+    dependencies=[Depends(require_admin_strict)],
+)
 
 
 def _compute_rate(numerator: int, denominator: int) -> float:
