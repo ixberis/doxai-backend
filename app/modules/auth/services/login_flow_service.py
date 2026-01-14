@@ -109,52 +109,63 @@ class LoginFlowService:
 
     # ─────────────────────────────────────────────────────────────────────────
     # Login attempt recording (best-effort, won't block login flow)
-    # BD 2.0: Solo se registra si el usuario existe (auth_user_id NOT NULL en DB)
+    # BD 2.0 P0: Registra TODOS los intentos incluyendo user_not_found
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _record_login_attempt(
         self,
         *,
-        user,  # AppUser o None
+        user,  # AppUser, LoginUserDTO, LoginUserCacheData, or None
         success: bool,
         reason: Optional[LoginFailureReason],
         ip_address: Optional[str],
         user_agent: Optional[str],
+        email: Optional[str] = None,  # Required for user_not_found traceability
     ) -> None:
         """
         Records login attempt to login_attempts table (best-effort).
 
-        BD 2.0: Solo inserta si user existe (auth_user_id es NOT NULL en DB).
-        Para intentos con usuario inexistente, NO insertamos - el audit log
-        estructurado se mantiene en AuditService.
+        BD 2.0 P0: Registra TODOS los intentos incluyendo user_not_found.
+        - Si user existe: usa user_id y auth_user_id
+        - Si user es None: inserta con user_id=NULL, auth_user_id=NULL, email_hash
 
         If the insert fails, logs the error but doesn't block the login flow.
         """
-        # BD 2.0: Si no hay usuario, no podemos insertar (auth_user_id es NOT NULL)
-        if user is None:
-            logger.debug("login_attempt_skipped: user=None (auth_user_id NOT NULL constraint)")
-            return
-
         try:
+            # Extract user fields if user exists
+            user_id = getattr(user, "user_id", None) if user else None
+            auth_user_id = getattr(user, "auth_user_id", None) if user else None
+            
             await self.login_attempt_repo.record_attempt(
-                user_id=user.user_id,
-                auth_user_id=user.auth_user_id,
+                user_id=user_id,
+                auth_user_id=auth_user_id,
                 success=success,
                 reason=reason,
                 ip_address=ip_address,
                 user_agent=user_agent,
+                email=email,  # Se hashea en el repositorio
             )
-            logger.debug(
-                "login_attempt_recorded: user_id=%s auth_user_id=%s success=%s reason=%s",
-                user.user_id,
-                str(user.auth_user_id)[:8] + "...",
-                success,
-                reason,
-            )
+            
+            # Log with appropriate detail level
+            if user:
+                logger.debug(
+                    "login_attempt_recorded: user_id=%s auth_user_id=%s success=%s reason=%s",
+                    user_id,
+                    str(auth_user_id)[:8] + "..." if auth_user_id else "None",
+                    success,
+                    reason,
+                )
+            else:
+                logger.debug(
+                    "login_attempt_recorded: user_not_found success=%s reason=%s ip=%s",
+                    success,
+                    reason,
+                    ip_address,
+                )
         except Exception as e:
             logger.warning(
                 "login_attempts_insert_failed: user_id=%s success=%s error=%s",
-                user.user_id,
+                getattr(user, "user_id", None) if user else None,
                 success,
                 str(e),
             )
@@ -402,6 +413,7 @@ class LoginFlowService:
                 reason=LoginFailureReason.user_not_found,
                 ip_address=ip_address,
                 user_agent=user_agent,
+                email=email,  # Para trazabilidad (se hashea)
             )
             AuditService.log_login_failed(
                 email=email,
@@ -454,9 +466,21 @@ class LoginFlowService:
             if early_reject_reason == "account_deleted":
                 reason_text = "Cuenta eliminada"
                 result_type = "account_deleted"
+                failure_reason = LoginFailureReason.inactive_user
             else:
                 reason_text = "Cuenta no activada"
                 result_type = "account_not_activated"
+                failure_reason = LoginFailureReason.account_not_activated
+            
+            # P0: Record failed attempt in DB for Auth Operativo metrics
+            await self._record_login_attempt(
+                user=user,
+                success=False,
+                reason=failure_reason,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                email=email,
+            )
             
             AuditService.log_login_failed(
                 email=email,
@@ -484,6 +508,7 @@ class LoginFlowService:
                 reason=LoginFailureReason.invalid_credentials,
                 ip_address=ip_address,
                 user_agent=user_agent,
+                email=email,
             )
             AuditService.log_login_failed(
                 email=email,
@@ -510,7 +535,25 @@ class LoginFlowService:
             )
             
             # Log actual reason internally
-            reason_text = "Cuenta no activada" if not user.user_is_activated else "Cuenta eliminada"
+            if not user.user_is_activated:
+                reason_text = "Cuenta no activada"
+                result_type = "account_not_activated"
+                failure_reason = LoginFailureReason.account_not_activated
+            else:
+                reason_text = "Cuenta eliminada"
+                result_type = "account_deleted"
+                failure_reason = LoginFailureReason.inactive_user
+            
+            # P0: Record failed attempt in DB for Auth Operativo metrics
+            await self._record_login_attempt(
+                user=user,
+                success=False,
+                reason=failure_reason,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                email=email,
+            )
+            
             AuditService.log_login_failed(
                 email=email,
                 ip_address=ip_address,
@@ -518,7 +561,6 @@ class LoginFlowService:
                 user_agent=user_agent,
             )
             
-            result_type = "account_not_activated" if not user.user_is_activated else "account_deleted"
             telemetry.finalize(_request, result=result_type)
             # ZERO ENUMERATION: Same 401 + same message
             raise HTTPException(
@@ -607,7 +649,18 @@ class LoginFlowService:
         # Si necesitas el nombre real, se podría hacer mini-lookup pero no es crítico
         user_full_name_for_response = getattr(user, "user_full_name", None) or ""
 
-        # Record successful login - AuditService (best effort)
+        # ─── Record successful login attempt in DB ───
+        # P0: Persistir en login_attempts para métricas Auth Operativo
+        await self._record_login_attempt(
+            user=user,
+            success=True,
+            reason=None,  # No reason for success
+            ip_address=ip_address,
+            user_agent=user_agent,
+            email=email,
+        )
+
+        # Record successful login - AuditService (best effort, structured logs)
         # Usar email del payload, NO de user (que puede ser LoginUserCacheData)
         AuditService.log_login_success(
             user_id=str(user.user_id),

@@ -31,27 +31,26 @@ class LoginAttempt(Base):
     """
     Registro de auditoría de intentos de login (éxito y fallo).
 
-    BD 2.0: auth_user_id (UUID SSOT) es NOT NULL en la DB.
-    Solo se inserta cuando el usuario existe.
-    Para intentos con usuario inexistente, NO se persiste en login_attempts
-    (se mantiene el log estructurado en audit_service).
+    BD 2.0 P0: Registra TODOS los intentos incluyendo user_not_found.
+    - auth_user_id/user_id: NULL cuando el usuario no existe
+    - email_hash: SHA-256 del email para trazabilidad sin PII
     """
     __tablename__ = "login_attempts"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # BD 2.0 SSOT: auth_user_id UUID (ownership / RLS) - NOT NULL
-    auth_user_id: Mapped[UUID] = mapped_column(
+    # BD 2.0 SSOT: auth_user_id UUID (ownership / RLS) - NULLABLE para user_not_found
+    auth_user_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("app_users.auth_user_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,  # NULL cuando user_not_found
         index=True,
     )
 
-    # FK a AppUser.user_id (compat / referencia interna) - NOT NULL
-    user_id: Mapped[int] = mapped_column(
+    # FK a AppUser.user_id (compat / referencia interna) - NULLABLE para user_not_found
+    user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,  # NULL cuando user_not_found
         index=True,
     )
 
@@ -67,13 +66,16 @@ class LoginAttempt(Base):
     # Auditoría
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)  # IPv6
     user_agent: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    
+    # Trazabilidad sin PII: SHA-256 del email normalizado
+    email_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    # Relación con AppUser
-    user: Mapped["AppUser"] = relationship(
+    # Relación con AppUser (opcional debido a nullable FK)
+    user: Mapped[Optional["AppUser"]] = relationship(
         "AppUser",
         back_populates="login_attempts",
         foreign_keys=[user_id],
