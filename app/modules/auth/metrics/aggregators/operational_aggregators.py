@@ -516,50 +516,60 @@ class OperationalAggregators:
         - revoked: revoked_at in range [from, to+1)
         - expired: expires_at in range [from, to+1) AND revoked_at IS NULL AND expires_at <= NOW()
         
-        Uses half-open UTC range.
+        Uses half-open UTC range with native date objects for asyncpg compatibility.
         """
-        params: Dict[str, Any] = {}
-        
-        if from_date and to_date:
-            params = {"from_date": from_date, "to_date": to_date}
-            
-            try:
-                q = text("""
-                        SELECT
-                            (SELECT COUNT(*)::int 
-                             FROM public.user_sessions 
-                             WHERE issued_at >= CAST(:from_date AS date) 
-                               AND issued_at < (CAST(:to_date AS date) + interval '1 day')
-                            ) AS created,
-                            (SELECT COUNT(*)::int 
-                             FROM public.user_sessions 
-                             WHERE expires_at >= CAST(:from_date AS date) 
-                               AND expires_at < (CAST(:to_date AS date) + interval '1 day')
-                               AND revoked_at IS NULL 
-                               AND expires_at <= NOW()
-                            ) AS expired,
-                            (SELECT COUNT(*)::int 
-                             FROM public.user_sessions 
-                             WHERE revoked_at >= CAST(:from_date AS date) 
-                               AND revoked_at < (CAST(:to_date AS date) + interval '1 day')
-                            ) AS revoked
-                    """)
-                res = await self.db.execute(q, params)
-                row = res.first()
-                if row:
-                    logger.debug(
-                        f"_get_sessions_period source=user_sessions "
-                        f"range=[{from_date}, {to_date}+1) "
-                        f"created={row.created} expired={row.expired} revoked={row.revoked}"
-                    )
-                    return (int(row.created or 0), int(row.expired or 0), int(row.revoked or 0))
-            except Exception as e:
-                logger.warning(f"_get_sessions_period failed: {e}")
-            
+        if not from_date or not to_date:
+            logger.debug("_get_sessions_period source=user_sessions no_range=true returning zeros")
             return (0, 0, 0)
         
-        # No date range: return zeros
-        logger.debug("_get_sessions_period source=user_sessions no_range=true returning zeros")
+        # Convert str to date for asyncpg compatibility
+        from_d = (
+            datetime.strptime(from_date, "%Y-%m-%d").date()
+            if isinstance(from_date, str)
+            else from_date
+        )
+        to_d = (
+            datetime.strptime(to_date, "%Y-%m-%d").date()
+            if isinstance(to_date, str)
+            else to_date
+        )
+        to_plus_one = to_d + timedelta(days=1)
+        
+        params = {"from_date": from_d, "to_plus_one": to_plus_one}
+        
+        try:
+            q = text("""
+                    SELECT
+                        (SELECT COUNT(*)::int 
+                         FROM public.user_sessions 
+                         WHERE issued_at >= :from_date 
+                           AND issued_at < :to_plus_one
+                        ) AS created,
+                        (SELECT COUNT(*)::int 
+                         FROM public.user_sessions 
+                         WHERE expires_at >= :from_date 
+                           AND expires_at < :to_plus_one
+                           AND revoked_at IS NULL 
+                           AND expires_at <= NOW()
+                        ) AS expired,
+                        (SELECT COUNT(*)::int 
+                         FROM public.user_sessions 
+                         WHERE revoked_at >= :from_date 
+                           AND revoked_at < :to_plus_one
+                        ) AS revoked
+                """)
+            res = await self.db.execute(q, params)
+            row = res.first()
+            if row:
+                logger.debug(
+                    f"_get_sessions_period source=user_sessions "
+                    f"range=[{from_d}, {to_plus_one}) "
+                    f"created={row.created} expired={row.expired} revoked={row.revoked}"
+                )
+                return (int(row.created or 0), int(row.expired or 0), int(row.revoked or 0))
+        except Exception as e:
+            logger.warning(f"_get_sessions_period failed: {e}")
+        
         return (0, 0, 0)
     
     async def _get_top_users_by_sessions(self, limit: int = 10) -> List[TopUserSessions]:
