@@ -253,6 +253,18 @@ class LoginFlowService:
         
         if not rl_decision.allowed:
             AuditService.log_login_blocked(email=email, ip_address=ip_address)
+            
+            # P0 FIX: Registrar intento en login_attempts ANTES del 429
+            # Esto permite que "Rate limits activados" se contabilice en dashboard
+            await self._record_login_attempt(
+                user=None,  # No resolvemos usuario para rate limit (no penalizar lookup)
+                success=False,
+                reason=LoginFailureReason.rate_limited,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                email=email,  # Se hashea en el repositorio
+            )
+            
             # CRITICAL: finalize() BEFORE raising to ensure request.state is populated
             telemetry.finalize(_request, result="rate_limited")
             

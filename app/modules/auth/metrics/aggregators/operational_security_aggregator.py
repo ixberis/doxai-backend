@@ -407,11 +407,12 @@ class SecurityAggregator:
             logger.debug("users_with_multiple_sessions failed: %s", e)
         
         # Sesiones creadas en las últimas 24h
+        # NOTA: user_sessions usa 'issued_at', NO 'created_at'
         try:
             q = text("""
                 SELECT COUNT(*)
                 FROM public.user_sessions
-                WHERE created_at >= NOW() - INTERVAL '24 hours'
+                WHERE issued_at >= NOW() - INTERVAL '24 hours'
             """)
             res = await self.db.execute(q)
             row = res.first()
