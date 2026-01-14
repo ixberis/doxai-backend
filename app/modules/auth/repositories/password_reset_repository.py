@@ -8,14 +8,18 @@ Aunque en la versión actual el flujo de restablecimiento de contraseña
 es stateless (solo JWT), este repositorio permite persistir tokens de
 reset cuando se requiera un enfoque stateful o para auditoría.
 
+BD 2.0 SSOT: auth_user_id es obligatorio para ownership/RLS.
+
 Autor: Ixchel Beristain
 Fecha: 19/11/2025
+Updated: 2026-01-14 - auth_user_id obligatorio
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +46,7 @@ class PasswordResetRepository:
         self,
         *,
         user_id: int,
+        auth_user_id: UUID,
         token: str,
         expires_at: datetime,
     ) -> PasswordReset:
@@ -49,12 +54,14 @@ class PasswordResetRepository:
         Crea un registro de restablecimiento de contraseña.
 
         Args:
-            user_id: Identificador del usuario.
+            user_id: Identificador legacy del usuario.
+            auth_user_id: UUID SSOT del usuario (BD 2.0).
             token: Token único de reset.
             expires_at: Momento de expiración del token.
         """
         reset = PasswordReset(
             user_id=user_id,
+            auth_user_id=auth_user_id,
             token=token,
             expires_at=expires_at,
         )

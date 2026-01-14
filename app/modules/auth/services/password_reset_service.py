@@ -104,10 +104,37 @@ class PasswordResetService:
             }
 
         user_id = user.user_id
+        # BD 2.0 SSOT: Resolver auth_user_id (obligatorio para password_resets)
+        auth_user_id = getattr(user, "auth_user_id", None)
+        
+        # Si el usuario legacy no tiene auth_user_id, aplicar el mismo fix que login
+        if auth_user_id is None:
+            from uuid import uuid4
+            auth_user_id = uuid4()
+            try:
+                # Persistir en app_users para mantener SSOT
+                from app.modules.auth.repositories.user_repository import UserRepository
+                user_repo = UserRepository(self.db)
+                await user_repo.set_auth_user_id_if_missing(user_id, auth_user_id)
+                logger.info(
+                    "password_reset_legacy_ssot_fix email=%s user_id=%s auth_user_id=%s",
+                    masked_email,
+                    user_id,
+                    str(auth_user_id)[:8] + "...",
+                )
+            except Exception as e:
+                logger.warning(
+                    "password_reset_legacy_ssot_fix_failed user_id=%s error=%s",
+                    user_id,
+                    str(e)[:100],
+                )
+                # Continuar con el UUID generado aunque no se haya persistido
+        
         logger.info(
-            "password_reset_started email=%s user_id=%s",
+            "password_reset_started email=%s user_id=%s auth_user_id=%s",
             masked_email,
             user_id,
+            str(auth_user_id)[:8] + "..." if auth_user_id else "None",
         )
 
         # Generamos token
@@ -118,6 +145,7 @@ class PasswordResetService:
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
         reset_record = await self.reset_repo.create_reset(
             user_id=user_id,
+            auth_user_id=auth_user_id,
             token=token,
             expires_at=expires_at,
         )
@@ -129,7 +157,7 @@ class PasswordResetService:
             token=token,
             reset_record=reset_record,
             user_id=user_id,
-            auth_user_id=getattr(user, "auth_user_id", None),
+            auth_user_id=auth_user_id,
         )
 
         return {

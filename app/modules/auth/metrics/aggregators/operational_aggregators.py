@@ -24,15 +24,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import enum from central location for type-safe reason matching
-from app.modules.auth.enums.login_failure_reason_enum import LoginFailureReason
+from app.modules.auth.enums.login_failure_reason_enum import (
+    LoginFailureReason,
+    RATE_LIMIT_REASONS,
+    LOCKOUT_REASONS,
+)
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────
-# Constants from LoginFailureReason enum
-# ─────────────────────────────────────────────────────────────────
-REASON_TOO_MANY_ATTEMPTS = LoginFailureReason.too_many_attempts.value
-REASON_ACCOUNT_LOCKED = LoginFailureReason.account_locked.value
 
 
 @dataclass
@@ -367,10 +365,15 @@ class OperationalAggregators:
         to_date: Optional[str],
         col: str = "created_at",
     ) -> tuple[str, Dict[str, Any]]:
-        """Build half-open period filter clause."""
+        """
+        Build half-open period filter clause.
+        
+        Uses CAST(:param AS date) instead of :param::date to avoid
+        asyncpg syntax errors with SQLAlchemy text().
+        """
         if from_date and to_date:
             return (
-                f"AND {col} >= :from_date::date AND {col} < (:to_date::date + interval '1 day')",
+                f"AND {col} >= CAST(:from_date AS date) AND {col} < (CAST(:to_date AS date) + interval '1 day')",
                 {"from_date": from_date, "to_date": to_date}
             )
         return ("", {})
@@ -408,18 +411,28 @@ class OperationalAggregators:
         """
         Get rate limit triggers and lockouts count.
         
-        Uses LoginFailureReason enum values for type-safe matching.
-        If reasons don't exist in DB, returns 0 and logs source=not_instrumented_reason.
+        Uses canonical groupings from LoginFailureReason enum:
+        - Rate limits: too_many_attempts, rate_limited (legacy)
+        - Lockouts: account_locked, blocked_user (legacy)
+        
+        This ensures both old and new enum values are counted.
+        Uses CAST(:param AS text[]) for proper array binding with SQLAlchemy text().
         """
         filter_clause, params = self._build_period_filter(from_date, to_date)
-        params["reason_rate_limit"] = REASON_TOO_MANY_ATTEMPTS
-        params["reason_lockout"] = REASON_ACCOUNT_LOCKED
+        
+        # Build list[str] for rate limit reasons - will be cast to text[] in SQL
+        rate_limit_list = list(RATE_LIMIT_REASONS)
+        lockout_list = list(LOCKOUT_REASONS)
+        
+        params["rate_limit_reasons"] = rate_limit_list
+        params["lockout_reasons"] = lockout_list
         
         try:
+            # Use CAST(:param AS text[]) for proper array handling with asyncpg
             q = text(f"""
                 SELECT
-                    COUNT(*) FILTER (WHERE reason = :reason_rate_limit)::int AS rate_limits,
-                    COUNT(*) FILTER (WHERE reason = :reason_lockout)::int AS lockouts
+                    COUNT(*) FILTER (WHERE reason::text = ANY(CAST(:rate_limit_reasons AS text[])))::int AS rate_limits,
+                    COUNT(*) FILTER (WHERE reason::text = ANY(CAST(:lockout_reasons AS text[])))::int AS lockouts
                 FROM public.login_attempts
                 WHERE NOT success {filter_clause}
             """)
@@ -429,16 +442,16 @@ class OperationalAggregators:
                 rate_limits = int(row.rate_limits or 0)
                 lockouts = int(row.lockouts or 0)
                 
-                # Log with semantic distinction: no_events_in_period (query OK, count 0)
+                # Log with semantic distinction
                 if rate_limits == 0:
                     logger.debug(
                         f"_get_rate_limits_and_lockouts source=login_attempts "
-                        f"reason={REASON_TOO_MANY_ATTEMPTS} count=0 note=no_events_in_period"
+                        f"reasons={rate_limit_list} count=0 note=no_events_in_period"
                     )
                 if lockouts == 0:
                     logger.debug(
                         f"_get_rate_limits_and_lockouts source=login_attempts "
-                        f"reason={REASON_ACCOUNT_LOCKED} count=0 note=no_events_in_period"
+                        f"reasons={lockout_list} count=0 note=no_events_in_period"
                     )
                 
                 return (rate_limits, lockouts)
@@ -607,10 +620,11 @@ class OperationalAggregators:
         - by_user: user_id IS NOT NULL (user-identified rate limit)
         - by_ip: user_id IS NULL AND ip_address IS NOT NULL (IP-only rate limit)
         
-        Uses LoginFailureReason enum for type-safe matching.
+        Uses RATE_LIMIT_REASONS for canonical groupings (both legacy and new values).
+        Uses CAST(:param AS text[]) for proper array binding.
         """
         filter_clause, params = self._build_period_filter(from_date, to_date)
-        params["reason_rate_limit"] = REASON_TOO_MANY_ATTEMPTS
+        params["rate_limit_reasons"] = list(RATE_LIMIT_REASONS)
         
         try:
             q = text(f"""
@@ -618,7 +632,9 @@ class OperationalAggregators:
                     COUNT(*) FILTER (WHERE user_id IS NOT NULL)::int AS by_user,
                     COUNT(*) FILTER (WHERE user_id IS NULL AND ip_address IS NOT NULL)::int AS by_ip
                 FROM public.login_attempts
-                WHERE NOT success AND reason = :reason_rate_limit {filter_clause}
+                WHERE NOT success 
+                  AND reason::text = ANY(CAST(:rate_limit_reasons AS text[])) 
+                  {filter_clause}
             """)
             res = await self.db.execute(q, params)
             row = res.first()
@@ -629,7 +645,7 @@ class OperationalAggregators:
                 if by_user == 0 and by_ip == 0:
                     logger.debug(
                         f"_get_rate_limit_breakdown source=login_attempts "
-                        f"reason={REASON_TOO_MANY_ATTEMPTS} by_user=0 by_ip=0 "
+                        f"reasons={list(RATE_LIMIT_REASONS)} by_user=0 by_ip=0 "
                         "note=no_events_in_period"
                     )
                 
@@ -651,10 +667,11 @@ class OperationalAggregators:
         - by_user: user_id IS NOT NULL (user-identified lockout)
         - by_ip: user_id IS NULL AND ip_address IS NOT NULL (IP-only lockout)
         
-        Uses LoginFailureReason enum for type-safe matching.
+        Uses LOCKOUT_REASONS for canonical groupings (both legacy and new values).
+        Uses CAST(:param AS text[]) for proper array binding.
         """
         filter_clause, params = self._build_period_filter(from_date, to_date)
-        params["reason_lockout"] = REASON_ACCOUNT_LOCKED
+        params["lockout_reasons"] = list(LOCKOUT_REASONS)
         
         try:
             q = text(f"""
@@ -662,7 +679,9 @@ class OperationalAggregators:
                     COUNT(*) FILTER (WHERE user_id IS NOT NULL)::int AS by_user,
                     COUNT(*) FILTER (WHERE user_id IS NULL AND ip_address IS NOT NULL)::int AS by_ip
                 FROM public.login_attempts
-                WHERE NOT success AND reason = :reason_lockout {filter_clause}
+                WHERE NOT success 
+                  AND reason::text = ANY(CAST(:lockout_reasons AS text[])) 
+                  {filter_clause}
             """)
             res = await self.db.execute(q, params)
             row = res.first()
@@ -673,7 +692,7 @@ class OperationalAggregators:
                 if by_user == 0 and by_ip == 0:
                     logger.debug(
                         f"_get_lockout_breakdown source=login_attempts "
-                        f"reason={REASON_ACCOUNT_LOCKED} by_user=0 by_ip=0 "
+                        f"reasons={list(LOCKOUT_REASONS)} by_user=0 by_ip=0 "
                         "note=no_events_in_period"
                     )
                 

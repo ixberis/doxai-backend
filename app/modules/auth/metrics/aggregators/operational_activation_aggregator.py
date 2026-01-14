@@ -298,6 +298,7 @@ class ActivationOperationalAggregator:
         
         # ─────────────────────────────────────────────────────────────
         # 4. REENVÍOS (periodo) - SQL corregido con SUM(GREATEST(cnt-1, 0))
+        # Usa auth_user_id (no user_id) porque auth_email_events solo tiene auth_user_id
         # ─────────────────────────────────────────────────────────────
         activation_resends = 0
         users_with_multiple_resends = 0
@@ -308,14 +309,14 @@ class ActivationOperationalAggregator:
                     COALESCE(SUM(GREATEST(cnt - 1, 0)), 0) AS resends,
                     COALESCE(COUNT(*) FILTER (WHERE cnt > 1), 0) AS users_multiple
                 FROM (
-                    SELECT user_id, COUNT(*) AS cnt
+                    SELECT auth_user_id, COUNT(*) AS cnt
                     FROM public.auth_email_events
                     WHERE email_type = 'activation'
                       AND status = 'sent'
                       AND created_at >= :from_ts
                       AND created_at < :to_ts
-                      AND user_id IS NOT NULL
-                    GROUP BY user_id
+                      AND auth_user_id IS NOT NULL
+                    GROUP BY auth_user_id
                 ) sub
             """)
             res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})

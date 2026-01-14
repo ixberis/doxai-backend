@@ -25,6 +25,12 @@ from typing import List, Literal, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Import canonical reason groupings
+from app.modules.auth.enums.login_failure_reason_enum import (
+    RATE_LIMIT_REASONS,
+    LOCKOUT_REASONS,
+)
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────
@@ -319,16 +325,23 @@ class SecurityAggregator:
         except Exception as e:
             logger.debug("users_with_high_failures failed: %s", e)
         
-        # Lockouts triggered (reason = 'too_many_attempts' or 'account_locked')
+        # Lockouts triggered (both legacy and new reason values)
+        # Uses canonical groupings: RATE_LIMIT_REASONS + LOCKOUT_REASONS
+        # Uses CAST(:param AS text[]) for proper array binding with asyncpg
         try:
+            all_lockout_reasons = list(RATE_LIMIT_REASONS | LOCKOUT_REASONS)
             q = text("""
                 SELECT COUNT(*)
                 FROM public.login_attempts
-                WHERE reason IN ('too_many_attempts', 'account_locked')
+                WHERE reason::text = ANY(CAST(:reasons AS text[]))
                   AND created_at >= :from_ts
                   AND created_at < :to_ts
             """)
-            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
+            res = await self.db.execute(q, {
+                "reasons": all_lockout_reasons,
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+            })
             row = res.first()
             if row and row[0]:
                 lockouts_triggered = int(row[0])

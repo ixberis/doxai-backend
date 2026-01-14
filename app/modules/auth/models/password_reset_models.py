@@ -21,8 +21,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy import String, ForeignKey, DateTime, func, Index, Integer, Text, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.shared.database.database import Base
@@ -46,7 +48,15 @@ class PasswordReset(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    # FK a AppUser.user_id (tabla app_users)
+    # BD 2.0 SSOT: auth_user_id es el identificador principal para RLS/ownership
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_users.auth_user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # FK a AppUser.user_id (tabla app_users) - Compat/referencia interna
     user_id: Mapped[int] = mapped_column(
         ForeignKey("app_users.user_id", ondelete="CASCADE"),
         nullable=False,

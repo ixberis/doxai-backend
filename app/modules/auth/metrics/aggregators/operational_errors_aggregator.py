@@ -283,8 +283,8 @@ class ErrorsOperationalAggregator:
             res = await self.db.execute(q, {
                 "from_ts": from_ts,
                 "to_ts": to_ts,
-                "reason_rate_limit": LoginFailureReason.too_many_attempts.value,
-                "reason_lockout": LoginFailureReason.account_locked.value,
+                "reason_rate_limit": LoginFailureReason.rate_limited.value,
+                "reason_lockout": LoginFailureReason.blocked_user.value,
             })
             row = res.first()
             if row:
@@ -364,8 +364,8 @@ class ErrorsOperationalAggregator:
             res = await self.db.execute(q, {
                 "from_ts": from_ts,
                 "to_ts": to_ts,
-                "reason_rate_limit": LoginFailureReason.too_many_attempts.value,
-                "reason_lockout": LoginFailureReason.account_locked.value,
+                "reason_rate_limit": LoginFailureReason.rate_limited.value,
+                "reason_lockout": LoginFailureReason.blocked_user.value,
             })
             rows = res.fetchall()
             for r in rows:
