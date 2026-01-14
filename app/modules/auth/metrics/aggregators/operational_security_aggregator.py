@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -217,15 +217,15 @@ class SecurityAggregator:
     
     async def get_security_metrics(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: Optional[Union[str, date]] = None,
+        to_date: Optional[Union[str, date]] = None,
     ) -> SecurityMetricsData:
         """
         Obtiene métricas de seguridad operativa.
         
         Args:
-            from_date: Fecha inicio YYYY-MM-DD (opcional)
-            to_date: Fecha fin YYYY-MM-DD (opcional)
+            from_date: Fecha inicio (str YYYY-MM-DD o date)
+            to_date: Fecha fin (str YYYY-MM-DD o date)
         
         Returns:
             SecurityMetricsData con todas las métricas
@@ -236,8 +236,16 @@ class SecurityAggregator:
             from_d = today - timedelta(days=7)
             to_d = today
         else:
-            from_d = datetime.strptime(from_date, "%Y-%m-%d").date()
-            to_d = datetime.strptime(to_date, "%Y-%m-%d").date()
+            # Soportar str o date (patrón canónico temporal)
+            if isinstance(from_date, str):
+                from_d = datetime.strptime(from_date, "%Y-%m-%d").date()
+            else:
+                from_d = from_date
+            
+            if isinstance(to_date, str):
+                to_d = datetime.strptime(to_date, "%Y-%m-%d").date()
+            else:
+                to_d = to_date
         
         from_ts, to_ts = self._build_range(from_d, to_d)
         
