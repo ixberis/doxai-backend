@@ -18,9 +18,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 
-from sqlalchemy import text
+from sqlalchemy import text, bindparam, Date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import enum from central location for type-safe reason matching
@@ -361,20 +361,38 @@ class OperationalAggregators:
     
     def _build_period_filter(
         self,
-        from_date: Optional[str],
-        to_date: Optional[str],
+        from_date: Optional[Union[str, date]],
+        to_date: Optional[Union[str, date]],
         col: str = "created_at",
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, Dict[str, date]]:
         """
-        Build half-open period filter clause.
+        Build half-open period filter clause with typed date parameters.
         
-        Uses CAST(:param AS date) instead of :param::date to avoid
-        asyncpg syntax errors with SQLAlchemy text().
+        Converts str → date for asyncpg compatibility (asyncpg uses .toordinal()).
+        Uses native date comparison without CAST to avoid binding issues.
+        
+        Returns:
+            Tuple of (SQL clause, params dict with date objects)
         """
         if from_date and to_date:
+            # Convert str to date if needed
+            from_d = (
+                datetime.strptime(from_date, "%Y-%m-%d").date()
+                if isinstance(from_date, str)
+                else from_date
+            )
+            to_d = (
+                datetime.strptime(to_date, "%Y-%m-%d").date()
+                if isinstance(to_date, str)
+                else to_date
+            )
+            # Half-open range: [from, to + 1 day)
+            # to_plus_one as date for native asyncpg binding
+            to_plus_one = to_d + timedelta(days=1)
+            
             return (
-                f"AND {col} >= CAST(:from_date AS date) AND {col} < (CAST(:to_date AS date) + interval '1 day')",
-                {"from_date": from_date, "to_date": to_date}
+                f"AND {col} >= :from_date AND {col} < :to_plus_one",
+                {"from_date": from_d, "to_plus_one": to_plus_one}
             )
         return ("", {})
     
