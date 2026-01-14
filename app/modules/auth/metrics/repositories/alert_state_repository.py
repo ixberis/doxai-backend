@@ -5,6 +5,12 @@ backend/app/modules/auth/metrics/repositories/alert_state_repository.py
 Repositorio para operaciones CRUD sobre auth_alert_states y auth_alert_events.
 
 NOTA: NO hace commit. El caller (route) es responsable de commit/rollback.
+
+ARQUITECTURA scope_key:
+- scope_key es el arbiter canónico para upsert.
+- Si scope_from/to son NULL => scope_key = 'global'
+- Si scope_from/to tienen fechas => scope_key = 'YYYY-MM-DD_YYYY-MM-DD'
+- ON CONFLICT siempre usa (module, dashboard, alert_key, scope_key)
 """
 from __future__ import annotations
 
@@ -20,6 +26,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..schemas.alert_state_schemas import AlertStatus, AlertAction
 
 logger = logging.getLogger(__name__)
+
+
+def compute_scope_key(
+    scope_from: Optional[date] = None,
+    scope_to: Optional[date] = None,
+    strict: bool = True,
+) -> str:
+    """
+    Calcula el scope_key canónico para upsert.
+    
+    - Si scope_from y scope_to son NULL => 'global'
+    - Si ambos tienen valor => 'YYYY-MM-DD_YYYY-MM-DD'
+    - Si solo uno tiene valor:
+      - strict=True (default): raise ValueError
+      - strict=False: normaliza a 'YYYY-MM-DD_' o '_YYYY-MM-DD'
+    
+    Args:
+        scope_from: Fecha inicio del scope (opcional)
+        scope_to: Fecha fin del scope (opcional)
+        strict: Si True, rechaza scopes parciales con ValueError
+    
+    Returns:
+        scope_key canónico
+    
+    Raises:
+        ValueError: Si strict=True y solo uno de scope_from/to está presente
+    """
+    if scope_from is None and scope_to is None:
+        return "global"
+    
+    if scope_from is not None and scope_to is not None:
+        return f"{scope_from.isoformat()}_{scope_to.isoformat()}"
+    
+    # Scope parcial (solo from o solo to)
+    if strict:
+        raise ValueError(
+            f"Scope parcial no permitido: scope_from={scope_from}, scope_to={scope_to}. "
+            "Ambos deben ser NULL o ambos deben tener valor."
+        )
+    
+    # Modo permisivo: normalizar
+    from_str = scope_from.isoformat() if scope_from else ""
+    to_str = scope_to.isoformat() if scope_to else ""
+    return f"{from_str}_{to_str}"
 
 
 class AlertStateRepository:
@@ -41,25 +91,24 @@ class AlertStateRepository:
         scope_to: Optional[date] = None,
     ) -> Optional[Dict[str, Any]]:
         """Obtiene el estado de una alerta específica."""
+        scope_key = compute_scope_key(scope_from, scope_to)
         q = text("""
             SELECT 
                 id, module, dashboard, alert_key,
-                scope_from, scope_to, status,
+                scope_from, scope_to, scope_key, status,
                 snoozed_until, acknowledged_at, 
                 acknowledged_by_auth_user_id, comment, updated_at
             FROM public.auth_alert_states
             WHERE module = :module
               AND dashboard = :dashboard
               AND alert_key = :alert_key
-              AND (scope_from IS NOT DISTINCT FROM :scope_from)
-              AND (scope_to IS NOT DISTINCT FROM :scope_to)
+              AND scope_key = :scope_key
         """)
         result = await self.db.execute(q, {
             "module": module,
             "dashboard": dashboard,
             "alert_key": alert_key,
-            "scope_from": scope_from,
-            "scope_to": scope_to,
+            "scope_key": scope_key,
         })
         row = result.first()
         if not row:
@@ -73,26 +122,36 @@ class AlertStateRepository:
         scope_from: Optional[date] = None,
         scope_to: Optional[date] = None,
     ) -> List[Dict[str, Any]]:
-        """Obtiene todos los estados para un dashboard/scope."""
+        """
+        Obtiene estados para un dashboard/scope con overlay.
+        
+        Si existe tanto un state global como uno scoped para el mismo alert_key,
+        retorna SOLO el scoped (más específico). Usa DISTINCT ON para priorizar.
+        
+        Prioridad:
+        1. scope_key específico (matches :scope_key)
+        2. scope_key = 'global' (fallback)
+        """
+        scope_key = compute_scope_key(scope_from, scope_to, strict=False)
+        
+        # DISTINCT ON (alert_key) con ORDER BY para priorizar scoped > global
+        # (scope_key = :scope_key) devuelve TRUE (1) o FALSE (0), DESC pone TRUE primero
         q = text("""
-            SELECT 
+            SELECT DISTINCT ON (alert_key)
                 id, module, dashboard, alert_key,
-                scope_from, scope_to, status,
+                scope_from, scope_to, scope_key, status,
                 snoozed_until, acknowledged_at,
                 acknowledged_by_auth_user_id, comment, updated_at
             FROM public.auth_alert_states
             WHERE module = :module
               AND dashboard = :dashboard
-              AND (
-                  (scope_from IS NULL AND scope_to IS NULL)
-                  OR (scope_from = :scope_from AND scope_to = :scope_to)
-              )
+              AND (scope_key = :scope_key OR scope_key = 'global')
+            ORDER BY alert_key, (scope_key = :scope_key) DESC, updated_at DESC
         """)
         result = await self.db.execute(q, {
             "module": module,
             "dashboard": dashboard,
-            "scope_from": scope_from,
-            "scope_to": scope_to,
+            "scope_key": scope_key,
         })
         return [dict(row._mapping) for row in result.fetchall()]
     
@@ -112,66 +171,39 @@ class AlertStateRepository:
         """
         Inserta o actualiza el estado de una alerta.
         
-        Usa índices parciales únicos para manejar NULL scopes:
-        - ux_auth_alert_states_scope_null: (module,dashboard,alert_key) WHERE scope IS NULL
-        - ux_auth_alert_states_scope_dates: (...,scope_from,scope_to) WHERE scope NOT NULL
+        Usa scope_key como arbiter canónico para ON CONFLICT:
+        - scope_key = 'global' si scope_from/to son NULL
+        - scope_key = 'from_to' si tienen fechas
         
-        ON CONFLICT especifica las columnas del índice único parcial.
-        PostgreSQL matcheará el índice correcto automáticamente.
+        ON CONFLICT (module, dashboard, alert_key, scope_key) siempre funciona.
         
         NOTA: NO hace commit. El caller es responsable.
         """
-        # Elegir ON CONFLICT según si scope es NULL o no
-        if scope_from is None and scope_to is None:
-            # Matchea con ux_auth_alert_states_scope_null
-            q = text("""
-                INSERT INTO public.auth_alert_states (
-                    module, dashboard, alert_key, scope_from, scope_to,
-                    status, snoozed_until, acknowledged_at,
-                    acknowledged_by_auth_user_id, comment, updated_at
-                ) VALUES (
-                    :module, :dashboard, :alert_key, NULL, NULL,
-                    :status, :snoozed_until, :acknowledged_at,
-                    :acknowledged_by_auth_user_id, :comment, now()
-                )
-                ON CONFLICT (module, dashboard, alert_key)
-                DO UPDATE SET
-                    status = EXCLUDED.status,
-                    snoozed_until = EXCLUDED.snoozed_until,
-                    acknowledged_at = EXCLUDED.acknowledged_at,
-                    acknowledged_by_auth_user_id = EXCLUDED.acknowledged_by_auth_user_id,
-                    comment = EXCLUDED.comment,
-                    updated_at = now()
-                RETURNING 
-                    id, module, dashboard, alert_key, scope_from, scope_to,
-                    status, snoozed_until, acknowledged_at,
-                    acknowledged_by_auth_user_id, comment, updated_at
-            """)
-        else:
-            # Matchea con ux_auth_alert_states_scope_dates
-            q = text("""
-                INSERT INTO public.auth_alert_states (
-                    module, dashboard, alert_key, scope_from, scope_to,
-                    status, snoozed_until, acknowledged_at,
-                    acknowledged_by_auth_user_id, comment, updated_at
-                ) VALUES (
-                    :module, :dashboard, :alert_key, :scope_from, :scope_to,
-                    :status, :snoozed_until, :acknowledged_at,
-                    :acknowledged_by_auth_user_id, :comment, now()
-                )
-                ON CONFLICT (module, dashboard, alert_key, scope_from, scope_to)
-                DO UPDATE SET
-                    status = EXCLUDED.status,
-                    snoozed_until = EXCLUDED.snoozed_until,
-                    acknowledged_at = EXCLUDED.acknowledged_at,
-                    acknowledged_by_auth_user_id = EXCLUDED.acknowledged_by_auth_user_id,
-                    comment = EXCLUDED.comment,
-                    updated_at = now()
-                RETURNING 
-                    id, module, dashboard, alert_key, scope_from, scope_to,
-                    status, snoozed_until, acknowledged_at,
-                    acknowledged_by_auth_user_id, comment, updated_at
-            """)
+        scope_key = compute_scope_key(scope_from, scope_to)
+        
+        q = text("""
+            INSERT INTO public.auth_alert_states (
+                module, dashboard, alert_key, scope_from, scope_to, scope_key,
+                status, snoozed_until, acknowledged_at,
+                acknowledged_by_auth_user_id, comment, updated_at
+            ) VALUES (
+                :module, :dashboard, :alert_key, :scope_from, :scope_to, :scope_key,
+                :status, :snoozed_until, :acknowledged_at,
+                :acknowledged_by_auth_user_id, :comment, now()
+            )
+            ON CONFLICT (module, dashboard, alert_key, scope_key)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                snoozed_until = EXCLUDED.snoozed_until,
+                acknowledged_at = EXCLUDED.acknowledged_at,
+                acknowledged_by_auth_user_id = EXCLUDED.acknowledged_by_auth_user_id,
+                comment = EXCLUDED.comment,
+                updated_at = now()
+            RETURNING 
+                id, module, dashboard, alert_key, scope_from, scope_to, scope_key,
+                status, snoozed_until, acknowledged_at,
+                acknowledged_by_auth_user_id, comment, updated_at
+        """)
         
         result = await self.db.execute(q, {
             "module": module,
@@ -179,6 +211,7 @@ class AlertStateRepository:
             "alert_key": alert_key,
             "scope_from": scope_from,
             "scope_to": scope_to,
+            "scope_key": scope_key,
             "status": status.value,
             "snoozed_until": snoozed_until,
             "acknowledged_at": acknowledged_at,
