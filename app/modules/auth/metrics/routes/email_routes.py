@@ -20,6 +20,8 @@ from datetime import date, timedelta
 from typing import Optional, Literal, List, Any
 from fastapi import APIRouter, Depends, Query, Path, HTTPException
 from pydantic import BaseModel, Field
+
+from app.modules.auth.dependencies import require_admin_strict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
@@ -154,7 +156,11 @@ async def get_email_metrics(db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.get("/_internal/admin/auth/email-metrics/by-type", response_model=EmailMetricsByTypeResponse)
+@router.get(
+    "/_internal/admin/auth/email-metrics/by-type",
+    response_model=EmailMetricsByTypeResponse,
+    dependencies=[Depends(require_admin_strict)],
+)
 async def get_email_metrics_by_type(
     from_date: Optional[str] = Query(
         None, 
