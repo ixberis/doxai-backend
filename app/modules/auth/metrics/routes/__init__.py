@@ -25,6 +25,7 @@ from .metrics_routes import router as metrics_routes_router
 from .email_routes import router as email_routes_router
 from .operational_routes import router as operational_routes_router
 from .functional_routes import router as functional_routes_router
+from .alert_routes import router as alert_routes_router
 
 # Router maestro de métricas de Auth
 router = APIRouter(tags=["metrics-auth"])
@@ -40,6 +41,9 @@ router.include_router(operational_routes_router)
 
 # Incluimos rutas funcionales (activation, password-reset, users)
 router.include_router(functional_routes_router)
+
+# Incluimos rutas de gestión de alertas (ACK/SNOOZE)
+router.include_router(alert_routes_router)
 
 __all__ = ["router"]
 

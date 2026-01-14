@@ -144,6 +144,17 @@ class MetricErrorResponse(BaseModel):
 
 from typing import Union
 
+class AlertStateInfo(BaseModel):
+    """Estado de gestión de una alerta (overlay)."""
+    status: str = Field("open", description="open, acknowledged, snoozed")
+    is_snoozed: bool = Field(False, description="True si snooze activo")
+    is_acknowledged: bool = Field(False, description="True si está reconocida")
+    snoozed_until: Optional[str] = Field(None, description="Hasta cuándo silenciada (ISO)")
+    acknowledged_at: Optional[str] = Field(None, description="Cuándo fue reconocida (ISO)")
+    acknowledged_by: Optional[str] = Field(None, description="UUID del admin que reconoció")
+    comment: Optional[str] = Field(None, description="Comentario del admin")
+
+
 class SecurityAlert(BaseModel):
     """Una alerta de seguridad."""
     code: str = Field(..., description="Código estable, ej. HIGH_LOGIN_FAILURE_RATE")
@@ -155,6 +166,8 @@ class SecurityAlert(BaseModel):
     time_scope: str = Field(..., description="periodo, stock, tiempo_real")
     recommended_action: str = Field(..., description="Acción recomendada")
     details: Optional[str] = Field(None, description="Detalles adicionales")
+    # Overlay de estado
+    state: Optional[AlertStateInfo] = Field(None, description="Estado de gestión (ack/snooze)")
 
 
 class SecurityMetricsResponse(BaseModel):
@@ -190,9 +203,10 @@ class SecurityMetricsResponse(BaseModel):
     
     # 6. Alertas
     alerts: List[SecurityAlert] = Field(default_factory=list, description="Lista de alertas activas")
-    alerts_high: int = Field(0, description="Conteo de alertas HIGH")
-    alerts_medium: int = Field(0, description="Conteo de alertas MEDIUM")
-    alerts_low: int = Field(0, description="Conteo de alertas LOW")
+    alerts_high: int = Field(0, description="Conteo de alertas HIGH (activas, no snoozed/ack)")
+    alerts_medium: int = Field(0, description="Conteo de alertas MEDIUM (activas, no snoozed/ack)")
+    alerts_low: int = Field(0, description="Conteo de alertas LOW (activas, no snoozed/ack)")
+    alerts_actionable: int = Field(0, description="Total alertas que requieren acción (no snoozed/ack)")
     
     # Metadata
     from_date: str = Field(..., description="Inicio del periodo")

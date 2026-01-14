@@ -62,6 +62,8 @@ from app.modules.auth.metrics.aggregators.operational_aggregators import (
 from app.modules.auth.metrics.aggregators.operational_security_aggregator import (
     SecurityAggregator,
 )
+from app.modules.auth.metrics.services.alert_state_service import AlertStateService
+from app.modules.auth.metrics.schemas.operational_schemas import AlertStateInfo
 from app.modules.auth.metrics.aggregators.operational_activation_aggregator import (
     ActivationOperationalAggregator,
 )
@@ -527,6 +529,29 @@ async def get_security_metrics(
         for note in diag_notes:
             if note not in data.notes:
                 data.notes.append(note)
+        # ─────────────────────────────────────────────────────────────────
+        # OVERLAY: Aplicar estados de alertas (ack/snooze)
+        # ─────────────────────────────────────────────────────────────────
+        alert_keys = [a.code for a in data.alerts]
+        overlays = {}
+        
+        if alert_keys:
+            try:
+                from datetime import datetime as dt_mod
+                scope_from_date = dt_mod.strptime(data.from_date, "%Y-%m-%d").date() if data.from_date else None
+                scope_to_date = dt_mod.strptime(data.to_date, "%Y-%m-%d").date() if data.to_date else None
+                
+                alert_state_service = AlertStateService(db)
+                overlays = await alert_state_service.get_overlays_for_alerts(
+                    alert_keys=alert_keys,
+                    scope_from=scope_from_date,
+                    scope_to=scope_to_date,
+                )
+            except Exception as overlay_err:
+                logger.warning(
+                    f"[auth_security:{request_id}] overlay fetch failed: {overlay_err}"
+                )
+                # Continue without overlay
         
         logger.info(
             f"[auth_security:{request_id}] completed "
@@ -537,21 +562,52 @@ async def get_security_metrics(
             f"errors_count={len(data.errors)}"
         )
         
-        # Convert alerts from dataclass to pydantic model
-        alerts_pydantic = [
-            SecurityAlert(
+        # Convert alerts from dataclass to pydantic model with overlay
+        alerts_pydantic = []
+        alerts_high_actionable = 0
+        alerts_medium_actionable = 0
+        alerts_low_actionable = 0
+        
+        for a in data.alerts:
+            overlay = overlays.get(a.code)
+            
+            # Determinar si es "actionable" (no snoozed/ack)
+            is_actionable = True
+            state_info = None
+            
+            if overlay:
+                is_actionable = not (overlay.is_snoozed or overlay.is_acknowledged)
+                state_info = AlertStateInfo(
+                    status=overlay.status.value,
+                    is_snoozed=overlay.is_snoozed,
+                    is_acknowledged=overlay.is_acknowledged,
+                    snoozed_until=overlay.snoozed_until.isoformat() if overlay.snoozed_until else None,
+                    acknowledged_at=overlay.acknowledged_at.isoformat() if overlay.acknowledged_at else None,
+                    acknowledged_by=str(overlay.acknowledged_by) if overlay.acknowledged_by else None,
+                    comment=overlay.comment,
+                )
+            
+            # Contar solo alertas actionable
+            if is_actionable:
+                if a.severity.value == "high":
+                    alerts_high_actionable += 1
+                elif a.severity.value == "medium":
+                    alerts_medium_actionable += 1
+                else:
+                    alerts_low_actionable += 1
+            
+            alerts_pydantic.append(SecurityAlert(
                 code=a.code,
                 title=a.title,
-                severity=a.severity.value,  # Enum -> string
+                severity=a.severity.value,
                 metric=a.metric,
                 value=a.value,
                 threshold=a.threshold,
                 time_scope=a.time_scope,
                 recommended_action=a.recommended_action,
                 details=a.details,
-            )
-            for a in data.alerts
-        ]
+                state=state_info,
+            ))
         
         # Convert errors from dataclass to pydantic model
         errors_pydantic = [
@@ -583,9 +639,10 @@ async def get_security_metrics(
             users_with_failed_login_and_reset=data.users_with_failed_login_and_reset,
             accounts_with_login_but_no_recent_session=data.accounts_with_login_but_no_recent_session,
             alerts=alerts_pydantic,
-            alerts_high=data.alerts_high,
-            alerts_medium=data.alerts_medium,
-            alerts_low=data.alerts_low,
+            alerts_high=alerts_high_actionable,
+            alerts_medium=alerts_medium_actionable,
+            alerts_low=alerts_low_actionable,
+            alerts_actionable=alerts_high_actionable + alerts_medium_actionable + alerts_low_actionable,
             from_date=data.from_date,
             to_date=data.to_date,
             generated_at=data.generated_at,
