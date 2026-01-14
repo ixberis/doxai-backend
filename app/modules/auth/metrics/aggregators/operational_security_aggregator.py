@@ -289,52 +289,54 @@ class SecurityAggregator:
         
         # IPs con muchos fallos
         try:
-            q = text("""
-                SELECT COUNT(DISTINCT ip_address)
-                FROM (
-                    SELECT ip_address, COUNT(*) as cnt
-                    FROM public.login_attempts
-                    WHERE success = false
-                      AND created_at >= :from_ts
-                      AND created_at < :to_ts
-                    GROUP BY ip_address
-                    HAVING COUNT(*) > :threshold
-                ) sub
-            """)
-            res = await self.db.execute(q, {
-                "from_ts": from_ts,
-                "to_ts": to_ts,
-                "threshold": HIGH_FAILURES_THRESHOLD,
-            })
-            row = res.first()
-            if row and row[0]:
-                ips_with_high_failures = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(DISTINCT ip_address)
+                    FROM (
+                        SELECT ip_address, COUNT(*) as cnt
+                        FROM public.login_attempts
+                        WHERE success = false
+                          AND created_at >= :from_ts
+                          AND created_at < :to_ts
+                        GROUP BY ip_address
+                        HAVING COUNT(*) > :threshold
+                    ) sub
+                """)
+                res = await self.db.execute(q, {
+                    "from_ts": from_ts,
+                    "to_ts": to_ts,
+                    "threshold": HIGH_FAILURES_THRESHOLD,
+                })
+                row = res.first()
+                if row and row[0]:
+                    ips_with_high_failures = int(row[0])
         except Exception as e:
             logger.debug("ips_with_high_failures failed: %s", e)
         
         # Usuarios con muchos fallos
         try:
-            q = text("""
-                SELECT COUNT(DISTINCT user_id)
-                FROM (
-                    SELECT user_id, COUNT(*) as cnt
-                    FROM public.login_attempts
-                    WHERE success = false
-                      AND user_id IS NOT NULL
-                      AND created_at >= :from_ts
-                      AND created_at < :to_ts
-                    GROUP BY user_id
-                    HAVING COUNT(*) > :threshold
-                ) sub
-            """)
-            res = await self.db.execute(q, {
-                "from_ts": from_ts,
-                "to_ts": to_ts,
-                "threshold": HIGH_FAILURES_THRESHOLD,
-            })
-            row = res.first()
-            if row and row[0]:
-                users_with_high_failures = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(DISTINCT user_id)
+                    FROM (
+                        SELECT user_id, COUNT(*) as cnt
+                        FROM public.login_attempts
+                        WHERE success = false
+                          AND user_id IS NOT NULL
+                          AND created_at >= :from_ts
+                          AND created_at < :to_ts
+                        GROUP BY user_id
+                        HAVING COUNT(*) > :threshold
+                    ) sub
+                """)
+                res = await self.db.execute(q, {
+                    "from_ts": from_ts,
+                    "to_ts": to_ts,
+                    "threshold": HIGH_FAILURES_THRESHOLD,
+                })
+                row = res.first()
+                if row and row[0]:
+                    users_with_high_failures = int(row[0])
         except Exception as e:
             logger.debug("users_with_high_failures failed: %s", e)
         
@@ -342,39 +344,33 @@ class SecurityAggregator:
         # Uses canonical groupings: RATE_LIMIT_REASONS + LOCKOUT_REASONS
         # Uses CAST(:param AS text[]) for proper array binding with asyncpg
         try:
-            all_lockout_reasons = list(RATE_LIMIT_REASONS | LOCKOUT_REASONS)
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.login_attempts
-                WHERE reason::text = ANY(CAST(:reasons AS text[]))
-                  AND created_at >= :from_ts
-                  AND created_at < :to_ts
-            """)
-            res = await self.db.execute(q, {
-                "reasons": all_lockout_reasons,
-                "from_ts": from_ts,
-                "to_ts": to_ts,
-            })
-            row = res.first()
-            if row and row[0]:
-                lockouts_triggered = int(row[0])
+            async with self.db.begin_nested():
+                all_lockout_reasons = list(RATE_LIMIT_REASONS | LOCKOUT_REASONS)
+                q = text("""
+                    SELECT COUNT(*)
+                    FROM public.login_attempts
+                    WHERE reason::text = ANY(CAST(:reasons AS text[]))
+                      AND created_at >= :from_ts
+                      AND created_at < :to_ts
+                """)
+                res = await self.db.execute(q, {
+                    "reasons": all_lockout_reasons,
+                    "from_ts": from_ts,
+                    "to_ts": to_ts,
+                })
+                row = res.first()
+                if row and row[0]:
+                    lockouts_triggered = int(row[0])
         except Exception as e:
             logger.debug("lockouts_triggered failed: %s", e)
         
         # Cuentas bloqueadas activas (stock)
-        try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.app_users
-                WHERE user_status = 'locked'
-                  AND deleted_at IS NULL
-            """)
-            res = await self.db.execute(q)
-            row = res.first()
-            if row and row[0]:
-                accounts_locked_active = int(row[0])
-        except Exception as e:
-            logger.debug("accounts_locked_active failed: %s", e)
+        # NOTA: Esta métrica requiere una tabla de lockouts con locked_until > now()
+        # que actualmente no existe. Se reporta como no implementada.
+        # El "lockout real" por rate limiting se mide con lockouts_triggered arriba.
+        # NO usamos user_status porque 'suspended' es un estado administrativo diferente.
+        accounts_locked_active = 0
+        notes.append("accounts_locked_active: not implemented (no lockout source)")
         
         # ─────────────────────────────────────────────────────────────
         # 3. SESIONES (tiempo real + periodo)
@@ -390,31 +386,32 @@ class SecurityAggregator:
         session_query_start = _time.perf_counter()
         
         try:
-            q = text("""
-                SELECT 
-                    sessions_active,
-                    users_with_multiple_sessions,
-                    sessions_last_24h,
-                    sessions_expiring_24h
-                FROM public.fn_metrics_sessions_all(:threshold)
-            """)
-            res = await self.db.execute(q, {"threshold": MULTIPLE_SESSIONS_THRESHOLD})
-            row = res.first()
-            session_query_ms = (_time.perf_counter() - session_query_start) * 1000
-            
-            if row:
-                sessions_active = int(row.sessions_active or 0)
-                users_with_multiple_sessions = int(row.users_with_multiple_sessions or 0)
-                sessions_last_24h = int(row.sessions_last_24h or 0)
-                sessions_expiring_24h = int(row.sessions_expiring_24h or 0)
-            
-            logger.info(
-                "session_metrics_query query_name=fn_metrics_sessions_all "
-                "duration_ms=%.2f sessions_active=%d users_multiple=%d "
-                "sessions_24h=%d expiring_24h=%d",
-                session_query_ms, sessions_active, users_with_multiple_sessions,
-                sessions_last_24h, sessions_expiring_24h
-            )
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT 
+                        sessions_active,
+                        users_with_multiple_sessions,
+                        sessions_last_24h,
+                        sessions_expiring_24h
+                    FROM public.fn_metrics_sessions_all(:threshold)
+                """)
+                res = await self.db.execute(q, {"threshold": MULTIPLE_SESSIONS_THRESHOLD})
+                row = res.first()
+                session_query_ms = (_time.perf_counter() - session_query_start) * 1000
+                
+                if row:
+                    sessions_active = int(row.sessions_active or 0)
+                    users_with_multiple_sessions = int(row.users_with_multiple_sessions or 0)
+                    sessions_last_24h = int(row.sessions_last_24h or 0)
+                    sessions_expiring_24h = int(row.sessions_expiring_24h or 0)
+                
+                logger.info(
+                    "session_metrics_query query_name=fn_metrics_sessions_all "
+                    "duration_ms=%.2f sessions_active=%d users_multiple=%d "
+                    "sessions_24h=%d expiring_24h=%d",
+                    session_query_ms, sessions_active, users_with_multiple_sessions,
+                    sessions_last_24h, sessions_expiring_24h
+                )
             
         except Exception as e:
             session_query_ms = (_time.perf_counter() - session_query_start) * 1000
@@ -441,72 +438,76 @@ class SecurityAggregator:
         
         # Solicitudes de reset en periodo
         try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.password_resets
-                WHERE created_at >= :from_ts
-                  AND created_at < :to_ts
-            """)
-            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
-            row = res.first()
-            if row and row[0]:
-                password_reset_requests = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(*)
+                    FROM public.password_resets
+                    WHERE created_at >= :from_ts
+                      AND created_at < :to_ts
+                """)
+                res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
+                row = res.first()
+                if row and row[0]:
+                    password_reset_requests = int(row[0])
         except Exception as e:
             logger.debug("password_reset_requests failed: %s", e)
         
         # Resets completados en periodo
         try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.password_resets
-                WHERE used_at >= :from_ts
-                  AND used_at < :to_ts
-            """)
-            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
-            row = res.first()
-            if row and row[0]:
-                password_reset_completed = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(*)
+                    FROM public.password_resets
+                    WHERE used_at >= :from_ts
+                      AND used_at < :to_ts
+                """)
+                res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
+                row = res.first()
+                if row and row[0]:
+                    password_reset_completed = int(row[0])
         except Exception as e:
             logger.debug("password_reset_completed failed: %s", e)
         
         # Abandonados: creados en periodo pero no usados y expirados
         try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.password_resets
-                WHERE created_at >= :from_ts
-                  AND created_at < :to_ts
-                  AND used_at IS NULL
-                  AND expires_at < NOW()
-            """)
-            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
-            row = res.first()
-            if row and row[0]:
-                password_reset_abandoned = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(*)
+                    FROM public.password_resets
+                    WHERE created_at >= :from_ts
+                      AND created_at < :to_ts
+                      AND used_at IS NULL
+                      AND expires_at < NOW()
+                """)
+                res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
+                row = res.first()
+                if row and row[0]:
+                    password_reset_abandoned = int(row[0])
         except Exception as e:
             logger.debug("password_reset_abandoned failed: %s", e)
         
         # Usuarios con >1 solicitud en periodo
         try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM (
-                    SELECT user_id, COUNT(*) as cnt
-                    FROM public.password_resets
-                    WHERE created_at >= :from_ts
-                      AND created_at < :to_ts
-                    GROUP BY user_id
-                    HAVING COUNT(*) > :threshold
-                ) sub
-            """)
-            res = await self.db.execute(q, {
-                "from_ts": from_ts,
-                "to_ts": to_ts,
-                "threshold": MULTIPLE_RESET_REQUESTS_THRESHOLD,
-            })
-            row = res.first()
-            if row and row[0]:
-                reset_requests_by_user_gt_1 = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT user_id, COUNT(*) as cnt
+                        FROM public.password_resets
+                        WHERE created_at >= :from_ts
+                          AND created_at < :to_ts
+                        GROUP BY user_id
+                        HAVING COUNT(*) > :threshold
+                    ) sub
+                """)
+                res = await self.db.execute(q, {
+                    "from_ts": from_ts,
+                    "to_ts": to_ts,
+                    "threshold": MULTIPLE_RESET_REQUESTS_THRESHOLD,
+                })
+                row = res.first()
+                if row and row[0]:
+                    reset_requests_by_user_gt_1 = int(row[0])
         except Exception as e:
             logger.debug("reset_requests_by_user_gt_1 failed: %s", e)
         
@@ -518,41 +519,43 @@ class SecurityAggregator:
         
         # Usuarios con login fallido Y solicitud de reset en el periodo
         try:
-            q = text("""
-                SELECT COUNT(DISTINCT la.user_id)
-                FROM public.login_attempts la
-                INNER JOIN public.password_resets pr ON la.user_id = pr.user_id
-                WHERE la.success = false
-                  AND la.created_at >= :from_ts
-                  AND la.created_at < :to_ts
-                  AND pr.created_at >= :from_ts
-                  AND pr.created_at < :to_ts
-            """)
-            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
-            row = res.first()
-            if row and row[0]:
-                users_with_failed_login_and_reset = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(DISTINCT la.user_id)
+                    FROM public.login_attempts la
+                    INNER JOIN public.password_resets pr ON la.user_id = pr.user_id
+                    WHERE la.success = false
+                      AND la.created_at >= :from_ts
+                      AND la.created_at < :to_ts
+                      AND pr.created_at >= :from_ts
+                      AND pr.created_at < :to_ts
+                """)
+                res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
+                row = res.first()
+                if row and row[0]:
+                    users_with_failed_login_and_reset = int(row[0])
         except Exception as e:
             logger.debug("users_with_failed_login_and_reset failed: %s", e)
         
         # Cuentas con login exitoso en periodo pero sin sesión activa ahora
         try:
-            q = text("""
-                SELECT COUNT(DISTINCT la.user_id)
-                FROM public.login_attempts la
-                WHERE la.success = true
-                  AND la.created_at >= :from_ts
-                  AND la.created_at < :to_ts
-                  AND la.user_id NOT IN (
-                      SELECT user_id FROM public.user_sessions
-                      WHERE expires_at > NOW()
-                        AND revoked_at IS NULL
-                  )
-            """)
-            res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
-            row = res.first()
-            if row and row[0]:
-                accounts_with_login_but_no_recent_session = int(row[0])
+            async with self.db.begin_nested():
+                q = text("""
+                    SELECT COUNT(DISTINCT la.user_id)
+                    FROM public.login_attempts la
+                    WHERE la.success = true
+                      AND la.created_at >= :from_ts
+                      AND la.created_at < :to_ts
+                      AND la.user_id NOT IN (
+                          SELECT user_id FROM public.user_sessions
+                          WHERE expires_at > NOW()
+                            AND revoked_at IS NULL
+                      )
+                """)
+                res = await self.db.execute(q, {"from_ts": from_ts, "to_ts": to_ts})
+                row = res.first()
+                if row and row[0]:
+                    accounts_with_login_but_no_recent_session = int(row[0])
         except Exception as e:
             logger.debug("accounts_with_login_but_no_recent_session failed: %s", e)
         
