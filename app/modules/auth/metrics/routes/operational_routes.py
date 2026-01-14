@@ -13,8 +13,12 @@ Autor: Sistema
 Fecha: 2026-01-03
 """
 import logging
+import os
+import time as _time
 import uuid
 from datetime import datetime
+
+from sqlalchemy import text
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -398,11 +402,20 @@ async def get_errors_detail(
         )
 
 
+# ─────────────────────────────────────────────────────────────────
+# Feature flag para diagnóstico (P0)
+# Default OFF en producción para evitar ruido/filtración
+# ─────────────────────────────────────────────────────────────────
+AUTH_SECURITY_DIAGNOSTICS_ENABLED = os.getenv(
+    "AUTH_SECURITY_DIAGNOSTICS_ENABLED", "0"
+).lower() in ("1", "true", "yes")
+
+
 @router.get("/security", response_model=SecurityMetricsResponse)
 async def get_security_metrics(
     from_date: str = Query(None, alias="from", description="Fecha inicio (YYYY-MM-DD)"),
     to_date: str = Query(None, alias="to", description="Fecha fin (YYYY-MM-DD)"),
-    db: AsyncSession = Depends(get_db),  # Usa get_db normal; bypass RLS via SECURITY DEFINER
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Métricas de seguridad operativa.
@@ -410,11 +423,10 @@ async def get_security_metrics(
     NOTA: Las funciones fn_metrics_sessions_* son SECURITY DEFINER con OWNER=postgres,
     lo que bypasea RLS automáticamente. NO se requiere service_role en la conexión.
     
-    - Accesos: intentos de login, tasa de fallo
-    - Fuerza bruta: IPs/usuarios sospechosos, bloqueos
-    - Sesiones: activas, múltiples, próximas a expirar
-    - Password reset: solicitudes, completados, abandonados
-    - Riesgo: indicadores derivados
+    Diagnóstico opcional (AUTH_SECURITY_DIAGNOSTICS_ENABLED=1):
+    - Verifica current_user y role de conexión
+    - Ejecuta smoke test de fn_metrics_sessions_all
+    - Refleja errores en data.errors y data.notes
     
     Query params:
     - from: Fecha inicio (YYYY-MM-DD) - opcional (default: -7 días)
@@ -422,9 +434,64 @@ async def get_security_metrics(
     """
     request_id = str(uuid.uuid4())[:8]
     server_time_utc = datetime.utcnow().isoformat() + "Z"
+    
+    # Acumuladores para diagnóstico (se agregan al response si fallan)
+    diag_errors: list = []
+    diag_notes: list = []
+    
+    # ─────────────────────────────────────────────────────────────────
+    # A) DIAGNÓSTICO DE CONEXIÓN (solo si flag ON)
+    # ─────────────────────────────────────────────────────────────────
+    if AUTH_SECURITY_DIAGNOSTICS_ENABLED:
+        try:
+            # 1. Obtener identidad de conexión (compacto)
+            diag_result = await db.execute(text("""
+                SELECT current_user, current_setting('role', true)
+            """))
+            diag_row = diag_result.first()
+            conn_user = diag_row[0] if diag_row else "unknown"
+            conn_role = diag_row[1] if diag_row else "unknown"
+            
+            # 2. Smoke test de la función
+            smoke_start = _time.perf_counter()
+            smoke_result = await db.execute(text("""
+                SELECT sessions_active
+                FROM public.fn_metrics_sessions_all(1)
+            """))
+            smoke_row = smoke_result.first()
+            smoke_ms = (_time.perf_counter() - smoke_start) * 1000
+            
+            sessions_active_val = smoke_row[0] if smoke_row else None
+            smoke_ok = sessions_active_val is not None
+            
+            # Log compacto y seguro
+            logger.info(
+                f"[auth_security:{request_id}] diag "
+                f"user={conn_user} role={conn_role} "
+                f"smoke_ok={smoke_ok} sessions_active={sessions_active_val} "
+                f"smoke_ms={smoke_ms:.1f}"
+            )
+            
+        except Exception as e:
+            error_type = type(e).__name__
+            # Mensaje seguro (sin detalles sensibles)
+            safe_message = str(e)[:200] if str(e) else "Unknown error"
+            
+            diag_errors.append({
+                "name": "sessions_smoke_test",
+                "error_type": error_type,
+                "message": safe_message,
+            })
+            diag_notes.append("diag:sessions_smoke_test_failed")
+            
+            logger.warning(
+                f"[auth_security:{request_id}] smoke_test FAILED "
+                f"error_type={error_type}"
+            )
+    
     logger.info(
-        f"[auth_operational_security:{request_id}] from={from_date} to={to_date} "
-        f"server_time={server_time_utc}"
+        f"[auth_security:{request_id}] from={from_date} to={to_date} "
+        f"server_time={server_time_utc} diag_enabled={AUTH_SECURITY_DIAGNOSTICS_ENABLED}"
     )
     
     # Validate dates if provided
@@ -445,13 +512,29 @@ async def get_security_metrics(
         agg = SecurityAggregator(db)
         data = await agg.get_security_metrics(parsed_from, parsed_to)
         
+        # Agregar errores del diagnóstico al response
+        if diag_errors:
+            from app.modules.auth.metrics.aggregators.operational_security_aggregator import MetricError
+            for err in diag_errors:
+                data.errors.append(MetricError(
+                    name=err["name"],
+                    error_type=err["error_type"],
+                    message=err["message"],
+                ))
+            data.partial = True
+        
+        # Agregar notas del diagnóstico
+        for note in diag_notes:
+            if note not in data.notes:
+                data.notes.append(note)
+        
         logger.info(
-            f"[auth_operational_security:{request_id}] completed "
+            f"[auth_security:{request_id}] completed "
             f"attempts={data.login_attempts_total} "
             f"failed={data.login_attempts_failed} "
-            f"ips_suspicious={data.ips_with_high_failures} "
-            f"users_suspicious={data.users_with_high_failures} "
-            f"sessions={data.sessions_active}"
+            f"sessions={data.sessions_active} "
+            f"partial={data.partial} "
+            f"errors_count={len(data.errors)}"
         )
         
         # Convert alerts from dataclass to pydantic model
@@ -515,7 +598,7 @@ async def get_security_metrics(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"[auth_operational_security:{request_id}] fatal: {e}")
+        logger.exception(f"[auth_security:{request_id}] fatal: {e}")
         raise HTTPException(
             status_code=500,
             detail="Error interno al calcular métricas de seguridad",
