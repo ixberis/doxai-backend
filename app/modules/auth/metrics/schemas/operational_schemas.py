@@ -136,6 +136,12 @@ class SecurityThresholds(BaseModel):
     login_no_session_high: int = Field(10, description="Umbral crítico para logins sin sesión → HIGH")
 
 
+class MetricErrorResponse(BaseModel):
+    """Error al obtener una métrica específica."""
+    name: str = Field(..., description="Nombre de la métrica que falló")
+    error_type: str = Field(..., description="Tipo de error")
+    message: str = Field(..., description="Mensaje de error")
+
 from typing import Union
 
 class SecurityAlert(BaseModel):
@@ -194,6 +200,10 @@ class SecurityMetricsResponse(BaseModel):
     generated_at: str = Field(..., description="Timestamp de generación")
     notes: List[str] = Field(default_factory=list, description="Notas operativas")
     thresholds: SecurityThresholds = Field(default_factory=SecurityThresholds, description="Umbrales usados")
+    
+    # Errors (NO más fallback silencioso)
+    errors: List[MetricErrorResponse] = Field(default_factory=list, description="Errores en métricas individuales")
+    partial: bool = Field(False, description="True si hay errores en métricas críticas")
 
 
 # Fin del archivo

@@ -28,6 +28,7 @@ from app.modules.auth.metrics.schemas.operational_schemas import (
     SecurityMetricsResponse,
     SecurityThresholds,
     SecurityAlert,
+    MetricErrorResponse,
 )
 from app.modules.auth.metrics.schemas.operational_activation_schemas import (
     ActivationOperationalResponse,
@@ -401,10 +402,13 @@ async def get_errors_detail(
 async def get_security_metrics(
     from_date: str = Query(None, alias="from", description="Fecha inicio (YYYY-MM-DD)"),
     to_date: str = Query(None, alias="to", description="Fecha fin (YYYY-MM-DD)"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # Usa get_db normal; bypass RLS via SECURITY DEFINER
 ):
     """
     Métricas de seguridad operativa.
+    
+    NOTA: Las funciones fn_metrics_sessions_* son SECURITY DEFINER con OWNER=postgres,
+    lo que bypasea RLS automáticamente. NO se requiere service_role en la conexión.
     
     - Accesos: intentos de login, tasa de fallo
     - Fuerza bruta: IPs/usuarios sospechosos, bloqueos
@@ -417,7 +421,11 @@ async def get_security_metrics(
     - to: Fecha fin (YYYY-MM-DD) - opcional (default: hoy)
     """
     request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[auth_operational_security:{request_id}] from={from_date} to={to_date}")
+    server_time_utc = datetime.utcnow().isoformat() + "Z"
+    logger.info(
+        f"[auth_operational_security:{request_id}] from={from_date} to={to_date} "
+        f"server_time={server_time_utc}"
+    )
     
     # Validate dates if provided
     parsed_from = None
@@ -462,6 +470,16 @@ async def get_security_metrics(
             for a in data.alerts
         ]
         
+        # Convert errors from dataclass to pydantic model
+        errors_pydantic = [
+            MetricErrorResponse(
+                name=e.name,
+                error_type=e.error_type,
+                message=e.message,
+            )
+            for e in data.errors
+        ]
+        
         return SecurityMetricsResponse(
             login_attempts_total=data.login_attempts_total,
             login_attempts_failed=data.login_attempts_failed,
@@ -490,6 +508,8 @@ async def get_security_metrics(
             generated_at=data.generated_at,
             notes=data.notes,
             thresholds=SecurityThresholds(**data.thresholds.to_dict()),
+            errors=errors_pydantic,
+            partial=data.partial,
         )
         
     except HTTPException:

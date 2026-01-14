@@ -721,6 +721,7 @@ async def init_db_diagnostics() -> None:
         logger.debug("[DB-IDENTITY] Excepción inesperada en init_db_diagnostics: %s", exc)
 
 
+
 __all__ = [
     "engine",
     "SessionLocal",

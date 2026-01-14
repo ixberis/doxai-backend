@@ -142,6 +142,14 @@ class SecurityThresholds:
 
 
 @dataclass
+class MetricError:
+    """Error al obtener una métrica específica."""
+    name: str
+    error_type: str
+    message: str
+
+
+@dataclass
 class SecurityMetricsData:
     """Métricas de seguridad operativa."""
     
@@ -184,6 +192,10 @@ class SecurityMetricsData:
     to_date: str = ""
     generated_at: str = ""
     notes: List[str] = field(default_factory=list)
+    
+    # Errors (NO más fallback silencioso)
+    errors: List[MetricError] = field(default_factory=list)
+    partial: bool = False  # True si hay errores en métricas críticas
     
     # Umbrales completos (fuente de verdad para frontend)
     thresholds: SecurityThresholds = field(default_factory=SecurityThresholds)
@@ -235,6 +247,7 @@ class SecurityAggregator:
         )
         
         notes = []
+        errors: List[MetricError] = []
         
         # ─────────────────────────────────────────────────────────────
         # 1. ACCESOS (periodo)
@@ -371,71 +384,52 @@ class SecurityAggregator:
         sessions_last_24h = 0
         sessions_expiring_24h = 0
         
-        # Sesiones activas ahora
-        try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.user_sessions
-                WHERE expires_at > NOW()
-                  AND revoked_at IS NULL
-            """)
-            res = await self.db.execute(q)
-            row = res.first()
-            if row and row[0]:
-                sessions_active = int(row[0])
-        except Exception as e:
-            logger.debug("sessions_active failed: %s", e)
+        # Usar función SECURITY DEFINER para bypass RLS y obtener todas las métricas
+        # en una sola llamada (más eficiente y sin problemas de RLS)
+        import time as _time
+        session_query_start = _time.perf_counter()
         
-        # Usuarios con múltiples sesiones activas
         try:
             q = text("""
-                SELECT COUNT(*)
-                FROM (
-                    SELECT user_id, COUNT(*) as cnt
-                    FROM public.user_sessions
-                    WHERE expires_at > NOW()
-                      AND revoked_at IS NULL
-                    GROUP BY user_id
-                    HAVING COUNT(*) > :threshold
-                ) sub
+                SELECT 
+                    sessions_active,
+                    users_with_multiple_sessions,
+                    sessions_last_24h,
+                    sessions_expiring_24h
+                FROM public.fn_metrics_sessions_all(:threshold)
             """)
             res = await self.db.execute(q, {"threshold": MULTIPLE_SESSIONS_THRESHOLD})
             row = res.first()
-            if row and row[0]:
-                users_with_multiple_sessions = int(row[0])
+            session_query_ms = (_time.perf_counter() - session_query_start) * 1000
+            
+            if row:
+                sessions_active = int(row.sessions_active or 0)
+                users_with_multiple_sessions = int(row.users_with_multiple_sessions or 0)
+                sessions_last_24h = int(row.sessions_last_24h or 0)
+                sessions_expiring_24h = int(row.sessions_expiring_24h or 0)
+            
+            logger.info(
+                "session_metrics_query query_name=fn_metrics_sessions_all "
+                "duration_ms=%.2f sessions_active=%d users_multiple=%d "
+                "sessions_24h=%d expiring_24h=%d",
+                session_query_ms, sessions_active, users_with_multiple_sessions,
+                sessions_last_24h, sessions_expiring_24h
+            )
+            
         except Exception as e:
-            logger.debug("users_with_multiple_sessions failed: %s", e)
-        
-        # Sesiones creadas en las últimas 24h
-        # NOTA: user_sessions usa 'issued_at', NO 'created_at'
-        try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.user_sessions
-                WHERE issued_at >= NOW() - INTERVAL '24 hours'
-            """)
-            res = await self.db.execute(q)
-            row = res.first()
-            if row and row[0]:
-                sessions_last_24h = int(row[0])
-        except Exception as e:
-            logger.debug("sessions_last_24h failed: %s", e)
-        
-        # Sesiones próximas a expirar (próximas 24h)
-        try:
-            q = text("""
-                SELECT COUNT(*)
-                FROM public.user_sessions
-                WHERE expires_at > NOW()
-                  AND expires_at <= NOW() + INTERVAL '24 hours'
-                  AND revoked_at IS NULL
-            """)
-            res = await self.db.execute(q)
-            row = res.first()
-            if row and row[0]:
-                sessions_expiring_24h = int(row[0])
-        except Exception as e:
-            logger.debug("sessions_expiring_24h failed: %s", e)
+            session_query_ms = (_time.perf_counter() - session_query_start) * 1000
+            logger.warning(
+                "session_metrics_query FAILED query_name=fn_metrics_sessions_all "
+                "duration_ms=%.2f error=%s",
+                session_query_ms, str(e),
+                exc_info=True
+            )
+            errors.append(MetricError(
+                name="sessions_all",
+                error_type=type(e).__name__,
+                message=str(e)
+            ))
+            notes.append("sessions: error de consulta (RLS o función no disponible)")
         
         # ─────────────────────────────────────────────────────────────
         # 4. PASSWORD RESET (periodo)
@@ -855,6 +849,9 @@ class SecurityAggregator:
             to_date=to_d.isoformat(),
             generated_at=generated_at,
             notes=notes,
+            # Errors (NO más fallback silencioso)
+            errors=errors,
+            partial=len(errors) > 0,
             thresholds=thresholds,
         )
 
