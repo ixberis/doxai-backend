@@ -286,6 +286,11 @@ class SecurityAggregator:
         except Exception as e:
             logger.warning("login_attempts metrics failed: %s", e)
             notes.append("login_attempts: error de consulta")
+            errors.append(MetricError(
+                name="login_attempts",
+                error_type=type(e).__name__,
+                message=str(e)[:200],
+            ))
         
         # ─────────────────────────────────────────────────────────────
         # 2. SEÑALES DE FUERZA BRUTA (periodo)
