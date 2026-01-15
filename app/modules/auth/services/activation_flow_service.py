@@ -28,8 +28,8 @@ from app.modules.auth.repositories import UserRepository
 from app.modules.auth.utils.payload_extractors import as_dict
 from app.modules.auth.utils.email_helpers import (
     send_activation_email_safely,
-    send_admin_activation_notice_safely,
 )
+from app.shared.services.admin_notifications import send_admin_activation_notice
 from app.modules.auth.utils.error_classifier import classify_email_error
 from app.modules.auth.metrics.collectors.welcome_email_collectors import (
     welcome_email_sent_total,
@@ -175,40 +175,30 @@ class ActivationFlowService:
                 )
 
                 # Enviar notificación al admin (best-effort, no bloquea activación)
-                admin_email = getattr(self.settings, "admin_notification_email", None) or "doxai@doxai.site"
-                
+                # Usa get_admin_notification_email() como SSOT para destinatario
+                # Requiere db session para idempotencia vía admin_notification_events
                 try:
-                    admin_email_sent = await send_admin_activation_notice_safely(
+                    admin_email_sent = await send_admin_activation_notice(
                         self.email_sender,
-                        admin_email=admin_email,
+                        self.db,
                         user_email=user.user_email,
                         user_name=user.user_full_name,
-                        user_id=int(user.user_id),
+                        auth_user_id=user.auth_user_id,
                         credits_assigned=credits_assigned,
+                        user_id=int(user.user_id),
                         ip_address=payload.get("ip_address"),
                         user_agent=payload.get("user_agent"),
-                        auth_user_id=user.auth_user_id,  # SSOT para tracking en auth_email_events
                     )
                     
-                    if admin_email_sent:
-                        logger.info(
-                            "admin_activation_email_sent to=%s user_id=%s credits=%d",
-                            admin_email,
-                            activated_user_id,
-                            credits_assigned,
-                        )
-                    else:
-                        logger.warning(
-                            "admin_activation_email_failed to=%s user_id=%s error=%s",
-                            admin_email,
-                            activated_user_id,
-                            "send returned False",
+                    if not admin_email_sent:
+                        logger.debug(
+                            "admin_activation_email_skipped auth_user_id=%s",
+                            str(user.auth_user_id)[:8] + "...",
                         )
                 except Exception as e:
                     logger.warning(
-                        "admin_activation_email_failed to=%s user_id=%s error=%s",
-                        admin_email,
-                        activated_user_id,
+                        "admin_activation_email_exception auth_user_id=%s error=%s",
+                        str(user.auth_user_id)[:8] + "..." if user.auth_user_id else "None",
                         str(e)[:200],
                     )
 

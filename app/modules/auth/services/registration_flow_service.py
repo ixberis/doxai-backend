@@ -43,6 +43,7 @@ from app.modules.auth.utils.payload_extractors import as_dict
 from app.shared.integrations.email_sender import EmailSender
 from app.shared.utils.security import hash_password, PasswordTooLongError, MAX_PASSWORD_LENGTH
 from app.shared.utils.http_exceptions import BadRequestException, UnprocessableEntityException
+from app.shared.services.admin_notifications import send_admin_signup_notice
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,26 @@ class RegistrationFlowService:
             if email_sent
             else "Cuenta creada. Si no recibes el correo de activación, usa 'Reenviar activación' en inicio de sesión."
         )
+
+        # Enviar notificación al admin (best-effort, no bloquea registro)
+        # Requiere db session para idempotencia vía admin_notification_events
+        try:
+            await send_admin_signup_notice(
+                self.email_sender,
+                self.db,
+                user_email=created_user_email,
+                user_name=created_user_full_name,
+                auth_user_id=created_auth_user_id,
+                user_id=created_user_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+        except Exception as e:
+            logger.warning(
+                "admin_signup_notice_exception user_id=%s error=%s",
+                created_user_id,
+                str(e)[:200],
+            )
 
         return RegistrationResult(
             payload={

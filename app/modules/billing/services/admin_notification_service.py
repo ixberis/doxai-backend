@@ -7,21 +7,19 @@ Servicio para enviar notificaciones al admin cuando se realiza una compra.
 Características:
 - Idempotente: usa admin_notify_sent_at en billing_invoices
 - Best-effort: errores no bloquean la compra
-- Configurable via BILLING_ADMIN_NOTIFY_EMAIL
+- Configurable via ADMIN_NOTIFICATION_EMAIL
 - NO hace commit/rollback (responsabilidad del caller)
 
 IMPORTANTE: Este service solo hace flush(), el caller hace commit().
 
 Autor: DoxAI
 Fecha: 2026-01-15
-Updated: 2026-01-15 - P0 fixes: no commit, API pública
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Union, TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -35,6 +33,7 @@ from .purchase_email_service import (
     build_receipt_urls,
     get_app_public_base_url,
 )
+from app.shared.services.admin_email_config import get_admin_notification_email
 
 if TYPE_CHECKING:
     from app.shared.integrations.mailersend_email_sender import MailerSendEmailSender
@@ -43,17 +42,6 @@ logger = logging.getLogger(__name__)
 
 # Constantes
 EMAIL_TYPE = "admin_purchase_notification"
-
-
-def get_admin_notify_email() -> Optional[str]:
-    """
-    Obtiene el email del admin para notificaciones.
-    
-    Returns:
-        Email del admin o None si no está configurado.
-    """
-    email = os.getenv("BILLING_ADMIN_NOTIFY_EMAIL", "").strip()
-    return email if email else None
 
 
 def _format_price(cents: int, currency: str) -> str:
@@ -159,7 +147,7 @@ async def send_admin_purchase_notification(
     Características:
     - Idempotente: verifica admin_notify_sent_at antes de enviar
     - Best-effort: errores se loguean pero NO se propagan
-    - Configurable: requiere BILLING_ADMIN_NOTIFY_EMAIL
+    - Configurable: requiere ADMIN_NOTIFICATION_EMAIL
     - NO hace commit (caller responsable)
     
     IMPORTANTE:
@@ -179,7 +167,7 @@ async def send_admin_purchase_notification(
     Returns:
         True si se envió, False si se omitió o falló
     """
-    admin_email = get_admin_notify_email()
+    admin_email = get_admin_notification_email()
     correlation_id = f"admin_notify:{invoice.id}:{uuid4().hex[:8]}"
     
     # Resolver payment_id para display
@@ -188,7 +176,7 @@ async def send_admin_purchase_notification(
     # Skip si no hay email de admin configurado
     if not admin_email:
         logger.info(
-            "admin_purchase_notify_skipped: reason=no_admin_email "
+            "admin_notify_skipped reason=no_admin_email_configured event=purchase "
             "invoice=%s intent=%s",
             invoice.invoice_number,
             intent.id,
@@ -308,6 +296,5 @@ async def send_admin_purchase_notification(
 
 __all__ = [
     "send_admin_purchase_notification",
-    "get_admin_notify_email",
     "build_admin_email_context",
 ]

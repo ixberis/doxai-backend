@@ -1,0 +1,20 @@
+NUEVO REGISTRO DE USUARIO - DoxAI
+===================================
+
+Un nuevo usuario se ha registrado en DoxAI.
+
+DATOS DEL USUARIO:
+- Email: {{ user_email }}
+- Nombre: {{ user_name }}
+- auth_user_id: {{ auth_user_id }}
+
+INFORMACIÓN TÉCNICA:
+- Fecha/Hora: {{ registration_datetime }} UTC
+- IP Address: {{ ip_address }}
+- User Agent: {{ user_agent }}
+
+Estado: PENDIENTE DE ACTIVACIÓN
+
+---
+Este es un correo automático de notificación interna.
+DoxAI © {{ current_year }} – JUVARE®
