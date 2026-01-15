@@ -4,7 +4,7 @@ backend/app/modules/user_profile/routes/profile_routes.py
 
 Rutas consolidadas del módulo de perfil de usuario.
 
-Este módulo expone endpoints autenticados para:
+Este módulo expone endpoints autenticados para: 
 - Consultar perfil de usuario (GET /profile y GET /profile/profile)
 - Actualizar perfil (PUT /profile y PUT /profile/profile)
 - Consultar estado de suscripción (GET /subscription)
@@ -42,9 +42,11 @@ from app.modules.user_profile.schemas import (
     SubscriptionStatusResponse,
 )
 from app.modules.user_profile.services import ProfileService
-# SSOT: get_current_user_ctx (Core) para rutas optimizadas, get_current_user (ORM) para retrocompatibilidad
-from app.modules.auth.services import get_current_user, get_current_user_ctx
+
+# SSOT: get_current_user_ctx (Core) para rutas optimizadas
+from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+
 from app.shared.auth_context import extract_user_id, extract_auth_user_id
 
 router = APIRouter(tags=["User Profile"])
@@ -652,25 +654,49 @@ async def get_subscription_status(
     description="Actualiza el timestamp de último acceso del usuario (llamado automáticamente en login)"
 )
 async def update_last_login(
-    user=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    request: Request,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # ✅ SSOT Core/Cached (evita mode=orm)
+    db: AsyncSession = Depends(get_db_timed),             # ✅ instrumentación DB (opcional pero útil)
 ):
     """
     Actualiza el timestamp de último login.
-    Este endpoint usa SQL directo para evitar dependencias circulares.
+
+    SSOT/Perf:
+    - Usa get_current_user_ctx (Core/Core cached) para evitar auth_dep mode=orm.
+    - Actualiza vía SQL directo (sin cargar entidades ORM).
+    - Mantiene contrato 204 No Content.
     """
-    uid = extract_user_id(user)
+    from sqlalchemy import text
+    from datetime import datetime, timezone
+    from app.shared.observability.request_telemetry import RequestTelemetry
+
+    telemetry = RequestTelemetry.create("profile.update_last_login")
+
+    uid = ctx.user_id
+    auth_uid = ctx.auth_user_id
+
     try:
-        from sqlalchemy import text
-        from datetime import datetime, timezone
-        
-        await db.execute(
-            text("UPDATE app_users SET user_last_login = :now WHERE user_id = :uid"),
-            {"now": datetime.now(timezone.utc), "uid": uid}  # uid is int, not str
+        with telemetry.measure("db_ms"):
+            await db.execute(
+                text("UPDATE app_users SET user_last_login = :now WHERE user_id = :uid"),
+                {"now": datetime.now(timezone.utc), "uid": uid}  # uid int (SSOT ctx)
+            )
+            await db.commit()
+
+        telemetry.set_flag("user_id", uid)
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}...")
+        telemetry.finalize(request, status_code=204, result="success")
+        return
+
+    except Exception as e:
+        telemetry.set_flag("auth_user_id", f"{str(auth_uid)[:8]}..." if auth_uid else "unknown")
+        telemetry.finalize(request, status_code=500, result="error")
+        logger.exception(
+            "last_login_update_error user_id=%s auth_user_id=%s error=%s",
+            uid,
+            f"{str(auth_uid)[:8]}..." if auth_uid else "unknown",
+            str(e),
         )
-        await db.commit()
-    except Exception:
-        logger.exception("Error al actualizar último login para user_id=%s", uid)
         raise HTTPException(
             status_code=500,
             detail={
@@ -678,3 +704,4 @@ async def update_last_login(
                 "error_code": "LAST_LOGIN_UPDATE_ERROR",
             }
         )
+
