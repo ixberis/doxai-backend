@@ -71,23 +71,35 @@ async def _send_purchase_email_best_effort(
     session: AsyncSession,
     intent_id: int,
     auth_user_id: UUID,
-) -> bool:
+    payment_id: Optional[int] = None,
+) -> Dict[str, bool]:
     """
-    Envía email de confirmación de compra (best-effort).
+    Envía email de confirmación de compra y notificación al admin (best-effort).
     
     SSOT: Uses auth_user_id (UUID) for user lookup.
+    
+    NOTA: No hace commit, el caller es responsable.
+    Si payment_id es None, intenta resolver por idempotency_key canónico.
+    Si no existe payment, envía notificación admin con payment_id="N/A".
+    
+    Returns:
+        Dict con customer_email_sent y admin_notify_sent
     """
+    result = {"customer_email_sent": False, "admin_notify_sent": False}
+    
     try:
         from app.modules.billing.services.invoice_service import get_or_create_invoice
         from app.modules.billing.services.purchase_email_service import send_purchase_confirmation_email
+        from app.modules.billing.services.admin_notification_service import send_admin_purchase_notification
         from app.modules.auth.models import AppUser
+        from app.modules.billing.models.payment import Payment
         
         # Obtener intent primero
         repo = CheckoutIntentRepository()
         intent = await repo.get_by_id(session, intent_id)
         if not intent:
             logger.warning("Intent not found for email: intent=%s", intent_id)
-            return False
+            return result
         
         # SSOT: Obtener usuario por auth_user_id
         user_result = await session.execute(
@@ -97,7 +109,7 @@ async def _send_purchase_email_best_effort(
         
         if not user or not user.user_email:
             logger.warning("User or email not found for purchase email: auth_user_id=%s", str(auth_user_id)[:8])
-            return False
+            return result
         
         # Crear o recuperar invoice (idempotente)
         invoice = await get_or_create_invoice(
@@ -108,8 +120,8 @@ async def _send_purchase_email_best_effort(
         )
         logger.info("Invoice ready for email: invoice_id=%s intent=%s", invoice.id, intent_id)
         
-        # Enviar email (idempotente)
-        return await send_purchase_confirmation_email(
+        # Enviar email al cliente (idempotente)
+        result["customer_email_sent"] = await send_purchase_confirmation_email(
             session=session,
             invoice=invoice,
             intent=intent,
@@ -117,12 +129,38 @@ async def _send_purchase_email_best_effort(
             user_name=user.user_full_name,
         )
         
+        # Resolver payment_id si no viene
+        resolved_payment_id = payment_id
+        if resolved_payment_id is None:
+            # Intentar resolver por idempotency_key canónico
+            canonical_idem_key = f"checkout_intent_{intent_id}"
+            payment_result = await session.execute(
+                select(Payment).where(
+                    Payment.auth_user_id == auth_user_id,
+                    Payment.idempotency_key == canonical_idem_key,
+                )
+            )
+            payment = payment_result.scalar_one_or_none()
+            resolved_payment_id = payment.id if payment else None
+        
+        # Enviar notificación al admin (idempotente, best-effort)
+        # Siempre intentar enviar, con payment_id o "N/A"
+        result["admin_notify_sent"] = await send_admin_purchase_notification(
+            session=session,
+            invoice=invoice,
+            intent=intent,
+            payment_id=resolved_payment_id,  # Puede ser None, service maneja con "N/A"
+            customer_email=user.user_email,
+        )
+        
+        return result
+        
     except Exception as e:
         logger.error(
-            "purchase_confirmation_email_failed: intent=%s auth_user_id=%s error=%s",
+            "purchase_emails_failed: intent=%s auth_user_id=%s error=%s",
             intent_id, str(auth_user_id)[:8], str(e),
         )
-        return False
+        return result
 
 
 async def handle_stripe_checkout_completed(
@@ -201,6 +239,17 @@ async def handle_stripe_checkout_completed(
         )
         await session.commit()
         
+        # Obtener payment_id para notificación al admin
+        from app.modules.billing.models.payment import Payment
+        payment_result = await session.execute(
+            select(Payment).where(
+                Payment.auth_user_id == intent.auth_user_id,
+                Payment.idempotency_key == f"checkout_intent_{intent_id}",
+            )
+        )
+        payment = payment_result.scalar_one_or_none()
+        payment_id = payment.id if payment else None
+        
         if credits_applied:
             log_msg = "Credits applied for intent %s: %d credits"
             if was_expired:
@@ -208,8 +257,8 @@ async def handle_stripe_checkout_completed(
             logger.info(log_msg, intent_id, intent.credits_amount)
             
             # SSOT: Use auth_user_id from intent
-            email_sent = await _send_purchase_email_best_effort(
-                session, intent_id, intent.auth_user_id
+            email_result = await _send_purchase_email_best_effort(
+                session, intent_id, intent.auth_user_id, payment_id
             )
             
             return {
@@ -219,14 +268,15 @@ async def handle_stripe_checkout_completed(
                 "checkout_intent_id": intent_id,
                 "stripe_session_id": stripe_session_id,
                 "was_expired": was_expired,
-                "purchase_email_sent": email_sent,
+                "purchase_email_sent": email_result.get("customer_email_sent", False),
+                "admin_notify_sent": email_result.get("admin_notify_sent", False),
             }
         else:
             logger.info("Credits already applied for intent %s (idempotent)", intent_id)
             
             # SSOT: Use auth_user_id from intent
-            email_sent = await _send_purchase_email_best_effort(
-                session, intent_id, intent.auth_user_id
+            email_result = await _send_purchase_email_best_effort(
+                session, intent_id, intent.auth_user_id, payment_id
             )
             
             return {
@@ -235,7 +285,8 @@ async def handle_stripe_checkout_completed(
                 "reason": "already_processed",
                 "checkout_intent_id": intent_id,
                 "stripe_session_id": stripe_session_id,
-                "purchase_email_sent": email_sent,
+                "purchase_email_sent": email_result.get("customer_email_sent", False),
+                "admin_notify_sent": email_result.get("admin_notify_sent", False),
             }
             
     except ValueError as e:

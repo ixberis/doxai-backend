@@ -100,6 +100,24 @@ class IEmailSender(Protocol):
     ) -> str:
         """Envía email de confirmación de compra. Retorna provider_message_id."""
         ...
+    
+    async def send_internal_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+    ) -> Optional[str]:
+        """Envía email interno/administrativo SIN tracking en auth_email_events.
+        
+        Uso:
+        - Notificaciones al admin (compras, alertas, etc.)
+        - Emails que NO requieren enum en auth_email_type
+        
+        Returns:
+            message_id del provider si se envió correctamente, None si falla
+        """
+        ...
 
 
 class StubEmailSender:
@@ -211,6 +229,26 @@ class StubEmailSender:
         )
         print(
             f"[STUB EMAIL] Purchase confirmation → {to_email}\n"
+            f"  Subject: {subject}\n"
+            f"  Message ID: {message_id}"
+        )
+        return message_id
+
+    async def send_internal_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+    ) -> Optional[str]:
+        """Stub para email interno/administrativo. Retorna message_id ficticio."""
+        from uuid import uuid4
+        message_id = f"stub-internal-{uuid4().hex[:16]}"
+        logger.info(
+            f"[CONSOLE EMAIL] Internal email → {to_email} | subject={subject[:30]}..."
+        )
+        print(
+            f"[STUB EMAIL] Internal email → {to_email}\n"
             f"  Subject: {subject}\n"
             f"  Message ID: {message_id}"
         )

@@ -134,6 +134,12 @@ class BillingInvoice(Base):
         doc="Timestamp de envío del email de confirmación de compra.",
     )
     
+    admin_notify_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="Timestamp de envío de notificación al admin. Usado para idempotencia.",
+    )
+    
     __table_args__ = (
         Index("ix_billing_invoices_user_issued", "auth_user_id", "issued_at"),
     )

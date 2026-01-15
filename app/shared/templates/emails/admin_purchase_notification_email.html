@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nueva compra de créditos - DoxAI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+    }
+    .container {
+      max-width: 600px;
+      margin: 20px auto;
+      background-color: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .header {
+      text-align: center;
+      padding: 10px 0;
+      border-bottom: 2px solid #22c55e;
+      margin-bottom: 20px;
+    }
+    h1 {
+      color: #22c55e;
+      margin: 0;
+      font-size: 24px;
+    }
+    .info-box {
+      background-color: #f0fdf4;
+      border-left: 4px solid #22c55e;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
+    .info-box.secondary {
+      background-color: #f9f9f9;
+      border-left-color: #888;
+    }
+    .info-row {
+      margin: 10px 0;
+    }
+    .info-label {
+      font-weight: bold;
+      color: #555;
+      display: inline-block;
+      min-width: 150px;
+    }
+    .info-value {
+      color: #333;
+    }
+    .highlight {
+      background-color: #dcfce7;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    .amount {
+      font-size: 20px;
+      color: #22c55e;
+      font-weight: bold;
+    }
+    .footer {
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #eee;
+    }
+    .badge {
+      display: inline-block;
+      background-color: #22c55e;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    a {
+      color: #4A6CF7;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>💰 Nueva Compra de Créditos</h1>
+      <p style="color: #666; margin: 10px 0 0 0;">Un cliente ha realizado una compra exitosa</p>
+    </div>
+
+    <div style="text-align: center; margin: 20px 0;">
+      <span class="amount">{{ amount }}</span>
+    </div>
+
+    <div class="info-box">
+      <p style="margin: 0 0 10px 0; font-weight: bold; color: #555;">Resumen de la compra:</p>
+      <div class="info-row">
+        <span class="info-label">Paquete:</span>
+        <span class="info-value">{{ package_name }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Créditos otorgados:</span>
+        <span class="info-value"><span class="highlight">{{ credits_amount }} créditos</span></span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Monto:</span>
+        <span class="info-value">{{ amount }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Proveedor:</span>
+        <span class="info-value">{{ provider }}</span>
+      </div>
+    </div>
+
+    <div class="info-box secondary">
+      <p style="margin: 0 0 10px 0; font-weight: bold; color: #555;">Datos del cliente:</p>
+      <div class="info-row">
+        <span class="info-label">Email:</span>
+        <span class="info-value">{{ customer_email }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">auth_user_id:</span>
+        <span class="info-value" style="font-size: 11px;">{{ auth_user_id }}</span>
+      </div>
+    </div>
+
+    <div class="info-box secondary">
+      <p style="margin: 0 0 10px 0; font-weight: bold; color: #555;">Información de transacción:</p>
+      <div class="info-row">
+        <span class="info-label">Invoice #:</span>
+        <span class="info-value">{{ invoice_number }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Payment ID:</span>
+        <span class="info-value">{{ payment_id }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Intent ID:</span>
+        <span class="info-value">{{ intent_id }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Provider Session:</span>
+        <span class="info-value" style="font-size: 11px; word-break: break-all;">{{ provider_session_id }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Fecha/Hora (UTC):</span>
+        <span class="info-value">{{ transaction_datetime }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Recibo público:</span>
+        <span class="info-value">{{ receipt_link }}</span>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin: 20px 0;">
+      <span class="badge">PAGO CONFIRMADO</span>
+    </div>
+
+    <div class="footer">
+      <p>Este es un correo automático de notificación interna.</p>
+      <p>&copy; {{ current_year }} DoxAI - JUVARE®. Todos los derechos reservados.</p>
+    </div>
+  </div>
+</body>
+</html>

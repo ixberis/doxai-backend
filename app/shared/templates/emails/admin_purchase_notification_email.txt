@@ -1,0 +1,27 @@
+====================================
+NUEVA COMPRA DE CRÉDITOS - DoxAI
+====================================
+
+Un cliente ha realizado una compra exitosa.
+
+=== RESUMEN DE COMPRA ===
+Paquete: {{ package_name }}
+Créditos otorgados: {{ credits_amount }}
+Monto: {{ amount }}
+Proveedor: {{ provider }}
+
+=== DATOS DEL CLIENTE ===
+Email: {{ customer_email }}
+auth_user_id: {{ auth_user_id }}
+
+=== INFORMACIÓN DE TRANSACCIÓN ===
+Invoice #: {{ invoice_number }}
+Payment ID: {{ payment_id }}
+Intent ID: {{ intent_id }}
+Provider Session: {{ provider_session_id }}
+Fecha/Hora (UTC): {{ transaction_datetime }}
+Recibo público: {{ receipt_link }}
+
+====================================
+Este es un correo automático de notificación interna.
+© {{ current_year }} DoxAI - JUVARE®

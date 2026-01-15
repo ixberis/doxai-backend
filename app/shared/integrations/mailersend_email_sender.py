@@ -678,7 +678,65 @@ class MailerSendEmailSender:
                 raise RuntimeError(f"MailerSend request error: {e}") from e
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Public API: send_* methods (instrumented)
+    # Public API: Internal/Administrative emails (no DB tracking)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def send_internal_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+    ) -> Optional[str]:
+        """
+        Envía un email interno/administrativo SIN tracking en auth_email_events.
+        
+        Uso:
+        - Notificaciones al admin (compras, alertas, etc.)
+        - Emails que NO requieren enum en auth_email_type
+        - Best-effort: levanta excepción si HTTP falla (caller decide qué hacer)
+        
+        IMPORTANTE:
+        - Usa from_email configurado (no-reply@doxai.site por defecto)
+        - NO inserta en auth_email_events (email interno, no transaccional de usuario)
+        - NO requiere auth_user_id ni idempotency_key
+        
+        Args:
+            to_email: Destinatario
+            subject: Asunto del email
+            html_body: Cuerpo HTML
+            text_body: Cuerpo texto plano
+            
+        Returns:
+            message_id del provider si se envió correctamente
+            
+        Raises:
+            MailerSendError: Si el envío HTTP falla
+            RuntimeError: Si hay timeout o error de red
+        """
+        logger.info(
+            "[MailerSend] send_internal_email: to=%s subject=%s",
+            to_email[:3] + "***",
+            subject[:50],
+        )
+        
+        message_id = await self._send_email(
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+        )
+        
+        logger.info(
+            "[MailerSend] send_internal_email_success: to=%s message_id=%s",
+            to_email[:3] + "***",
+            message_id,
+        )
+        
+        return message_id
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API: send_* methods (instrumented with auth_email_events tracking)
     # ─────────────────────────────────────────────────────────────────────────
 
     async def send_activation_email(
