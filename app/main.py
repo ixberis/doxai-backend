@@ -268,6 +268,26 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ CheckoutIntent mapper logging failed: {e}")
     
     # ─────────────────────────────────────────────────────────────────────────
+    # ADMIN NOTIFICATION EMAIL CONFIG LOGGING (SSOT: ADMIN_NOTIFICATION_EMAIL)
+    # Log masked status for observability. DO NOT log the actual email address.
+    # ─────────────────────────────────────────────────────────────────────────
+    try:
+        from app.shared.services.admin_email_config import get_admin_notification_email
+        admin_email = get_admin_notification_email()
+        if admin_email:
+            # Mask: show only first 3 chars + domain
+            at_idx = admin_email.find("@")
+            if at_idx > 3:
+                masked = admin_email[:3] + "***" + admin_email[at_idx:]
+            else:
+                masked = "***" + admin_email[at_idx:] if at_idx > 0 else "***"
+            logger.info("🔔 Admin notification email configured: %s (admin_notification_email_configured=true)", masked)
+        else:
+            logger.warning("⚠️ Admin notification email NOT configured (admin_notification_email_configured=false). Set ADMIN_NOTIFICATION_EMAIL env var.")
+    except Exception as e:
+        logger.warning(f"⚠️ Admin email config check failed: {e}")
+    
+    # ─────────────────────────────────────────────────────────────────────────
     # LEGACY RESOURCE WARMUP (modelos/tesseract/httpx)
     # Gated by _should_warmup() - independiente del warmup de infraestructura
     # NO logear "omitido" para evitar confusión con startup warmups

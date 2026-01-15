@@ -24,9 +24,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.config.settings_payments import get_payments_settings
-from app.modules.billing.services.checkout_service import apply_checkout_credits
+from app.modules.billing.services.finalize_service import (
+    BillingFinalizeService,
+    FinalizeResult,
+)
 from app.modules.billing.repository import CheckoutIntentRepository
-from app.modules.billing.models import CheckoutIntentStatus
+from app.modules.billing.models import CheckoutIntent, CheckoutIntentStatus
 
 # Import condicional de stripe para permitir tests sin el módulo
 try:
@@ -230,67 +233,83 @@ async def handle_stripe_checkout_completed(
             intent_id, stripe_session_id,
         )
     
-    # Aplicar créditos (idempotente)
+    # Actualizar intent a COMPLETED si no lo está
+    original_status = intent.status
+    if intent.status != CheckoutIntentStatus.COMPLETED.value:
+        intent.status = CheckoutIntentStatus.COMPLETED.value
+        from datetime import datetime, timezone
+        if intent.completed_at is None:
+            intent.completed_at = datetime.now(timezone.utc)
+        await session.flush()
+        logger.info(
+            "BILLING_INTENT_STATUS_UPDATED intent_id=%d from=%s to=completed",
+            intent_id, original_status,
+        )
+    else:
+        logger.info(
+            "BILLING_INTENT_ALREADY_COMPLETED intent_id=%d completed_at=%s",
+            intent_id, intent.completed_at,
+        )
+    
+    # Finalizar checkout: crear Payment + CreditTransaction (idempotente)
     try:
-        intent, credits_applied = await apply_checkout_credits(
+        finalize_service = BillingFinalizeService()
+        result: FinalizeResult = await finalize_service.finalize_checkout_intent(
             session,
             intent_id=intent_id,
-            stripe_session_id=stripe_session_id,
         )
         await session.commit()
         
-        # Obtener payment_id para notificación al admin
-        from app.modules.billing.models.payment import Payment
-        payment_result = await session.execute(
-            select(Payment).where(
-                Payment.auth_user_id == intent.auth_user_id,
-                Payment.idempotency_key == f"checkout_intent_{intent_id}",
-            )
-        )
-        payment = payment_result.scalar_one_or_none()
-        payment_id = payment.id if payment else None
+        is_new = result.result == "created"
         
-        if credits_applied:
-            log_msg = "Credits applied for intent %s: %d credits"
-            if was_expired:
-                log_msg = "[completed_after_expired] " + log_msg
-            logger.info(log_msg, intent_id, intent.credits_amount)
-            
-            # SSOT: Use auth_user_id from intent
-            email_result = await _send_purchase_email_best_effort(
-                session, intent_id, intent.auth_user_id, payment_id
-            )
-            
-            return {
-                "status": "success",
-                "credits_applied": True,
-                "credits_amount": intent.credits_amount,
-                "checkout_intent_id": intent_id,
-                "stripe_session_id": stripe_session_id,
-                "was_expired": was_expired,
-                "purchase_email_sent": email_result.get("customer_email_sent", False),
-                "admin_notify_sent": email_result.get("admin_notify_sent", False),
-            }
-        else:
-            logger.info("Credits already applied for intent %s (idempotent)", intent_id)
-            
-            # SSOT: Use auth_user_id from intent
-            email_result = await _send_purchase_email_best_effort(
-                session, intent_id, intent.auth_user_id, payment_id
-            )
-            
-            return {
-                "status": "success",
-                "credits_applied": False,
-                "reason": "already_processed",
-                "checkout_intent_id": intent_id,
-                "stripe_session_id": stripe_session_id,
-                "purchase_email_sent": email_result.get("customer_email_sent", False),
-                "admin_notify_sent": email_result.get("admin_notify_sent", False),
-            }
+        # =====================================================================
+        # LOGGING EXPLÍCITO PARA DIAGNÓSTICO EN RAILWAY (P0)
+        # Cada campo debe aparecer en logs para validar flujo SSOT
+        # =====================================================================
+        logger.info(
+            "BILLING_WEBHOOK_FINALIZED "
+            "intent_id=%d "
+            "finalize_result=%s "
+            "payment_id=%d "
+            "payment_status=succeeded "
+            "paid_at=set "
+            "idempotency_key=%s "
+            "amount_cents=%d "
+            "currency=%s "
+            "credits_granted=%d "
+            "was_expired=%s "
+            "stripe_session=%s",
+            intent_id,
+            result.result,  # "created" or "already_finalized"
+            result.payment_id,
+            result.idempotency_key,
+            result.amount_cents,
+            result.currency,
+            result.credits_granted,
+            was_expired,
+            stripe_session_id,
+        )
+        
+        # SSOT: Use auth_user_id from result
+        email_result = await _send_purchase_email_best_effort(
+            session, intent_id, result.auth_user_id, result.payment_id
+        )
+        
+        return {
+            "status": "success",
+            "credits_applied": is_new,
+            "credits_amount": result.credits_granted,
+            "checkout_intent_id": intent_id,
+            "payment_id": result.payment_id,
+            "stripe_session_id": stripe_session_id,
+            "was_expired": was_expired,
+            "finalize_result": result.result,
+            "purchase_email_sent": email_result.get("customer_email_sent", False),
+            "admin_notify_sent": email_result.get("admin_notify_sent", False),
+        }
             
     except ValueError as e:
-        logger.error("Failed to apply credits for intent %s: %s", intent_id, e)
+        logger.error("Failed to finalize checkout for intent %s: %s", intent_id, e)
         return {
             "status": "error",
             "reason": str(e),

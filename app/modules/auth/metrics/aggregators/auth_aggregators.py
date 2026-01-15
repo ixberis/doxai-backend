@@ -272,7 +272,7 @@ class AuthAggregators:
         
         Fuente primaria: public.checkout_intents con status='completed'.
         Fallback: public.credit_transactions con operation_code='CHECKOUT'
-                  (canónico: checkout_service usa 'CHECKOUT' al completar).
+                  (canónico: BillingFinalizeService usa 'CHECKOUT' al completar).
         """
         try:
             q = text("""

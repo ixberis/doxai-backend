@@ -158,7 +158,7 @@ class BaseAppSettings(BaseSettings):
     # From / plantillas
     email_from: str = Field(default="no-reply@doxai.site", validation_alias="EMAIL_FROM")
     email_service: str = Field(default="doxai", validation_alias="EMAIL_SERVICE")
-    admin_notification_email: str = Field(default="doxai@doxai.site", validation_alias="ADMIN_NOTIFY_EMAIL")
+    admin_notification_email: str = Field(default="doxai@doxai.site", validation_alias="ADMIN_NOTIFICATION_EMAIL")
     support_email: str = Field(default="soporte@doxai.site", validation_alias="SUPPORT_EMAIL")
     email_templates_dir: Optional[str] = Field(default=None, validation_alias="EMAIL_TEMPLATES_DIR")
 
