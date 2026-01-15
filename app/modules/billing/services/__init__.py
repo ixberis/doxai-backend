@@ -17,7 +17,6 @@ from .finalize_service import (
 )
 from .admin_notification_service import (
     send_admin_purchase_notification,
-    get_admin_notify_email,
 )
 from app.modules.billing.credits.services import (
     CreditService,
@@ -32,7 +31,6 @@ __all__ = [
     "FinalizeResult",
     "finalize_checkout_intent",
     "send_admin_purchase_notification",
-    "get_admin_notify_email",
     "CreditService",
     "WalletService",
     "ReservationService",
