@@ -41,6 +41,7 @@ from app.shared.utils.security import verify_password
 from app.shared.utils.jwt_utils import verify_token_type
 from app.shared.security.rate_limit_service import get_rate_limiter
 from app.shared.security.rate_limit_dep import RateLimitExceeded
+from app.shared.security.auth_context_cache import get_auth_context_cache
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,20 @@ BACKOFF_DELAYS = [0, 0.2, 0.4, 0.8, 1.2, 2.0]  # Max 2 seconds
 # ─────────────────────────────────────────────────────────────────────────────
 LOGIN_DUMMY_VERIFY_ENABLED = os.getenv(
     "LOGIN_DUMMY_VERIFY_ON_USER_NOT_FOUND", "true"
+).lower() in ("1", "true", "yes")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy refresh token sub (INT) support flag
+# ─────────────────────────────────────────────────────────────────────────────
+# During BD 2.0 migration, some old refresh tokens may contain INT user_id
+# instead of UUID auth_user_id. This flag controls whether to support them.
+#
+# Config: AUTH_ALLOW_LEGACY_REFRESH_SUB
+#   - "false" (default): reject legacy INT subs with 401
+#   - "true": fallback to ORM path (for migration period only)
+# ─────────────────────────────────────────────────────────────────────────────
+AUTH_ALLOW_LEGACY_REFRESH_SUB = os.getenv(
+    "AUTH_ALLOW_LEGACY_REFRESH_SUB", "false"
 ).lower() in ("1", "true", "yes")
 
 # Pre-computed Argon2id hash for dummy verification (hash of random string)
@@ -730,10 +745,33 @@ class LoginFlowService:
     async def refresh_tokens(self, data: Mapping[str, Any] | Any) -> Dict[str, Any]:
         """
         Refresca tokens de acceso a partir de un refresh_token válido.
-
+        
+        OPTIMIZADO (2026-01-15):
+        - Usa cache Redis + Core SQL en lugar de ORM
+        - AuthContextDTO.is_active elimina query extra de ActivationService
+        - Instrumentación completa de fases para diagnóstico
+        
         data esperado:
             - refresh_token
         """
+        import time
+        from uuid import UUID
+        
+        t_start = time.perf_counter()
+        timings: Dict[str, float] = {
+            "jwt_decode_ms": 0.0,
+            "cache_lookup_ms": 0.0,
+            "db_lookup_ms": 0.0,
+            "db_execute_ms": 0.0,
+            "activation_check_ms": 0.0,
+            "issue_token_ms": 0.0,
+            "audit_ms": 0.0,
+            "total_ms": 0.0,
+        }
+        auth_user_id_masked = "unknown"
+        cache_hit = False
+        cache_reason = "n/a"
+        
         payload = as_dict(data)
         refresh_token = payload.get("refresh_token")
 
@@ -743,9 +781,13 @@ class LoginFlowService:
                 detail="Refresh token requerido.",
             )
 
+        # ─── Fase: JWT Decode ───
+        t_jwt_start = time.perf_counter()
         token_payload = verify_token_type(refresh_token, expected_type="refresh")
+        timings["jwt_decode_ms"] = (time.perf_counter() - t_jwt_start) * 1000
+        
         if not token_payload:
-            logger.warning("Intento de refresh con token inválido o expirado")
+            logger.warning("refresh_token_invalid jwt_decode_failed")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Refresh token inválido o expirado.",
@@ -758,22 +800,207 @@ class LoginFlowService:
                 detail="Token sin identificador de usuario.",
             )
 
-        user = await self._get_user_by_token_sub(user_id_from_token)
-        if not user:
+        # ─── Parse UUID ───
+        try:
+            auth_user_id = UUID(user_id_from_token)
+            auth_user_id_masked = str(auth_user_id)[:8] + "..."
+        except ValueError:
+            # Legacy INT sub - controlled via AUTH_ALLOW_LEGACY_REFRESH_SUB
+            if AUTH_ALLOW_LEGACY_REFRESH_SUB:
+                logger.warning(
+                    "refresh_token_legacy_path_used sub=%s legacy_enabled=true",
+                    user_id_from_token,
+                )
+                return await self._refresh_tokens_legacy(data, timings, t_start)
+            else:
+                logger.warning(
+                    "refresh_token_legacy_rejected sub=%s legacy_enabled=false",
+                    user_id_from_token,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token format no soportado. Por favor, inicie sesión nuevamente.",
+                )
+
+        # ─── Fase: Try Redis Cache First ───
+        auth_context = None
+        t_cache_start = time.perf_counter()
+        
+        try:
+            cache = get_auth_context_cache()
+            cached_mapping, cache_result = await cache.get_cached(auth_user_id)
+            timings["cache_lookup_ms"] = (time.perf_counter() - t_cache_start) * 1000
+            
+            if cached_mapping:
+                from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+                auth_context = AuthContextDTO.from_mapping(cached_mapping)
+                cache_hit = True
+                cache_reason = "hit"
+            elif cache_result.error:
+                cache_reason = cache_result.error  # disabled|redis_not_available|deserialize_failed|key_not_found
+            else:
+                cache_reason = "key_not_found"
+        except Exception as e:
+            timings["cache_lookup_ms"] = (time.perf_counter() - t_cache_start) * 1000
+            cache_reason = "get_failed"
+            logger.debug("refresh_token_cache_error: %s", str(e))
+
+        # ─── Fase: Core DB Lookup (if cache miss) ───
+        if auth_context is None:
+            t_db_start = time.perf_counter()
+            try:
+                auth_context, db_timings = await self.user_service.get_by_auth_user_id_core_ctx(auth_user_id)
+                timings["db_lookup_ms"] = (time.perf_counter() - t_db_start) * 1000
+                timings["db_execute_ms"] = db_timings.get("execute_ms", 0)
+                
+                # Cache the result for future requests (best-effort)
+                if auth_context:
+                    try:
+                        cache = get_auth_context_cache()
+                        await cache.set_cached(auth_user_id, auth_context)
+                    except Exception:
+                        pass
+            except Exception as e:
+                timings["db_lookup_ms"] = (time.perf_counter() - t_db_start) * 1000
+                logger.exception("refresh_token_db_lookup_failed auth_user_id=%s", auth_user_id_masked)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error interno al validar usuario.",
+                )
+
+        if not auth_context:
+            self._log_refresh_timings(timings, t_start, auth_user_id_masked, cache_hit, cache_reason, "user_not_found")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Usuario no encontrado.",
             )
-        if not await self.activation_service.is_active(user):
+        
+        # ─── Validar estado activo (NO query extra - usa DTO.is_active property) ───
+        t_active_start = time.perf_counter()
+        is_active = auth_context.is_active  # Property check, no query
+        timings["activation_check_ms"] = (time.perf_counter() - t_active_start) * 1000
+        
+        if not is_active:
+            self._log_refresh_timings(timings, t_start, auth_user_id_masked, cache_hit, cache_reason, "inactive_user")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Usuario inactivo o no activado.",
             )
 
-        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
+        # ─── Fase: Issue new tokens ───
+        t_issue_start = time.perf_counter()
+        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(auth_user_id))
+        timings["issue_token_ms"] = (time.perf_counter() - t_issue_start) * 1000
 
+        # ─── Audit (sync, no await needed) ───
+        t_audit_start = time.perf_counter()
         AuditService.log_refresh_token_success(
-            user_id=str(user.user_id),
+            user_id=str(auth_context.user_id),
+        )
+        timings["audit_ms"] = (time.perf_counter() - t_audit_start) * 1000
+
+        self._log_refresh_timings(timings, t_start, auth_user_id_masked, cache_hit, cache_reason, "success")
+
+        return {
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": "bearer",
+        }
+
+    def _log_refresh_timings(
+        self,
+        timings: Dict[str, float],
+        t_start: float,
+        auth_user_id_masked: str,
+        cache_hit: bool,
+        cache_reason: str,
+        result: str,
+    ) -> None:
+        """
+        Log estructurado de timings de refresh token.
+        
+        Campos:
+        - auth_user_id: truncado (8 chars + ...)
+        - result: success|fail|user_not_found|inactive_user
+        - cache_hit: true/false
+        - cache_reason: hit|key_not_found|disabled|redis_not_available|deserialize_failed|get_failed
+        - jwt_decode_ms, cache_lookup_ms, db_lookup_ms, db_execute_ms
+        - activation_check_ms, issue_token_ms, audit_ms, total_ms
+        """
+        import time
+        timings["total_ms"] = (time.perf_counter() - t_start) * 1000
+        
+        # Determinar log level basado en latencia o resultado
+        is_slow = timings["total_ms"] >= 500
+        is_error = result not in ("success",)
+        log_level = logging.INFO if (is_slow or is_error) else logging.DEBUG
+        
+        if logger.isEnabledFor(log_level):
+            logger.log(
+                log_level,
+                "refresh_token_breakdown auth_user_id=%s result=%s cache_hit=%s cache_reason=%s "
+                "jwt_decode_ms=%.1f cache_lookup_ms=%.1f db_lookup_ms=%.1f db_execute_ms=%.1f "
+                "activation_check_ms=%.1f issue_token_ms=%.1f audit_ms=%.1f total_ms=%.1f",
+                auth_user_id_masked,
+                result,
+                cache_hit,
+                cache_reason,
+                timings.get("jwt_decode_ms", 0),
+                timings.get("cache_lookup_ms", 0),
+                timings.get("db_lookup_ms", 0),
+                timings.get("db_execute_ms", 0),
+                timings.get("activation_check_ms", 0),
+                timings.get("issue_token_ms", 0),
+                timings.get("audit_ms", 0),
+                timings["total_ms"],
+            )
+
+    async def _refresh_tokens_legacy(
+        self, data: Mapping[str, Any] | Any, timings: Dict[str, float], t_start: float
+    ) -> Dict[str, Any]:
+        """
+        Fallback para tokens con sub INT (legacy).
+        Usa ORM path para compatibilidad.
+        """
+        import time
+        
+        payload = as_dict(data)
+        refresh_token = payload.get("refresh_token")
+        token_payload = verify_token_type(refresh_token, expected_type="refresh")
+        user_id_from_token = token_payload.get("sub")
+        
+        t_db_start = time.perf_counter()
+        user = await self._get_user_by_token_sub(user_id_from_token)
+        timings["db_lookup_ms"] = (time.perf_counter() - t_db_start) * 1000
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Usuario no encontrado.",
+            )
+        
+        t_active_start = time.perf_counter()
+        is_active = await self.activation_service.is_active(user)
+        timings["is_active_check_ms"] = (time.perf_counter() - t_active_start) * 1000
+        
+        if not is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuario inactivo o no activado.",
+            )
+
+        t_issue_start = time.perf_counter()
+        tokens = self.token_issuer.issue_tokens_for_user(user_id=str(user.auth_user_id))
+        timings["issue_token_ms"] = (time.perf_counter() - t_issue_start) * 1000
+
+        AuditService.log_refresh_token_success(user_id=str(user.user_id))
+        
+        timings["total_ms"] = (time.perf_counter() - t_start) * 1000
+        logger.warning(
+            "refresh_token_legacy_path user_id=%s total_ms=%.1f db_ms=%.1f",
+            user.user_id,
+            timings["total_ms"],
+            timings["db_lookup_ms"],
         )
 
         return {

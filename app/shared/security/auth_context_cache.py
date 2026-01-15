@@ -148,6 +148,12 @@ class AuthContextCache:
         
         if not self._enabled:
             result.duration_ms = (time.perf_counter() - start) * 1000
+            result.error = "cache_disabled"
+            if AUTH_CTX_CACHE_DEBUG:
+                logger.debug(
+                    "auth_ctx_cache_skip reason=disabled auth_user_id=%s",
+                    str(auth_user_id)[:8] + "...",
+                )
             return None, result
         
         try:
@@ -155,6 +161,10 @@ class AuthContextCache:
             if not client:
                 result.duration_ms = (time.perf_counter() - start) * 1000
                 result.error = "redis_not_available"
+                logger.debug(
+                    "auth_ctx_cache_skip reason=redis_unavailable auth_user_id=%s",
+                    str(auth_user_id)[:8] + "...",
+                )
                 return None, result
             
             key = _build_cache_key(auth_user_id)
@@ -163,9 +173,11 @@ class AuthContextCache:
             result.duration_ms = (time.perf_counter() - start) * 1000
             
             if cached_data is None:
+                # Cache miss - DEBUG level only (no spam)
+                result.error = "key_not_found"
                 if AUTH_CTX_CACHE_DEBUG and logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
-                        "auth_ctx_cache_miss auth_user_id=%s duration_ms=%.2f",
+                        "auth_ctx_cache_miss auth_user_id=%s reason=key_not_found duration_ms=%.2f",
                         str(auth_user_id)[:8] + "...",
                         result.duration_ms,
                     )
@@ -175,15 +187,25 @@ class AuthContextCache:
             mapping = _deserialize_auth_context(cached_data)
             if mapping is None:
                 result.error = "deserialize_failed"
+                if AUTH_CTX_CACHE_DEBUG:
+                    logger.warning(
+                        "auth_ctx_cache_miss auth_user_id=%s reason=deserialize_failed duration_ms=%.2f",
+                        str(auth_user_id)[:8] + "...",
+                        result.duration_ms,
+                    )
                 return None, result
             
             result.cache_hit = True
             
-            if AUTH_CTX_CACHE_DEBUG and logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "auth_ctx_cache_hit auth_user_id=%s duration_ms=%.2f",
+            # Log cache hit (DEBUG level for production, INFO if debug enabled)
+            log_level = logging.INFO if AUTH_CTX_CACHE_DEBUG else logging.DEBUG
+            if logger.isEnabledFor(log_level):
+                logger.log(
+                    log_level,
+                    "auth_ctx_cache_hit auth_user_id=%s duration_ms=%.2f ttl=%d",
                     str(auth_user_id)[:8] + "...",
                     result.duration_ms,
+                    self._ttl,
                 )
             
             return mapping, result

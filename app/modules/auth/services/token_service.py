@@ -43,6 +43,7 @@ from app.modules.auth.services.user_service import UserService
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 from app.shared.database.database import get_async_session
 from app.shared.utils.security import verify_token_type
+from app.shared.security.auth_context_cache import get_auth_context_cache
 
 # HTTPBearer with auto_error=False to return 401 (not 403) when credentials missing
 _bearer = HTTPBearer(auto_error=False)
@@ -105,13 +106,15 @@ def _finalize_auth_timings(
         logger.log(
             log_level,
             "auth_dependency_breakdown path=%s auth_dep_total_ms=%.1f jwt_decode_ms=%.1f "
-            "user_lookup_ms=%.1f auth_db_ms=%.1f mode=%s auth_user_id=%s",
+            "user_lookup_ms=%.1f auth_db_ms=%.1f mode=%s cache_hit=%s cache_reason=%s auth_user_id=%s",
             url_path,
             timings["auth_dep_total_ms"],
             timings.get("jwt_decode_ms", 0),
             timings.get("user_lookup_ms", 0),
             timings.get("auth_db_ms", 0),
             timings.get("auth_mode", "unknown"),
+            timings.get("auth_ctx_cache_hit", False),
+            timings.get("auth_ctx_cache_reason", "n/a"),
             auth_user_id_masked,
         )
 
@@ -205,10 +208,9 @@ async def _validate_and_get_user_ctx(
     
     # ─── Fase: Try Redis Cache First ───
     auth_context: Optional[AuthContextDTO] = None
+    cache_reason = "not_attempted"
     
     try:
-        from app.shared.security.auth_context_cache import get_auth_context_cache
-        
         cache = get_auth_context_cache()
         cached_mapping, cache_result = await cache.get_cached(auth_user_id)
         timings["auth_ctx_cache_ms"] = cache_result.duration_ms
@@ -221,9 +223,15 @@ async def _validate_and_get_user_ctx(
             timings["user_lookup_ms"] = 0.0
             timings["auth_db_ms"] = 0.0
             timings["auth_mode"] = "core_cached"
+            cache_reason = "hit"
+        else:
+            cache_reason = cache_result.error or "miss"
+            timings["auth_ctx_cache_reason"] = cache_reason
             
     except Exception as e:
         # Cache error - continue to DB lookup
+        cache_reason = f"error:{str(e)[:30]}"
+        timings["auth_ctx_cache_reason"] = cache_reason
         logger.debug("auth_ctx_cache_error: %s - falling back to DB", str(e))
     
     # ─── Fase: Core DB Lookup (if cache miss) ───
@@ -239,7 +247,6 @@ async def _validate_and_get_user_ctx(
         if auth_context:
             # Cache the result for future requests (best-effort, silent)
             try:
-                from app.shared.security.auth_context_cache import get_auth_context_cache
                 cache = get_auth_context_cache()
                 await cache.set_cached(auth_user_id, auth_context)
             except Exception:
