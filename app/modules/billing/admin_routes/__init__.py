@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-backend/app/modules/billing/routes/__init__.py
+backend/app/modules/billing/admin_routes/__init__.py
 
-Billing routes package.
+Billing admin routes package.
 
 Autor: DoxAI
 Fecha: 2026-01-14

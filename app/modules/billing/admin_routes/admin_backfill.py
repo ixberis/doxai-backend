@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.database.dependency import get_db
+from app.shared.database import get_db
 from app.modules.auth.dependencies import require_admin_strict
 from app.modules.billing.services.finalize_service import BillingFinalizeService
 from app.modules.billing.models import CheckoutIntent, CheckoutIntentStatus

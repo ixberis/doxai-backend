@@ -26,7 +26,7 @@ from fastapi import APIRouter
 from .routes import router as billing_router
 from .webhook_routes import router as billing_webhook_router
 from .public_routes import router as billing_public_router
-from .routes.admin_backfill import router as admin_backfill_router
+from .admin_routes.admin_backfill import router as admin_backfill_router
 
 # Re-exports de modelos desde SSOT (billing.models)
 # Para imports seguros sin circular, usar: from app.modules.billing.models import Wallet

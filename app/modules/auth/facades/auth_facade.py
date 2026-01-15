@@ -26,13 +26,15 @@ Fecha: 19/11/2025
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Dict
+from typing import Any, Mapping, Dict, TYPE_CHECKING
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.auth.services.auth_service import AuthService
 from app.shared.database.database import get_async_session
+
+if TYPE_CHECKING:
+    from app.modules.auth.services.auth_service import AuthService
 
 
 class AuthFacade:
@@ -118,12 +120,15 @@ class AuthFacade:
 
 def get_auth_facade(
     db: AsyncSession = Depends(get_async_session),
-) -> AuthFacade:
+) -> "AuthFacade":
     """
     Dependencia FastAPI para obtener una instancia de AuthFacade.
 
     Crea un AuthService con la sesión actual y lo envuelve en AuthFacade.
+    Lazy import para evitar circular imports.
     """
+    from app.modules.auth.services.auth_service import AuthService
+    
     service = AuthService(db=db)
     return AuthFacade(service)
 
