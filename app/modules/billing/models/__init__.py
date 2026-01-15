@@ -24,6 +24,13 @@ from app.modules.billing.models.checkout_intent import (
     CheckoutIntentStatus,
 )
 
+from app.modules.billing.models.payment import (
+    Payment,
+    PaymentProvider,
+    PaymentStatus,
+    CurrencyEnum,
+)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SSOT ASSERTION: CheckoutIntent must NOT have user_id column
@@ -67,4 +74,9 @@ __all__ = [
     # Checkout models
     "CheckoutIntent",
     "CheckoutIntentStatus",
+    # Payment models
+    "Payment",
+    "PaymentProvider",
+    "PaymentStatus",
+    "CurrencyEnum",
 ]

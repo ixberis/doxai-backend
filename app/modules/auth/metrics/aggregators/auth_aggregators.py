@@ -21,8 +21,8 @@ Actualizado: 2025-12-28 - DB-first con vista v2
 """
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone, time, timedelta
-from typing import Optional
+from datetime import date, datetime, timezone, time, timedelta
+from typing import Optional, Union
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -342,13 +342,15 @@ class AuthAggregators:
     # Version marker for production debugging
     AUTH_SUMMARY_VERSION = "from_ts_to_ts_v1"
 
-    async def get_auth_summary(self, from_date: str, to_date: str) -> AuthSummaryData:
+    async def get_auth_summary(
+        self, from_date: Union[str, date], to_date: Union[str, date]
+    ) -> AuthSummaryData:
         """
         Obtiene resumen de métricas Auth dentro de un rango de fechas.
         
         Args:
-            from_date: Fecha inicio (YYYY-MM-DD) - inclusive
-            to_date: Fecha fin (YYYY-MM-DD) - inclusive
+            from_date: Fecha inicio (YYYY-MM-DD o date) - inclusive
+            to_date: Fecha fin (YYYY-MM-DD o date) - inclusive
             
         Returns:
             AuthSummaryData con counts y ratios para el rango.
@@ -357,8 +359,17 @@ class AuthAggregators:
         # 1. "invalid input for query argument: 'str' object has no attribute 'toordinal'"
         # 2. "operator does not exist: timestamp with time zone < interval"
         # Construimos datetime tz-aware directamente, sin depender de interval en SQL.
-        from_dt = datetime.strptime(from_date, "%Y-%m-%d").date()
-        to_dt = datetime.strptime(to_date, "%Y-%m-%d").date()
+        # Soportar str o date (patrón canónico temporal)
+        from_dt = (
+            datetime.strptime(from_date, "%Y-%m-%d").date()
+            if isinstance(from_date, str)
+            else from_date
+        )
+        to_dt = (
+            datetime.strptime(to_date, "%Y-%m-%d").date()
+            if isinstance(to_date, str)
+            else to_date
+        )
         
         # Half-open range: [from_ts, to_ts) donde to_ts = to_dt + 1 day a las 00:00 UTC
         from_ts = datetime.combine(from_dt, time.min, tzinfo=timezone.utc)

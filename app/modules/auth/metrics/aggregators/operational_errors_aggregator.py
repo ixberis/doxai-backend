@@ -187,8 +187,8 @@ class ErrorsOperationalAggregator:
     
     async def get_errors_operational_metrics(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: Optional[Union[str, date]] = None,
+        to_date: Optional[Union[str, date]] = None,
     ) -> ErrorsOperationalData:
         """Obtiene métricas operativas de errores."""
         
@@ -198,8 +198,17 @@ class ErrorsOperationalAggregator:
             from_d = today - timedelta(days=7)
             to_d = today
         else:
-            from_d = datetime.strptime(from_date, "%Y-%m-%d").date()
-            to_d = datetime.strptime(to_date, "%Y-%m-%d").date()
+            # Soportar str o date (patrón canónico temporal)
+            from_d = (
+                datetime.strptime(from_date, "%Y-%m-%d").date()
+                if isinstance(from_date, str)
+                else from_date
+            )
+            to_d = (
+                datetime.strptime(to_date, "%Y-%m-%d").date()
+                if isinstance(to_date, str)
+                else to_date
+            )
         
         from_ts, to_ts = self._build_range(from_d, to_d)
         

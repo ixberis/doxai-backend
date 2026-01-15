@@ -173,15 +173,15 @@ class ActivationOperationalAggregator:
     
     async def get_activation_operational_metrics(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: Optional[Union[str, date]] = None,
+        to_date: Optional[Union[str, date]] = None,
     ) -> ActivationOperationalData:
         """
         Obtiene métricas operativas de activación.
         
         Args:
-            from_date: Fecha inicio YYYY-MM-DD (opcional)
-            to_date: Fecha fin YYYY-MM-DD (opcional)
+            from_date: Fecha inicio YYYY-MM-DD o date (opcional)
+            to_date: Fecha fin YYYY-MM-DD o date (opcional)
         
         Returns:
             ActivationOperationalData con todas las métricas y alertas
@@ -192,8 +192,17 @@ class ActivationOperationalAggregator:
             from_d = today - timedelta(days=7)
             to_d = today
         else:
-            from_d = datetime.strptime(from_date, "%Y-%m-%d").date()
-            to_d = datetime.strptime(to_date, "%Y-%m-%d").date()
+            # Soportar str o date (patrón canónico temporal)
+            from_d = (
+                datetime.strptime(from_date, "%Y-%m-%d").date()
+                if isinstance(from_date, str)
+                else from_date
+            )
+            to_d = (
+                datetime.strptime(to_date, "%Y-%m-%d").date()
+                if isinstance(to_date, str)
+                else to_date
+            )
         
         from_ts, to_ts = self._build_range(from_d, to_d)
         now_ts = datetime.now(timezone.utc)
