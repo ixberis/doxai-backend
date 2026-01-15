@@ -39,14 +39,10 @@ from app.modules.projects.schemas.project_file_event_log_schemas import (
 )
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
 
-# Dependencias - SSOT: get_current_user_ctx (Core) para rutas optimizadas
-# get_current_user (ORM) solo para rutas legacy que requieren objeto AppUser completo
-from app.modules.auth.services import get_current_user_ctx, get_current_user
+# SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
+# NO se usa get_current_user (ORM) en rutas de producto
+from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
-from app.shared.auth_context import (
-    extract_user_id,
-    extract_auth_user_id,
-)
 
 router = APIRouter(tags=["projects:queries"])
 logger = logging.getLogger(__name__)
@@ -72,31 +68,8 @@ REJECTED_LEGACY_SORT_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _get_auth_user_id(user) -> UUID:
-    """
-    Extrae auth_user_id del usuario autenticado.
-
-    BD 2.0 SSOT: auth_user_id es REQUERIDO. No hay fallback a email.
-
-    Raises:
-        HTTPException 401: Si el usuario no tiene auth_user_id
-    """
-    auth_user_id = extract_auth_user_id(user)
-    
-    if auth_user_id is None:
-        logger.error(
-            "auth_user_id_missing user_type=%s - BD 2.0 requiere auth_user_id",
-            type(user).__name__,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "message": "Missing auth_user_id in auth context",
-                "error_code": "AUTH_MISSING_UUID"
-            }
-        )
-    
-    return auth_user_id
+# NOTA: _get_auth_user_id y _get_user_filter_context eliminados
+# BD 2.0 SSOT: Usar directamente ctx.auth_user_id de get_current_user_ctx
 
 
 def _get_user_filter_context(user: Any) -> tuple[Optional[UUID], Optional[str], bool]:
@@ -193,15 +166,13 @@ async def list_projects_for_user(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     include_total: bool = Query(False),
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
     start_time = time.perf_counter()
 
-    # Fase: Auth Context (BD 2.0 SSOT)
-    auth_start = time.perf_counter()
-    auth_user_id = _get_auth_user_id(user)
-    auth_ms = (time.perf_counter() - auth_start) * 1000
+    # BD 2.0 SSOT: auth_user_id ya resuelto por get_current_user_ctx (Core)
+    auth_user_id = ctx.auth_user_id
 
     # Fase: DB Query (BD 2.0: solo auth_user_id)
     db_start = time.perf_counter()
@@ -230,8 +201,8 @@ async def list_projects_for_user(
     user_log = str(auth_user_id)[:8] + "..."
 
     logger.info(
-        "query_completed op=list_projects user=%s auth_ms=%.2f db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d",
-        user_log, auth_ms, db_ms, ser_ms, total_ms, len(items)
+        "query_completed op=list_projects user=%s db_ms=%.2f ser_ms=%.2f total_ms=%.2f rows=%d",
+        user_log, db_ms, ser_ms, total_ms, len(items)
     )
 
     return ProjectListResponse(
@@ -439,11 +410,11 @@ async def list_ready_projects(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     include_total: bool = Query(False),
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
-    # BD 2.0 SSOT: usar auth_user_id
-    auth_user_id = _get_auth_user_id(user)
+    # BD 2.0 SSOT: auth_user_id ya resuelto por get_current_user_ctx
+    auth_user_id = ctx.auth_user_id
 
     result = await q.list_ready_projects(
         auth_user_id=auth_user_id,
@@ -478,10 +449,11 @@ async def list_project_actions(
     project_id: UUID,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
-    uid = extract_user_id(user)
+    # BD 2.0 SSOT: auth_user_id del contexto Core (para validación ownership si aplica)
+    _ = ctx.auth_user_id  # Reservado para ownership check futuro
     items = await q.list_actions(project_id=project_id, limit=limit, offset=offset)
 
     validated_items = []
@@ -517,11 +489,12 @@ async def list_project_file_events(
     offset: int = Query(0, ge=0),
     after_created_at: Optional[datetime] = Query(None),
     after_id: Optional[UUID] = Query(None),
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
     import os
-    uid = extract_user_id(user)
+    # BD 2.0 SSOT: auth_user_id del contexto Core
+    _ = ctx.auth_user_id  # Reservado para ownership check futuro
     strict_validation = os.getenv("STRICT_RESPONSE_VALIDATION", "0") == "1"
 
     def normalize_items(raw_items):

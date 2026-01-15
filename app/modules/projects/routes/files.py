@@ -20,9 +20,9 @@ from app.modules.projects.routes.deps import (
     get_projects_query_service,
 )
 
-# Dependencias
-from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_user_id_and_email
+# SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
+from app.modules.auth.services import get_current_user_ctx
+from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
 router = APIRouter()
 
@@ -51,13 +51,20 @@ async def list_project_files(
     project_id: UUID,
     limit: int = 100,
     offset: int = 0,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
-    """Lista archivos del proyecto. Siempre devuelve total."""
-    uid, _ = extract_user_id_and_email(user)
-    items, total = await q.list_files(project_id=project_id, auth_user_id=uid, limit=limit, offset=offset, include_total=True)
-    # items son dicts, no necesitan conversión
+    """
+    Lista archivos del proyecto. Siempre devuelve total.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
+    items, total = await q.list_files(
+        project_id=project_id,
+        auth_user_id=ctx.auth_user_id,
+        limit=limit,
+        offset=offset,
+        include_total=True
+    )
     return {
         "success": True,
         "items": items,
@@ -72,15 +79,17 @@ async def list_project_files(
 async def add_project_file(
     project_id: UUID,
     payload: ProjectFileAddIn,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
-    """Agrega archivo al proyecto. Delega validación a service."""
-    uid, uemail = extract_user_id_and_email(user)
+    """
+    Agrega archivo al proyecto. Delega validación a service.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
     file = await svc.add_file(
         project_id=project_id,
-        auth_user_id=uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
         path=payload.path,
         filename=payload.filename,
         mime_type=payload.mime_type,
@@ -95,15 +104,17 @@ async def add_project_file(
 )
 async def validate_project_file(
     file_id: UUID,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
-    """Valida archivo. Delega lógica a service."""
-    uid, uemail = extract_user_id_and_email(user)
+    """
+    Valida archivo. Delega lógica a service.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
     file = await svc.validate_file(
         file_id=file_id,
-        auth_user_id=uid,
-        user_email=uemail
+        auth_user_id=ctx.auth_user_id,
+        user_email=None  # BD 2.0: email no requerido
     )
     return {"success": True, "file_id": str(file.id)}
 
@@ -114,15 +125,17 @@ async def validate_project_file(
 async def move_project_file(
     file_id: UUID,
     payload: ProjectFileMoveIn,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
-    """Mueve archivo. Delega lógica a service."""
-    uid, uemail = extract_user_id_and_email(user)
+    """
+    Mueve archivo. Delega lógica a service.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
     file = await svc.move_file(
         file_id=file_id,
-        auth_user_id=uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
         new_path=payload.new_path
     )
     return {"success": True, "file_id": str(file.id), "new_path": file.path}
@@ -133,15 +146,17 @@ async def move_project_file(
 )
 async def delete_project_file(
     file_id: UUID,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
-    """Elimina archivo. Delega lógica a service."""
-    uid, uemail = extract_user_id_and_email(user)
+    """
+    Elimina archivo. Delega lógica a service.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
     ok = await svc.delete_file(
         file_id=file_id,
-        auth_user_id=uid,
-        user_email=uemail
+        auth_user_id=ctx.auth_user_id,
+        user_email=None  # BD 2.0: email no requerido
     )
     return {"success": bool(ok)}
 

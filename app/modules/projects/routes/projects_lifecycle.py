@@ -20,8 +20,9 @@ from app.modules.projects.services import ProjectsCommandService
 from app.modules.projects.routes.deps import get_projects_command_service
 from app.modules.projects.enums import ProjectStatus, ProjectState
 from app.modules.projects.schemas import ProjectRead, ProjectResponse
-from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_auth_user_id_and_email
+# SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
+from app.modules.auth.services import get_current_user_ctx
+from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
 router = APIRouter(tags=["projects:lifecycle"])
 
@@ -62,14 +63,13 @@ logger = logging.getLogger(__name__)
 async def change_status(
     project_id: UUID,
     status_slug: str,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
     Cambia el status administrativo del proyecto. Requiere propiedad.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    auth_uid, uemail = extract_auth_user_id_and_email(user)
-    
     # Normalizar y mapear slug a enum
     slug = _norm_slug(status_slug)
     if slug in {"in_process", "in_progress"}:
@@ -82,8 +82,8 @@ async def change_status(
     
     project = await svc.change_status(
         project_id,
-        auth_user_id=auth_uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
         new_status=new_status,
     )
     return ProjectResponse(success=True, message="Status actualizado", project=_coerce_to_project_read(project))
@@ -97,14 +97,13 @@ async def change_status(
 async def transition_state(
     project_id: UUID,
     state_slug: str,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
     Transiciona el estado técnico del proyecto. Requiere propiedad.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    auth_uid, uemail = extract_auth_user_id_and_email(user)
-    
     # Normalizar y mapear slug a enum
     slug = _norm_slug(state_slug)
     try:
@@ -114,8 +113,8 @@ async def transition_state(
     
     project = await svc.transition_state(
         project_id,
-        auth_user_id=auth_uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
         to_state=to_state,
     )
     return ProjectResponse(success=True, message="Estado actualizado", project=_coerce_to_project_read(project))
@@ -128,17 +127,17 @@ async def transition_state(
 )
 async def archive_project(
     project_id: UUID,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
     Archiva (soft delete) un proyecto. Requiere propiedad.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    auth_uid, uemail = extract_auth_user_id_and_email(user)
     project = await svc.archive(
         project_id,
-        auth_user_id=auth_uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
     )
     return ProjectResponse(success=True, message="Proyecto archivado", project=_coerce_to_project_read(project))
 

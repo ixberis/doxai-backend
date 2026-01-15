@@ -28,8 +28,9 @@ from app.modules.projects.schemas import (
     ProjectRead,
     ProjectResponse,
 )
-from app.modules.auth.services import get_current_user
-from app.shared.auth_context import extract_auth_user_id_and_email
+# SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
+from app.modules.auth.services import get_current_user_ctx
+from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
 router = APIRouter(tags=["projects:crud"])
 
@@ -70,16 +71,16 @@ logger = logging.getLogger(__name__)
 )
 async def create_project(
     payload: ProjectCreateIn,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
     Crea un proyecto nuevo para el usuario autenticado.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    auth_uid, uemail = extract_auth_user_id_and_email(user)
     project = await svc.create_project(
-        auth_user_id=auth_uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido para ownership
         project_name=payload.project_name,
         project_slug=payload.project_slug,
         project_description=payload.project_description,
@@ -94,14 +95,13 @@ async def create_project(
 )
 async def get_project_by_id(
     project_id: UUID,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
     """
     Devuelve un proyecto por su ID, validando pertenencia del usuario.
     BD 2.0 SSOT: ownership se valida contra auth_user_id (UUID).
     """
-    auth_uid, _ = extract_auth_user_id_and_email(user)
     project = await q.get_project_by_id(project_id)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
@@ -109,7 +109,7 @@ async def get_project_by_id(
     # BD 2.0 SSOT: comparar con auth_user_id (UUID)
     project_owner = project.get("auth_user_id") if isinstance(project, dict) else getattr(project, "auth_user_id", None)
     # Normalizar a string para comparación (puede venir como UUID o str)
-    if str(project_owner) != str(auth_uid):
+    if str(project_owner) != str(ctx.auth_user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
     return _coerce_to_project_read(project)
@@ -123,14 +123,13 @@ async def get_project_by_id(
 )
 def get_project_by_slug(
     slug: str,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     q: ProjectsQueryService = Depends(get_projects_query_service),
 ):
     """
     Devuelve un proyecto por su slug, validando pertenencia del usuario.
     BD 2.0 SSOT: ownership se valida contra auth_user_id (UUID).
     """
-    auth_uid, _ = extract_auth_user_id_and_email(user)
     project = q.get_project_by_slug(slug)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
@@ -138,7 +137,7 @@ def get_project_by_slug(
     # BD 2.0 SSOT: comparar con auth_user_id (UUID)
     project_owner = project.get("auth_user_id") if isinstance(project, dict) else getattr(project, "auth_user_id", None)
     # Normalizar a string para comparación (puede venir como UUID o str)
-    if str(project_owner) != str(auth_uid):
+    if str(project_owner) != str(ctx.auth_user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
 
     return _coerce_to_project_read(project)
@@ -152,17 +151,17 @@ def get_project_by_slug(
 async def update_project(
     project_id: UUID,
     payload: ProjectUpdateIn,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
     Actualiza metadatos del proyecto (nombre/ descripción). Requiere propiedad.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    auth_uid, uemail = extract_auth_user_id_and_email(user)
     project = await svc.update_project(
         project_id,
-        auth_user_id=auth_uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
         **payload.model_dump(exclude_none=True),
     )
     return ProjectResponse(success=True, message="Proyecto actualizado", project=_coerce_to_project_read(project))
@@ -175,17 +174,17 @@ async def update_project(
 )
 async def delete_project(
     project_id: UUID,
-    user=Depends(get_current_user),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
     Elimina físicamente un proyecto. Normalmente reservado a tareas administrativas.
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    auth_uid, uemail = extract_auth_user_id_and_email(user)
     ok = await svc.delete(
         project_id,
-        auth_user_id=auth_uid,
-        user_email=uemail,
+        auth_user_id=ctx.auth_user_id,
+        user_email=None,  # BD 2.0: email no requerido
     )
     return {"success": bool(ok), "message": "Proyecto eliminado" if ok else "No se pudo eliminar"}
 
