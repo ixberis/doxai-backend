@@ -687,14 +687,13 @@ class MailerSendEmailSender:
         subject: str,
         html_body: str,
         text_body: str,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Envía un email interno/administrativo SIN tracking en auth_email_events.
         
         Uso:
         - Notificaciones al admin (compras, alertas, etc.)
         - Emails que NO requieren enum en auth_email_type
-        - Best-effort: levanta excepción si HTTP falla (caller decide qué hacer)
         
         IMPORTANTE:
         - Usa from_email configurado (no-reply@doxai.site por defecto)
@@ -708,11 +707,11 @@ class MailerSendEmailSender:
             text_body: Cuerpo texto plano
             
         Returns:
-            message_id del provider si se envió correctamente
+            message_id del provider (string).
             
         Raises:
-            MailerSendError: Si el envío HTTP falla
-            RuntimeError: Si hay timeout o error de red
+            MailerSendError: Si el envío HTTP falla.
+            RuntimeError: Si hay timeout o error de red.
         """
         logger.info(
             "[MailerSend] send_internal_email: to=%s subject=%s",
@@ -726,6 +725,10 @@ class MailerSendEmailSender:
             html_body=html_body,
             text_body=text_body,
         )
+        
+        # Garantizar retorno str: si _send_email retorna None/"", usar fallback
+        if not message_id:
+            message_id = "mailersend-accepted"
         
         logger.info(
             "[MailerSend] send_internal_email_success: to=%s message_id=%s",

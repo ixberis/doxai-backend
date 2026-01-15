@@ -107,7 +107,7 @@ class IEmailSender(Protocol):
         subject: str,
         html_body: str,
         text_body: str,
-    ) -> Optional[str]:
+    ) -> str:
         """Envía email interno/administrativo SIN tracking en auth_email_events.
         
         Uso:
@@ -115,7 +115,11 @@ class IEmailSender(Protocol):
         - Emails que NO requieren enum en auth_email_type
         
         Returns:
-            message_id del provider si se envió correctamente, None si falla
+            message_id del provider (string).
+            
+        Raises:
+            MailerSendError: Si el envío HTTP falla.
+            RuntimeError: Si hay timeout o error de red.
         """
         ...
 
@@ -240,8 +244,12 @@ class StubEmailSender:
         subject: str,
         html_body: str,
         text_body: str,
-    ) -> Optional[str]:
-        """Stub para email interno/administrativo. Retorna message_id ficticio."""
+    ) -> str:
+        """Stub para email interno/administrativo.
+        
+        Returns:
+            message_id ficticio (stub-internal-...).
+        """
         from uuid import uuid4
         message_id = f"stub-internal-{uuid4().hex[:16]}"
         logger.info(
