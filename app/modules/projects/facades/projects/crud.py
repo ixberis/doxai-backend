@@ -122,9 +122,9 @@ async def create(
         # Registrar acción de creación
         audit.log_action(
             project_id=project.id,
-            auth_user_id=user_id,  # user_id param es UUID, mapeado a auth_user_id
-            action=ProjectActionType.created,
-            metadata={"name": name, "slug": normalized_slug}
+            auth_user_id=user_id,
+            action_type=ProjectActionType.created,
+            action_metadata={"name": name, "slug": normalized_slug}
         )
         
         return project
@@ -177,9 +177,9 @@ async def update(
         # Registrar acción con detalles
         audit.log_action(
             project_id=project.id,
-            auth_user_id=user_id,  # user_id param es UUID, mapeado a auth_user_id
-            action=ProjectActionType.updated,
-            metadata={"changes": change_details}
+            auth_user_id=user_id,
+            action_type=ProjectActionType.updated,
+            action_metadata={"changes": change_details}
         )
         
         return project
@@ -215,9 +215,9 @@ async def delete(
         # Registrar acción antes de eliminar
         audit.log_action(
             project_id=project.id,
-            auth_user_id=user_id,  # user_id param es UUID, mapeado a auth_user_id
-            action=ProjectActionType.deleted,
-            metadata={"name": project.project_name, "slug": project.project_slug}
+            auth_user_id=user_id,
+            action_type=ProjectActionType.deleted,
+            action_metadata={"name": project.project_name, "slug": project.project_slug}
         )
         
         # Eliminar proyecto
