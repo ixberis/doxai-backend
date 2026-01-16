@@ -10,7 +10,7 @@ Rutas CRUD de Proyectos:
 - Eliminar (hard delete)
 
 Autor: Ixchel Beristain
-Fecha de actualización: 08/11/2025
+Fecha de actualización: 2026-01-16 - Handle SlugAlreadyExists → 409
 """
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
@@ -28,6 +28,7 @@ from app.modules.projects.schemas import (
     ProjectRead,
     ProjectResponse,
 )
+from app.modules.projects.facades.errors import SlugAlreadyExists
 # SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
@@ -71,15 +72,28 @@ async def _create_project_handler(
     """
     Handler interno de creación de proyecto.
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    
+    Raises:
+        HTTPException 409: Si el slug ya existe (PROJECT_SLUG_ALREADY_EXISTS)
     """
-    project = await svc.create_project(
-        auth_user_id=ctx.auth_user_id,
-        user_email=None,  # BD 2.0: email no requerido para ownership
-        project_name=payload.project_name,
-        project_slug=payload.project_slug,
-        project_description=payload.project_description,
-    )
-    return ProjectResponse(success=True, message="Proyecto creado", project=_coerce_to_project_read(project))
+    try:
+        project = await svc.create_project(
+            auth_user_id=ctx.auth_user_id,
+            user_email=None,  # BD 2.0: email no requerido para ownership
+            project_name=payload.project_name,
+            project_slug=payload.project_slug,
+            project_description=payload.project_description,
+        )
+        return ProjectResponse(success=True, message="Proyecto creado", project=_coerce_to_project_read(project))
+    except SlugAlreadyExists as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Ya existe un proyecto con ese nombre. Cambia el nombre del proyecto e inténtalo de nuevo.",
+                "error_code": "PROJECT_SLUG_ALREADY_EXISTS",
+                "slug": e.slug,
+            }
+        )
 
 
 @router.post(

@@ -8,14 +8,18 @@ Incluye validación de slug y whitelist de campos.
 BD 2.0 SSOT:
 - auth_user_id: UUID canónico de ownership (reemplaza user_id legacy)
 
+Transacciones: Usa commit_or_raise como única fuente de verdad.
+Runtime: AsyncSession only (producción).
+
 Autor: Ixchel Beristain
 Fecha: 2025-10-26
-Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
+Actualizado: 2026-01-16 - Async-only, tx unificado en commit_or_raise
 """
 
 from uuid import UUID
 from typing import Optional, Set
-from sqlalchemy.orm import Session
+
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -35,8 +39,22 @@ ALLOWED_UPDATE_FIELDS: Set[str] = {
 }
 
 
-def create(
-    db: Session,
+async def _get_for_update(db: AsyncSession, project_id: UUID) -> Project:
+    """
+    Obtiene un proyecto para actualización con bloqueo pesimista.
+    """
+    result = await db.execute(
+        select(Project).where(Project.id == project_id).with_for_update()
+    )
+    project = result.scalars().first()
+    
+    if not project:
+        raise ProjectNotFound(project_id)
+    return project
+
+
+async def create(
+    db: AsyncSession,
     audit: AuditLogger,
     *,
     user_id: UUID,  # Parámetro legacy, se mapea a auth_user_id en BD 2.0
@@ -56,9 +74,10 @@ def create(
     - Registra acción 'created' en auditoría
     
     BD 2.0 SSOT: user_id param se mapea a auth_user_id column.
+    Transacciones: commit_or_raise maneja commit/rollback.
     
     Args:
-        db: Sesión SQLAlchemy
+        db: AsyncSession SQLAlchemy
         audit: Logger de auditoría
         user_id: UUID del usuario propietario (se almacena como auth_user_id)
         user_email: Email del usuario propietario
@@ -72,19 +91,19 @@ def create(
     Raises:
         SlugAlreadyExists: Si el slug ya existe en la base de datos
     """
-    def _work():
-        # Normalizar slug (defensa contra duplicados por casing/espacios)
-        normalized_slug = slug.strip().lower()
-        
+    normalized_slug = slug.strip().lower()
+    
+    async def _work() -> Project:
         # Validar unicidad del slug (global)
-        existing = db.scalar(
+        result = await db.execute(
             select(Project).where(Project.project_slug == normalized_slug)
         )
+        existing = result.scalar_one_or_none()
+        
         if existing:
             raise SlugAlreadyExists(normalized_slug)
         
         # BD 2.0 SSOT: user_id param → auth_user_id column
-        # NO se almacena user_email en projects (BD 2.0 canónica)
         project = Project(
             auth_user_id=user_id,
             project_name=name,
@@ -95,7 +114,7 @@ def create(
         )
         
         db.add(project)
-        db.flush()
+        await db.flush()
         
         # Registrar acción de creación
         audit.log_action(
@@ -109,20 +128,20 @@ def create(
         return project
     
     try:
-        return commit_or_raise(db, _work)
+        return await commit_or_raise(db, _work)
     except IntegrityError as e:
         # Capturar carreras de condición en slug único
         if "project_slug" in str(e.orig):
-            raise SlugAlreadyExists(slug.strip().lower())
+            raise SlugAlreadyExists(normalized_slug)
         raise
 
 
-def update(
-    db: Session,
+async def update(
+    db: AsyncSession,
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
+    user_id: UUID,
     user_email: str,
     enforce_owner: bool = True,
     **changes
@@ -134,25 +153,10 @@ def update(
     Solo permite actualizar campos de la lista blanca ALLOWED_UPDATE_FIELDS.
     
     BD 2.0 SSOT: user_id param se compara con auth_user_id column.
-    
-    Args:
-        db: Sesión SQLAlchemy
-        audit: Logger de auditoría
-        project_id: ID del proyecto a actualizar
-        user_id: UUID del usuario que realiza la actualización
-        user_email: Email del usuario que realiza la actualización
-        enforce_owner: Si True, valida que user_id sea el propietario
-        **changes: Campos a actualizar (ej. project_name, project_description)
-        
-    Returns:
-        Proyecto actualizado
-        
-    Raises:
-        ProjectNotFound: Si el proyecto no existe
-        PermissionDenied: Si enforce_owner=True y el usuario no es propietario
+    Transacciones: commit_or_raise maneja commit/rollback.
     """
-    def _work():
-        project = _get_for_update(db, project_id)
+    async def _work() -> Project:
+        project = await _get_for_update(db, project_id)
         
         # BD 2.0 SSOT: comparar con auth_user_id
         if enforce_owner and project.auth_user_id != user_id:
@@ -179,15 +183,15 @@ def update(
         
         return project
     
-    return commit_or_raise(db, _work)
+    return await commit_or_raise(db, _work)
 
 
-def delete(
-    db: Session,
+async def delete(
+    db: AsyncSession,
     audit: AuditLogger,
     project_id: UUID,
     *,
-    user_id: UUID,  # Parámetro legacy, se compara con auth_user_id en BD 2.0
+    user_id: UUID,
     user_email: str,
     enforce_owner: bool = True
 ) -> bool:
@@ -198,24 +202,10 @@ def delete(
     Este método debe reservarse para limpieza administrativa.
     
     BD 2.0 SSOT: user_id param se compara con auth_user_id column.
-    
-    Args:
-        db: Sesión SQLAlchemy
-        audit: Logger de auditoría
-        project_id: ID del proyecto a eliminar
-        user_id: UUID del usuario que realiza la eliminación
-        user_email: Email del usuario
-        enforce_owner: Si True, valida que user_id sea el propietario
-        
-    Returns:
-        True si se eliminó exitosamente
-        
-    Raises:
-        ProjectNotFound: Si el proyecto no existe
-        PermissionDenied: Si enforce_owner=True y el usuario no es propietario
+    Transacciones: commit_or_raise maneja commit/rollback.
     """
-    def _work():
-        project = _get_for_update(db, project_id)
+    async def _work() -> bool:
+        project = await _get_for_update(db, project_id)
         
         # BD 2.0 SSOT: comparar con auth_user_id
         if enforce_owner and project.auth_user_id != user_id:
@@ -231,35 +221,10 @@ def delete(
         )
         
         # Eliminar proyecto
-        db.delete(project)
+        await db.delete(project)
         return True
     
-    return commit_or_raise(db, _work)
-
-
-def _get_for_update(db: Session, project_id: UUID) -> Project:
-    """
-    Obtiene un proyecto para actualización con bloqueo pesimista.
-    
-    Usa SELECT ... FOR UPDATE para prevenir condiciones de carrera.
-    
-    Args:
-        db: Sesión SQLAlchemy
-        project_id: ID del proyecto
-        
-    Returns:
-        Instancia de Project
-        
-    Raises:
-        ProjectNotFound: Si el proyecto no existe
-    """
-    project = db.execute(
-        select(Project).where(Project.id == project_id).with_for_update()
-    ).scalars().first()
-    
-    if not project:
-        raise ProjectNotFound(project_id)
-    return project
+    return await commit_or_raise(db, _work)
 
 
 __all__ = [

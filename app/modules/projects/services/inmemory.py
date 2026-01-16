@@ -548,6 +548,9 @@ class InMemoryProjectsCommandService:
     Implementa solo lo que las rutas usan en tests (update/delete/status/state/archive). Ahora async.
     BD 2.0 SSOT: auth_user_id (UUID) reemplaza user_id (int).
     """
+    
+    # Class-level store para detectar slugs duplicados entre instancias
+    _slug_store: set = set()
 
     def __init__(self):
         # simulamos un pequeño "almacén" de proyectos tocados durante la sesión del test
@@ -556,18 +559,26 @@ class InMemoryProjectsCommandService:
     async def create_project(
         self,
         auth_user_id: UUID,  # BD 2.0 SSOT
-        user_email: str,
+        user_email: Optional[str],
         project_name: str,
         project_slug: str,
         project_description: Optional[str] = None,
     ) -> Dict[str, Any]:
+        from app.modules.projects.facades.errors import SlugAlreadyExists
+        
+        # Detectar slug duplicado
+        if project_slug in InMemoryProjectsCommandService._slug_store:
+            raise SlugAlreadyExists(project_slug)
+        
+        InMemoryProjectsCommandService._slug_store.add(project_slug)
+        
         project_id = UUID("44444444-4444-4444-4444-444444444444")
         now = datetime.now(timezone.utc)
         p = {
             "id": project_id,
             "project_id": project_id,
             "auth_user_id": auth_user_id,  # BD 2.0 SSOT
-            "user_email": user_email,
+            "user_email": user_email or "",
             "project_name": project_name,
             "project_slug": project_slug,
             "project_description": project_description,

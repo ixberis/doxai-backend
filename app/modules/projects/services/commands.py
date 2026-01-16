@@ -11,11 +11,13 @@ BD 2.0 SSOT (2026-01-10):
   (la tabla project_files SÍ tiene user_email para logging)
 
 Autor: Ixchel Beristain
+Actualizado: 2026-01-16 - Async-aware para AsyncSession
 """
 from __future__ import annotations
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Union
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.projects.facades import ProjectFacade
 from app.modules.projects.enums import ProjectState, ProjectStatus
@@ -28,35 +30,35 @@ class ProjectsCommandService:
     BD 2.0 SSOT: Todos los comandos usan auth_user_id (UUID) para ownership.
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Union[Session, AsyncSession]):
         self.db = db
         self.facade = ProjectFacade(db)
 
     # ---- Crear / actualizar ----
-    def create_project(
+    async def create_project(
         self,
         *,
         auth_user_id: UUID,
-        user_email: str,  # Solo para auditoría, NO se almacena en projects
+        user_email: Optional[str],  # Solo para auditoría, NO se almacena en projects
         project_name: str,
         project_slug: str,
         project_description: Optional[str] = None,
     ):
         """BD 2.0: auth_user_id es el SSOT de ownership."""
-        return self.facade.create(
+        return await self.facade.create(
             user_id=auth_user_id,  # Facade espera user_id, se mapea a auth_user_id
-            user_email=user_email,
+            user_email=user_email or "",
             project_name=project_name,
             project_slug=project_slug,
             project_description=project_description,
         )
 
-    def update_project(
+    async def update_project(
         self,
         project_id: UUID,
         *,
         auth_user_id: UUID,
-        user_email: str,
+        user_email: Optional[str],
         project_name: Optional[str] = None,
         project_description: Optional[str] = None,
     ):
@@ -67,57 +69,57 @@ class ProjectsCommandService:
         if project_description is not None:
             payload["project_description"] = project_description
 
-        return self.facade.update(
+        return await self.facade.update(
             project_id,
             user_id=auth_user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             **payload
         )
 
     # ---- Status administrativo ----
-    def change_status(
+    async def change_status(
         self,
         project_id: UUID,
         *,
         auth_user_id: UUID,
-        user_email: str,
+        user_email: Optional[str],
         new_status: ProjectStatus,
     ):
-        return self.facade.change_status(
+        return await self.facade.change_status(
             project_id,
             user_id=auth_user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             new_status=new_status,
         )
 
     # ---- State operativo ----
-    def transition_state(
+    async def transition_state(
         self,
         project_id: UUID,
         *,
         auth_user_id: UUID,
-        user_email: str,
+        user_email: Optional[str],
         to_state: ProjectState,
     ):
-        return self.facade.transition_state(
+        return await self.facade.transition_state(
             project_id,
             user_id=auth_user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             to_state=to_state,
         )
 
-    def archive(self, project_id: UUID, *, auth_user_id: UUID, user_email: str):
-        return self.facade.archive(
+    async def archive(self, project_id: UUID, *, auth_user_id: UUID, user_email: Optional[str]):
+        return await self.facade.archive(
             project_id,
             user_id=auth_user_id,
-            user_email=user_email,
+            user_email=user_email or "",
         )
 
-    def delete(self, project_id: UUID, *, auth_user_id: UUID, user_email: str) -> bool:
-        return self.facade.delete(
+    async def delete(self, project_id: UUID, *, auth_user_id: UUID, user_email: Optional[str]) -> bool:
+        return await self.facade.delete(
             project_id,
             user_id=auth_user_id,
-            user_email=user_email,
+            user_email=user_email or "",
         )
 
     # ---- Operaciones de archivos ----

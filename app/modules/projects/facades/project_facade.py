@@ -8,11 +8,13 @@ Mantiene API estable delegando a módulos internos.
 
 Autor: Ixchel Beristain
 Fecha: 28/10/2025
+Actualizado: 2026-01-16 - Async-aware para AsyncSession
 """
 
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Union
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.projects.models.project_models import Project
 from app.modules.projects.enums.project_state_enum import ProjectState
@@ -39,17 +41,17 @@ class ProjectFacade:
     # Re-exportar lista blanca de campos
     ALLOWED_UPDATE_FIELDS = projects.ALLOWED_UPDATE_FIELDS
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Union[Session, AsyncSession]):
         """
         Inicializa el facade con una sesión de base de datos.
         
         Args:
-            db: Sesión SQLAlchemy activa
+            db: Sesión SQLAlchemy activa (Session o AsyncSession)
         """
         self.db = db
         self.audit = AuditLogger(db)
     
-    def create(
+    async def create(
         self,
         *,
         user_id: UUID,
@@ -71,17 +73,17 @@ class ProjectFacade:
         Returns:
             Instancia de Project creada y persistida
         """
-        return projects.create(
+        return await projects.create(
             db=self.db,
             audit=self.audit,
             user_id=user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             name=project_name,
             slug=project_slug,
             description=project_description,
         )
     
-    def update(
+    async def update(
         self,
         project_id: UUID,
         *,
@@ -93,17 +95,17 @@ class ProjectFacade:
         """
         Actualiza metadatos de un proyecto.
         """
-        return projects.update(
+        return await projects.update(
             db=self.db,
             audit=self.audit,
             project_id=project_id,
             user_id=user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             enforce_owner=enforce_owner,
             **changes,
         )
     
-    def change_status(
+    async def change_status(
         self,
         project_id: UUID,
         *,
@@ -115,17 +117,17 @@ class ProjectFacade:
         """
         Cambia el status administrativo del proyecto.
         """
-        return projects.change_status(
+        return await projects.change_status(
             db=self.db,
             audit=self.audit,
             project_id=project_id,
             user_id=user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             new_status=new_status,
             enforce_owner=enforce_owner,
         )
     
-    def transition_state(
+    async def transition_state(
         self,
         project_id: UUID,
         *,
@@ -137,17 +139,17 @@ class ProjectFacade:
         """
         Transiciona el estado técnico del proyecto.
         """
-        return projects.transition_state(
+        return await projects.transition_state(
             db=self.db,
             audit=self.audit,
             project_id=project_id,
             user_id=user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             to_state=to_state,
             enforce_owner=enforce_owner,
         )
     
-    def archive(
+    async def archive(
         self,
         project_id: UUID,
         *,
@@ -158,16 +160,16 @@ class ProjectFacade:
         """
         Archiva un proyecto (soft delete).
         """
-        return projects.archive(
+        return await projects.archive(
             db=self.db,
             audit=self.audit,
             project_id=project_id,
             user_id=user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             enforce_owner=enforce_owner,
         )
     
-    def delete(
+    async def delete(
         self,
         project_id: UUID,
         *,
@@ -178,12 +180,12 @@ class ProjectFacade:
         """
         Elimina un proyecto (hard delete).
         """
-        return projects.delete(
+        return await projects.delete(
             db=self.db,
             audit=self.audit,
             project_id=project_id,
             user_id=user_id,
-            user_email=user_email,
+            user_email=user_email or "",
             enforce_owner=enforce_owner,
         )
 
