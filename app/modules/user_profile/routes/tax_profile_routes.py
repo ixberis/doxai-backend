@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError, DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database import get_db_timed
+from app.shared.observability.request_telemetry import RequestTelemetry
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
@@ -59,8 +60,6 @@ async def get_tax_profile(
     db: AsyncSession = Depends(get_db_timed),
 ) -> Optional[TaxProfileResponse]:
     """Obtiene el perfil fiscal del usuario."""
-    from app.shared.observability.request_telemetry import RequestTelemetry
-    
     telemetry = RequestTelemetry.create("profile.tax-profile")
     auth_uid = ctx.auth_user_id
     
@@ -99,8 +98,6 @@ async def upsert_tax_profile(
     db: AsyncSession = Depends(get_db_timed),
 ) -> TaxProfileResponse:
     """Crea o actualiza el perfil fiscal con persistencia garantizada."""
-    from app.shared.observability.request_telemetry import RequestTelemetry
-    
     telemetry = RequestTelemetry.create("profile.tax-profile-upsert")
     
     auth_uid = ctx.auth_user_id
