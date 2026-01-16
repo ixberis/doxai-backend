@@ -10,8 +10,8 @@ Fecha: 28/10/2025
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, DateTime, ForeignKey, Index
-from sqlalchemy.dialects.postgresql import UUID, JSONB, CITEXT
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -48,7 +48,7 @@ class ProjectActionLog(Base):
         nullable=False,
         index=True,
     )
-    action_details = Column(CITEXT, nullable=True)
+    action_details = Column(Text, nullable=True)
 
     # Metadata adicional (JSON)
     action_metadata = Column(JSONB, nullable=False, server_default="{}")

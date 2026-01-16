@@ -63,9 +63,13 @@ class AuditLogger:
         self,
         *,
         project_id: UUID,
-        action: ProjectActionType,
-        metadata: dict,
+        action_type: ProjectActionType,
+        action_details: Optional[str] = None,
+        action_metadata: Optional[dict] = None,
         auth_user_id: Optional[UUID] = None,
+        # Legacy parameter names (mapped to new names)
+        action: Optional[ProjectActionType] = None,  # -> action_type
+        metadata: Optional[dict] = None,  # -> action_metadata
         **legacy_kwargs: Any,  # Compat: ignora user_id, user_email si llegan
     ) -> ProjectActionLog:
         """
@@ -79,9 +83,12 @@ class AuditLogger:
         
         Args:
             project_id: ID del proyecto afectado
-            action: Tipo de acción (created, updated, deleted)
-            metadata: Datos adicionales en formato JSONB
+            action_type: Tipo de acción (created, updated, deleted)
+            action_details: Descripción textual de la acción (NO PII)
+            action_metadata: Datos adicionales en formato JSONB
             auth_user_id: UUID del usuario (JWT.sub) - SSOT. None para sistema.
+            action: (Legacy) Alias de action_type
+            metadata: (Legacy) Alias de action_metadata
             **legacy_kwargs: Ignorados (compat temporal para user_id, user_email)
             
         Returns:
@@ -92,18 +99,26 @@ class AuditLogger:
             ignored = list(legacy_kwargs.keys())
             logger.debug(f"log_action: ignorando kwargs legacy: {ignored}")
         
+        # Map legacy parameter names to canonical names
+        effective_action_type = action_type or action
+        if effective_action_type is None:
+            raise ValueError("action_type is required")
+        
+        effective_metadata = action_metadata if action_metadata is not None else (metadata or {})
+        
         effective_auth_user_id = auth_user_id
         
         if effective_auth_user_id is None:
             # Evento de sistema: usar UUID constante, no uuid4()
-            metadata = {**metadata, "actor": "system"}
+            effective_metadata = {**effective_metadata, "actor": "system"}
             effective_auth_user_id = SYSTEM_ACTOR_UUID
         
         log_entry = ProjectActionLog(
             project_id=project_id,
             auth_user_id=effective_auth_user_id,
-            action_type=action,
-            action_metadata=metadata
+            action_type=effective_action_type,
+            action_details=action_details,  # TEXT NULL - for human-readable context
+            action_metadata=effective_metadata,
         )
         
         # Solo add, NO flush/commit - eso lo hace commit_or_raise

@@ -67,7 +67,7 @@ async def create(
     Crea un nuevo proyecto.
     
     Reglas de negocio:
-    - project_slug es globalmente único
+    - project_slug es único POR USUARIO (auth_user_id, project_slug)
     - Slug se normaliza (lower, strip) antes de validación
     - Estado inicial: created
     - Status inicial: in_process
@@ -89,14 +89,17 @@ async def create(
         Instancia de Project creada y persistida
         
     Raises:
-        SlugAlreadyExists: Si el slug ya existe en la base de datos
+        SlugAlreadyExists: Si el slug ya existe PARA ESTE USUARIO
     """
     normalized_slug = slug.strip().lower()
     
     async def _work() -> Project:
-        # Validar unicidad del slug (global)
+        # BD 2.0 SSOT: Validar unicidad del slug POR USUARIO
         result = await db.execute(
-            select(Project).where(Project.project_slug == normalized_slug)
+            select(Project).where(
+                Project.auth_user_id == user_id,
+                Project.project_slug == normalized_slug
+            )
         )
         existing = result.scalar_one_or_none()
         

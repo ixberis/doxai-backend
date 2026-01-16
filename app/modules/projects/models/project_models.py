@@ -16,7 +16,7 @@ Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, String, Text, DateTime, Index
+from sqlalchemy import Column, String, Text, DateTime, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -69,7 +69,9 @@ class Project(Base):
 
     # Project Identity
     project_name = Column(String(255), nullable=False)
-    project_slug = Column(String(255), nullable=False, unique=True, index=True)
+    # BD 2.0 SSOT: slug es único POR USUARIO, no global
+    # El constraint UNIQUE está en __table_args__ como (auth_user_id, project_slug)
+    project_slug = Column(String(255), nullable=False, index=True)
     project_description = Column(Text, nullable=True)
 
     # Project State (operational/technical lifecycle)
@@ -119,9 +121,12 @@ class Project(Base):
         cascade="all, delete-orphan",
     )
 
-    # Composite indexes for common queries
+    # Composite indexes and constraints for common queries
     __table_args__ = (
-        # BD 2.0: índice compuesto usa auth_user_id
+        # BD 2.0 SSOT: slug único POR USUARIO, no global
+        # Permite: user A tiene "mi-proyecto", user B tiene "mi-proyecto"
+        # Prohibe: user A tiene "mi-proyecto" x2
+        UniqueConstraint("auth_user_id", "project_slug", name="uq_projects_auth_user_slug"),
         Index("idx_projects_auth_user_state", auth_user_id, state),
         Index("idx_projects_state_status", state, status),
         # Parcial: prioriza proyectos listos por fecha de listo
