@@ -11,17 +11,37 @@ BD 2.0 SSOT:
 
 Autor: Ixchel Beristáin
 Fecha: 28/10/2025
-Actualizado: 2026-01-10 - BD 2.0 SSOT: user_id → auth_user_id
+Actualizado: 2026-01-16 - project_slug opcional (auto-generado si no se proporciona)
 """
 
+import re
+import unicodedata
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
-from pydantic import Field, field_validator, ConfigDict
+from pydantic import Field, field_validator, model_validator, ConfigDict
 
 from app.shared.utils.base_models import UTF8SafeModel
 from app.modules.projects.enums.project_state_enum import ProjectState
 from app.modules.projects.enums.project_status_enum import ProjectStatus
+
+
+def _generate_slug(name: str) -> str:
+    """
+    Genera un slug válido a partir de un nombre.
+    - Normaliza unicode (remueve acentos)
+    - Convierte a lowercase
+    - Reemplaza espacios y caracteres no alfanuméricos por guiones
+    - Remueve guiones múltiples y al inicio/final
+    """
+    # Normalizar unicode (remover acentos)
+    normalized = unicodedata.normalize('NFKD', name)
+    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+    # Lowercase y reemplazar no-alfanuméricos por guiones
+    slug = re.sub(r'[^a-z0-9]+', '-', ascii_text.lower())
+    # Remover guiones al inicio/final y múltiples consecutivos
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    return slug or 'proyecto'
 
 
 # ========== REQUEST SCHEMAS ==========
@@ -30,8 +50,7 @@ class ProjectCreateIn(UTF8SafeModel):
     """
     Request para crear un nuevo proyecto.
     
-    Requiere nombre, slug y descripción opcional.
-    El slug debe ser único globalmente.
+    Requiere nombre. El slug es opcional y se auto-genera del nombre si no se proporciona.
     """
     project_name: str = Field(
         ...,
@@ -39,11 +58,11 @@ class ProjectCreateIn(UTF8SafeModel):
         max_length=255,
         description="Nombre del proyecto"
     )
-    project_slug: str = Field(
-        ...,
+    project_slug: Optional[str] = Field(
+        None,
         min_length=3,
         max_length=255,
-        description="Slug único del proyecto (lowercase, sin espacios)"
+        description="Slug único del proyecto (opcional, se genera automáticamente)"
     )
     project_description: Optional[str] = Field(
         None,
@@ -61,11 +80,13 @@ class ProjectCreateIn(UTF8SafeModel):
 
     @field_validator("project_slug")
     @classmethod
-    def slug_must_be_valid(cls, v: str) -> str:
-        """Valida que el slug sea válido (lowercase, sin espacios)"""
+    def slug_must_be_valid(cls, v: Optional[str]) -> Optional[str]:
+        """Valida que el slug sea válido si se proporciona"""
+        if v is None:
+            return None
         v = v.strip().lower()
         if not v:
-            raise ValueError("El slug del proyecto no puede estar vacío")
+            return None
         if " " in v:
             raise ValueError("El slug no puede contener espacios")
         return v
@@ -76,11 +97,17 @@ class ProjectCreateIn(UTF8SafeModel):
         """Limpia la descripción"""
         return v.strip() if v else None
 
+    @model_validator(mode='after')
+    def ensure_slug(self) -> 'ProjectCreateIn':
+        """Auto-genera slug si no se proporcionó"""
+        if not self.project_slug:
+            self.project_slug = _generate_slug(self.project_name)
+        return self
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "project_name": "Análisis de Propuesta Técnica Q4 2025",
-                "project_slug": "analisis-propuesta-tecnica-q4-2025",
                 "project_description": "Evaluación de propuesta para licitación gubernamental"
             }
         }

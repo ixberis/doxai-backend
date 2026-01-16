@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-backend/app/modules/billing/routes/admin_backfill.py
+backend/app/modules/billing/admin_routes/admin_backfill.py
 
 Endpoint admin para ejecutar backfill de checkout_intents completados.
 
