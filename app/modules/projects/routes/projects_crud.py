@@ -39,19 +39,37 @@ router = APIRouter(tags=["projects:crud"])
 def _coerce_to_project_read(p):
     """
     Convierte un Project (ORM) o dict a ProjectRead.
-    Para modelos ORM usa from_attributes=True de Pydantic.
-    Para dicts (stubs de tests) completa campos faltantes.
+    
+    El ORM usa 'id' pero ProjectRead espera 'project_id' (con alias='id').
+    Mapeamos explícitamente para evitar ValidationError.
     """
     from app.modules.projects.models.project_models import Project as ProjectModel
     
-    # Si es un modelo ORM, usar model_validate directamente (from_attributes=True)
     if isinstance(p, ProjectModel):
-        return ProjectRead.model_validate(p)
+        # Mapear ORM a dict con nombres que ProjectRead espera
+        return ProjectRead(
+            id=p.id,  # Se asigna a project_id via alias
+            auth_user_id=p.auth_user_id,
+            project_name=p.project_name,
+            project_slug=p.project_slug,
+            project_description=p.project_description,
+            state=p.state,
+            status=p.status,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+            ready_at=p.ready_at,
+            archived_at=p.archived_at,
+        )
     
     # Para dicts (stubs de tests), completar campos faltantes
     d = dict(p) if isinstance(p, dict) else {}
     now = datetime.now(timezone.utc)
     d.setdefault("id", uuid4())
+    d.setdefault("auth_user_id", uuid4())
+    d.setdefault("project_name", "Test Project")
+    d.setdefault("project_slug", "test-project")
+    d.setdefault("state", "created")
+    d.setdefault("status", "in_process")
     d.setdefault("created_at", now)
     d.setdefault("updated_at", now)
     return ProjectRead.model_validate(d)
