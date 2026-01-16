@@ -63,19 +63,13 @@ logger = logging.getLogger(__name__)
 # Helper local eliminado - usar extract_user_id_and_email de app.shared.auth_context
 
 
-@router.post(
-    "/",
-    response_model=ProjectResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Crear proyecto",
-)
-async def create_project(
+async def _create_project_handler(
     payload: ProjectCreateIn,
-    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
-    svc: ProjectsCommandService = Depends(get_projects_command_service),
+    ctx: AuthContextDTO,
+    svc: ProjectsCommandService,
 ):
     """
-    Crea un proyecto nuevo para el usuario autenticado.
+    Handler interno de creación de proyecto.
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
     project = await svc.create_project(
@@ -86,6 +80,56 @@ async def create_project(
         project_description=payload.project_description,
     )
     return ProjectResponse(success=True, message="Proyecto creado", project=_coerce_to_project_read(project))
+
+
+@router.post(
+    "/create",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear proyecto (ruta canónica)",
+)
+async def create_project(
+    payload: ProjectCreateIn,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
+    svc: ProjectsCommandService = Depends(get_projects_command_service),
+):
+    """
+    Crea un proyecto nuevo para el usuario autenticado.
+    Ruta canónica: POST /api/projects/create
+    """
+    return await _create_project_handler(payload, ctx, svc)
+
+
+@router.post(
+    "/",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear proyecto (alias /)",
+    include_in_schema=False,  # Ocultar de docs, es alias
+)
+async def create_project_root(
+    payload: ProjectCreateIn,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
+    svc: ProjectsCommandService = Depends(get_projects_command_service),
+):
+    """Alias: POST /api/projects/ → delega a create_project."""
+    return await _create_project_handler(payload, ctx, svc)
+
+
+@router.post(
+    "/projects",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear proyecto (alias /projects)",
+    include_in_schema=False,  # Ocultar de docs, es alias legacy
+)
+async def create_project_legacy_alias(
+    payload: ProjectCreateIn,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
+    svc: ProjectsCommandService = Depends(get_projects_command_service),
+):
+    """Alias legacy: POST /api/projects/projects → delega a create_project."""
+    return await _create_project_handler(payload, ctx, svc)
 
 
 @router.get(
