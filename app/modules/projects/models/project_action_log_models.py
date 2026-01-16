@@ -10,7 +10,7 @@ Fecha: 28/10/2025
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, DateTime, Index
+from sqlalchemy import Column, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB, CITEXT
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship

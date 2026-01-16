@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AlertStatus(str, Enum):
@@ -72,6 +72,8 @@ class AlertReopenRequest(BaseModel):
 
 class AlertStateRead(BaseModel):
     """Estado de una alerta (lectura)."""
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     module: str
     dashboard: str
@@ -85,12 +87,11 @@ class AlertStateRead(BaseModel):
     comment: Optional[str] = None
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class AlertEventRead(BaseModel):
     """Evento de auditoría de alerta (lectura)."""
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     module: str
     dashboard: str
@@ -103,9 +104,6 @@ class AlertEventRead(BaseModel):
     actor_user_agent: Optional[str] = None
     payload: Optional[Dict[str, Any]] = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class AlertStatesListResponse(BaseModel):

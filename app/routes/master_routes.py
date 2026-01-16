@@ -240,7 +240,12 @@ try:
     _include_once(api, projects_router_api, "projects", _mounted_api)
     _include_once(public, projects_router_public, "projects", _mounted_public)
 except Exception as e:
-    logger.warning("Projects routers no montados: %s", e)
+    # Log detallado con stacktrace para diagnóstico de errores de import
+    logger.error(
+        "❌ Projects routers no montados (ver traceback completo): %s",
+        e,
+        exc_info=True,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
