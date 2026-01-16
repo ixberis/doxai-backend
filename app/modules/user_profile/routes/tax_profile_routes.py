@@ -151,9 +151,19 @@ async def upsert_tax_profile(
             for field, value in data.model_dump(exclude_unset=True).items():
                 setattr(profile, field, value)
             
-            # PASO 3: flush + commit + refresh
+            # PASO 3: flush + commit + refresh con logs estructurados
             await db.flush()
+            logger.info(
+                "tax_profile_flush_ok: auth_user_id=%s profile_id=%s",
+                f"{auth_uid_str[:8]}...", profile.id,
+            )
+            
             await db.commit()
+            logger.info(
+                "tax_profile_commit_ok: auth_user_id=%s profile_id=%s",
+                f"{auth_uid_str[:8]}...", profile.id,
+            )
+            
             await db.refresh(profile)
         
         # PASO 4: Verificación post-commit con raw SQL
@@ -163,6 +173,12 @@ async def upsert_tax_profile(
                 {"auth_uid": auth_uid}
             )
             persisted_row = verify_result.fetchone()
+            
+            if persisted_row:
+                logger.info(
+                    "tax_profile_verify_ok: auth_user_id=%s persisted_id=%s",
+                    f"{auth_uid_str[:8]}...", persisted_row[0],
+                )
             
             if not persisted_row:
                 logger.error(
