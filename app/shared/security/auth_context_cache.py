@@ -28,8 +28,9 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-# TTL configurable (default 60 seconds)
-AUTH_CTX_CACHE_TTL_SECONDS = int(os.getenv("AUTH_CTX_CACHE_TTL_SECONDS", "60"))
+# TTL configurable (default 900 seconds = 15 minutes)
+# Increase for better cache hit rate; decrease if user data changes frequently
+AUTH_CTX_CACHE_TTL_SECONDS = int(os.getenv("AUTH_CTX_CACHE_TTL_SECONDS", "900"))
 
 # Key prefix
 AUTH_CTX_KEY_PREFIX = "auth_user_ctx"
