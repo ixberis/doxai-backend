@@ -124,6 +124,7 @@ async def create(
             project_id=project.id,
             auth_user_id=user_id,
             action_type=ProjectActionType.created,
+            action_details=f"Created project '{normalized_slug}'",
             action_metadata={"name": name, "slug": normalized_slug}
         )
         
