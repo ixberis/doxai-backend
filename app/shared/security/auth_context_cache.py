@@ -225,20 +225,37 @@ class AuthContextCache:
         self, auth_user_id: UUID, ctx: "AuthContextDTO"
     ) -> AuthCtxCacheResult:
         """
-        Store auth context in Redis cache with TTL (best-effort, silent on error).
+        Store auth context in Redis cache with TTL.
+        
+        CRITICAL: Always logs set_success or set_failed at INFO level for
+        production diagnostics. This is essential to verify the cache
+        is being populated correctly.
         
         Args:
             auth_user_id: UUID of the user
             ctx: AuthContextDTO to cache
             
         Returns:
-            AuthCtxCacheResult with timing
+            AuthCtxCacheResult with timing and success/error info
         """
         start = time.perf_counter()
         result = AuthCtxCacheResult(cache_hit=False, duration_ms=0)
+        auth_id_prefix = str(auth_user_id)[:8] + "..."
         
         if not self._enabled:
             result.duration_ms = (time.perf_counter() - start) * 1000
+            result.error = "cache_disabled"
+            # DEBUG level to avoid log spam in production
+            if AUTH_CTX_CACHE_DEBUG:
+                logger.info(
+                    "auth_ctx_cache_set_skipped auth_user_id=%s reason=cache_disabled",
+                    auth_id_prefix,
+                )
+            else:
+                logger.debug(
+                    "auth_ctx_cache_set_skipped auth_user_id=%s reason=cache_disabled",
+                    auth_id_prefix,
+                )
             return result
         
         try:
@@ -246,6 +263,11 @@ class AuthContextCache:
             if not client:
                 result.duration_ms = (time.perf_counter() - start) * 1000
                 result.error = "redis_not_available"
+                # WARNING level for infrastructure issues
+                logger.warning(
+                    "auth_ctx_cache_set_failed auth_user_id=%s error=redis_not_available",
+                    auth_id_prefix,
+                )
                 return result
             
             key = _build_cache_key(auth_user_id)
@@ -255,11 +277,18 @@ class AuthContextCache:
             
             result.duration_ms = (time.perf_counter() - start) * 1000
             
-            # Only log at DEBUG level (silent on success)
-            if AUTH_CTX_CACHE_DEBUG and logger.isEnabledFor(logging.DEBUG):
+            # DEBUG by default, INFO only with AUTH_CTX_CACHE_DEBUG=1
+            if AUTH_CTX_CACHE_DEBUG:
+                logger.info(
+                    "auth_ctx_cache_set_success auth_user_id=%s ttl=%d duration_ms=%.2f",
+                    auth_id_prefix,
+                    self._ttl,
+                    result.duration_ms,
+                )
+            else:
                 logger.debug(
-                    "auth_ctx_cache_set auth_user_id=%s ttl=%d duration_ms=%.2f",
-                    str(auth_user_id)[:8] + "...",
+                    "auth_ctx_cache_set_success auth_user_id=%s ttl=%d duration_ms=%.2f",
+                    auth_id_prefix,
                     self._ttl,
                     result.duration_ms,
                 )
@@ -269,11 +298,12 @@ class AuthContextCache:
         except Exception as e:
             result.duration_ms = (time.perf_counter() - start) * 1000
             result.error = str(e)
-            # Log failures at DEBUG level (silent, best-effort)
-            logger.debug(
-                "auth_ctx_cache_set_failed auth_user_id=%s error=%s",
-                str(auth_user_id)[:8] + "...",
-                str(e),
+            # WARNING level for errors
+            logger.warning(
+                "auth_ctx_cache_set_failed auth_user_id=%s error=%s duration_ms=%.2f",
+                auth_id_prefix,
+                str(e)[:50],  # Truncate error message
+                result.duration_ms,
             )
             return result
     

@@ -245,12 +245,21 @@ async def _validate_and_get_user_ctx(
         timings["auth_db_ms"] = db_timings.get("execute_ms", 0)
         
         if auth_context:
-            # Cache the result for future requests (best-effort, silent)
+            # ALWAYS attempt to cache the result for future requests
             try:
                 cache = get_auth_context_cache()
-                await cache.set_cached(auth_user_id, auth_context)
-            except Exception:
-                pass  # Ignore cache set errors - silent
+                set_result = await cache.set_cached(auth_user_id, auth_context)
+                timings["auth_ctx_cache_set_ms"] = set_result.duration_ms
+                if set_result.error:
+                    timings["auth_ctx_cache_set_error"] = set_result.error
+            except Exception as e:
+                # Capture exception in timings for diagnostics
+                timings["auth_ctx_cache_set_error"] = f"exception:{str(e)[:40]}"
+                logger.warning(
+                    "auth_ctx_cache_set_exception auth_user_id=%s error=%s",
+                    auth_user_id_masked,
+                    str(e)[:50],
+                )
     
     if not auth_context:
         _finalize("user_not_found")
