@@ -10,7 +10,7 @@ Fecha: 28/10/2025
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer
+from sqlalchemy import Column, DateTime, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB, CITEXT
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -34,14 +34,13 @@ class ProjectActionLog(Base):
         index=True,
     )
 
-    # Actor (puede ser None si es acción del sistema)
-    # user_id es int (FK a app_users.user_id que es INTEGER/BIGINT)
-    user_id = Column(
-        Integer,
-        ForeignKey("app_users.user_id", ondelete="SET NULL"),
-        nullable=True,
+    # Actor canónico por auth_user_id (UUID) - SSOT BD 2.0
+    # No almacenar PII (email, nombre) aquí
+    auth_user_id = Column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True,
     )
-    user_email = Column(CITEXT, nullable=True)
 
     # Acción realizada
     action_type = Column(
@@ -67,7 +66,7 @@ class ProjectActionLog(Base):
         # Usa ATRIBUTOS, no strings, para evitar desfaces de nombres reales
         Index("idx_proj_action_logs_proj_created_at", project_id, created_at),
         Index("idx_proj_action_logs_type_created_at", action_type, created_at),
-        Index("idx_proj_action_logs_user_created_at", user_id, created_at),
+        Index("idx_proj_action_logs_auth_user_created_at", auth_user_id, created_at),
     )
 
     def __repr__(self):

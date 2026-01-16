@@ -74,8 +74,7 @@ async def change_status(
         
         audit.log_action(
             project_id=project.id,
-            user_id=user_id,
-            user_email=user_email,
+            auth_user_id=user_id,  # user_id param es UUID, mapeado a auth_user_id
             action=ProjectActionType.updated,
             metadata={
                 "field": "status",
@@ -125,8 +124,7 @@ async def transition_state(
         if from_state == to_state:
             audit.log_action(
                 project_id=project.id,
-                user_id=user_id,
-                user_email=user_email,
+                auth_user_id=user_id,  # user_id param es UUID, mapeado a auth_user_id
                 action=ProjectActionType.updated,
                 metadata={
                     "field": "state",
@@ -157,8 +155,7 @@ async def transition_state(
         # Registrar transición
         audit.log_action(
             project_id=project.id,
-            user_id=user_id,
-            user_email=user_email,
+            auth_user_id=user_id,  # user_id param es UUID, mapeado a auth_user_id
             action=ProjectActionType.updated,
             metadata={
                 "field": "state",

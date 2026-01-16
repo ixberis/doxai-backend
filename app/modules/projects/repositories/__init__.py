@@ -29,7 +29,6 @@ from .project_file_repository import (
     delete_project_file,
 )
 from .project_action_log_repository import (
-    log_project_action,
     list_project_actions,
 )
 from .project_file_event_log_repository import (
@@ -49,8 +48,7 @@ __all__ = [
     "list_project_files",
     "save_project_file",
     "delete_project_file",
-    # Action logs
-    "log_project_action",
+    # Action logs (NOTA: log_project_action eliminado - usar AuditLogger)
     "list_project_actions",
     # File event logs
     "log_project_file_event",
