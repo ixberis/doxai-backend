@@ -223,6 +223,13 @@ async def upsert_tax_profile(
             f"{auth_uid_str[:8]}...", error_msg,
         )
         telemetry.finalize(request, status_code=500, result="error")
+        
+        # FK violation indica que el auth_user_id no existe en auth.users
+        if "foreign key" in error_msg.lower() or "fk_" in error_msg.lower():
+            raise HTTPException(
+                status_code=500,
+                detail="Usuario no encontrado. Verifique su sesión.",
+            )
         raise HTTPException(status_code=500, detail="Error al guardar perfil fiscal.")
     
     except Exception as e:
