@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import inspect as sa_inspect
 
 from app.modules.projects.services import ProjectsCommandService, ProjectsQueryService
 from app.modules.projects.routes.deps import (
@@ -244,8 +245,10 @@ async def update_project(
         user_email=None,  # BD 2.0: email no requerido
         **payload.model_dump(exclude_none=True),
     )
-    # Refresh para evitar MissingGreenlet al acceder atributos post-commit
-    await db.refresh(project)
+    # Refresh solo si es objeto ORM (no dict de in-memory tests)
+    # Evita MissingGreenlet al acceder atributos post-commit en producción
+    if sa_inspect(project, raiseerr=False) is not None:
+        await db.refresh(project)
     return ProjectResponse(success=True, message="Proyecto actualizado", project=_coerce_to_project_read(project))
 
 
