@@ -49,6 +49,9 @@ async def commit_or_raise(db: Union[Session, AsyncSession], work: Callable[[], T
     Aplica commit si work() tiene éxito.
     Aplica rollback y re-lanza si work() falla.
     
+    NOTA: El caller es responsable de hacer db.refresh() si necesita
+    acceder a atributos del objeto ORM post-commit (evita MissingGreenlet).
+    
     Soporta:
     - db siendo AsyncSession o Session
     - work siendo sync o async (awaitable)

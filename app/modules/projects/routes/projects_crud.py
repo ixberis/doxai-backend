@@ -17,11 +17,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.modules.projects.services import ProjectsCommandService, ProjectsQueryService
 from app.modules.projects.routes.deps import (
     get_projects_command_service,
     get_projects_query_service,
 )
+from app.shared.database.database import get_db
 from app.modules.projects.schemas import (
     ProjectCreateIn,
     ProjectUpdateIn,
@@ -229,6 +232,7 @@ async def update_project(
     payload: ProjectUpdateIn,
     ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
     svc: ProjectsCommandService = Depends(get_projects_command_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Actualiza metadatos del proyecto (nombre/ descripción). Requiere propiedad.
@@ -240,6 +244,8 @@ async def update_project(
         user_email=None,  # BD 2.0: email no requerido
         **payload.model_dump(exclude_none=True),
     )
+    # Refresh para evitar MissingGreenlet al acceder atributos post-commit
+    await db.refresh(project)
     return ProjectResponse(success=True, message="Proyecto actualizado", project=_coerce_to_project_read(project))
 
 
