@@ -10,7 +10,41 @@ Fecha: 24/10/2025
 """
 
 import logging.config
+import os
+import sys
 from typing import Literal
+
+# Niveles válidos para MULTIPART_LOG_LEVEL
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_MULTIPART_LOGGER_NAMES = (
+    "multipart",
+    "multipart.multipart",
+    "python_multipart",
+    "python_multipart.multipart",
+)
+
+
+def _get_multipart_log_level() -> str:
+    """
+    Lee MULTIPART_LOG_LEVEL de env, normaliza y valida.
+    
+    Returns:
+        Nivel válido (uppercase). Default: WARNING.
+    """
+    raw = os.environ.get("MULTIPART_LOG_LEVEL", "WARNING")
+    normalized = raw.strip().upper()
+    
+    if normalized in _VALID_LOG_LEVELS:
+        return normalized
+    
+    # Valor inválido: warning a stderr y fallback
+    # Nota: usamos print porque logging aún no está configurado
+    print(
+        f"WARNING [logging_config]: MULTIPART_LOG_LEVEL='{raw}' inválido. "
+        f"Valores permitidos: {sorted(_VALID_LOG_LEVELS)}. Usando WARNING.",
+        file=sys.stderr,
+    )
+    return "WARNING"
 
 
 def setup_logging(
@@ -57,6 +91,19 @@ def setup_logging(
         },
     }
     
+    # Nivel dinámico para loggers multipart (via env var)
+    multipart_level = _get_multipart_log_level()
+    
+    # Loggers ruidosos de multipart - silenciarlos completamente
+    # Sin handlers + propagate=False = silencio total
+    multipart_loggers = {
+        name: {
+            "level": multipart_level,
+            "propagate": False,
+        }
+        for name in _MULTIPART_LOGGER_NAMES
+    }
+    
     logging_config = {
         "version": 1,
         "disable_existing_loggers": False,
@@ -66,22 +113,24 @@ def setup_logging(
             "handlers": ["console"],
             "level": level.upper(),
         },
-        "loggers": {
-            # Silence noisy python_multipart debug logs in production
-            "python_multipart": {
-                "level": "WARNING",
-                "handlers": ["console"],
-                "propagate": False,
-            },
-            "python_multipart.multipart": {
-                "level": "WARNING",
-                "handlers": ["console"],
-                "propagate": False,
-            },
-        },
+        "loggers": multipart_loggers,
     }
     
     logging.config.dictConfig(logging_config)
+    
+    # Log de startup con niveles efectivos (una sola línea)
+    _log_multipart_levels(multipart_level)
+
+
+def _log_multipart_levels(configured_level: str) -> None:
+    """Emite log de startup con niveles efectivos de loggers multipart."""
+    import logging
+    levels = {
+        name: logging.getLevelName(logging.getLogger(name).getEffectiveLevel())
+        for name in _MULTIPART_LOGGER_NAMES
+    }
+    app_logger = logging.getLogger("app.shared.config.logging_config")
+    app_logger.info("multipart_loggers_configured: level=%s levels=%s", configured_level, levels)
 
 
 __all__ = ["setup_logging"]

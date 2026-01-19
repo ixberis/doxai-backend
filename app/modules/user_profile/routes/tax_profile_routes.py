@@ -148,6 +148,16 @@ async def upsert_tax_profile(
             for field, value in data.model_dump(exclude_unset=True).items():
                 setattr(profile, field, value)
             
+            # PASO 2.5: Calcular status automáticamente según completitud
+            # ACTIVE requiere: RFC + régimen fiscal (mínimo para facturar)
+            has_rfc = bool(profile.rfc and profile.rfc.strip())
+            has_regimen = bool(profile.regimen_fiscal_clave and profile.regimen_fiscal_clave.strip())
+            
+            if has_rfc and has_regimen:
+                profile.status = TaxProfileStatus.ACTIVE.value
+            else:
+                profile.status = TaxProfileStatus.DRAFT.value
+            
             # PASO 3: flush + commit + refresh con logs estructurados
             await db.flush()
             logger.info(
