@@ -46,6 +46,7 @@ from app.modules.files.schemas.product_file_schemas import ProductFileCreate
 async def create_or_update_product_file(
     session: AsyncSession,
     *,
+    auth_user_id: UUID,
     data: ProductFileCreate,
     file_type: ProductFileType,
     mime_type: str,
@@ -79,6 +80,7 @@ async def create_or_update_product_file(
             # Caso raro: hay file_id pero no existe en files_base (inconsistencia)
             files_base = await files_base_repository.create_for_product_file(
                 session=session,
+                auth_user_id=auth_user_id,
                 project_id=product_file.project_id,
                 product_file_id=product_file.product_file_id,
             )
@@ -87,6 +89,7 @@ async def create_or_update_product_file(
         # Crear files_base y vincular
         files_base = await files_base_repository.create_for_product_file(
             session=session,
+            auth_user_id=auth_user_id,
             project_id=product_file.project_id,
             product_file_id=product_file.product_file_id,
         )
