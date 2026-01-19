@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db  # Asumimos AsyncSession
+from app.modules.auth.services import get_current_user_ctx
 from app.modules.files.enums import (
     FileLanguage,
     ProductFileType,
@@ -172,6 +173,7 @@ async def create_product_file_endpoint(
     generation_method: Optional[GenerationMethod] = Form(None),
     db: AsyncSession = Depends(get_db),
     storage_client: AsyncStorageClient = Depends(get_storage_client),
+    ctx = Depends(get_current_user_ctx),
 ):
     """
     Crea un archivo producto a partir de un fichero subido.
@@ -191,6 +193,7 @@ async def create_product_file_endpoint(
             storage_client=storage_client,
             bucket_name="users-files",
             project_id=project_id,
+            auth_user_id=ctx.auth_user_id,
             generated_by=generated_by,
             file_bytes=file_bytes,
             storage_key=storage_key,

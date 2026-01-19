@@ -49,6 +49,7 @@ async def create_product_file(
     bucket_name: str,
     *,
     project_id: UUID,
+    auth_user_id: UUID,
     generated_by: UUID,
     file_bytes: bytes,
     storage_key: str,
@@ -65,6 +66,10 @@ async def create_product_file(
 ) -> ProductFileResponse:
     """
     Crea (o actualiza) un archivo producto a partir de bytes.
+
+    Args:
+        auth_user_id: UUID del usuario autenticado (de ctx.auth_user_id).
+        generated_by: UUID del generador (metadata de negocio, puede diferir de auth).
 
     Flujo:
     1. Sube el archivo a storage.
@@ -116,6 +121,7 @@ async def create_product_file(
 
     product_file, _ = await create_or_update_product_file(
         session=db,
+        auth_user_id=auth_user_id,
         data=create_dto,
         file_type=effective_file_type,
         mime_type=mime_type,

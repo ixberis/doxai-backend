@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db  # Asumimos AsyncSession
+from app.modules.auth.services import get_current_user_ctx
 from app.modules.files.enums import (
     FileType,
     FileCategory,
@@ -181,13 +182,13 @@ def _to_input_file_response(item: Any, project_id: UUID | None = None) -> InputF
 )
 async def upload_input_file(
     project_id: UUID = Form(...),
-    uploaded_by: UUID = Form(...),
     file_type: FileType = Form(...),
     file: UploadFile = File(...),
     display_name: Optional[str] = Form(None),
     language: Optional[Language] = Form(None),
     input_file_class: InputFileClass = Form(InputFileClass.source),
     facade: InputFilesFacade = Depends(get_input_files_facade),
+    ctx = Depends(get_current_user_ctx),
 ):
     """
     Sube un archivo insumo y lo registra en la base de datos.
@@ -231,7 +232,7 @@ async def upload_input_file(
 
         return await facade.upload_input_file(
             upload=upload_dto,
-            uploaded_by=uploaded_by,
+            uploaded_by=ctx.auth_user_id,
             file_bytes=file_bytes,
             storage_key=storage_key,
         )
