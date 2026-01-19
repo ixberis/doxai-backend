@@ -24,8 +24,14 @@ class FileType(EnumMixin, _StrEnum):
     # Documentos y texto
     pdf = "pdf"
     docx = "docx"
+    doc = "doc"      # Microsoft Word legacy
+    odt = "odt"      # OpenDocument Text
     xlsx = "xlsx"
+    xls = "xls"      # Microsoft Excel legacy
+    ods = "ods"      # OpenDocument Spreadsheet
     pptx = "pptx"
+    ppt = "ppt"      # Microsoft PowerPoint legacy
+    odp = "odp"      # OpenDocument Presentation
     txt = "txt"
     csv = "csv"
     md = "md"
@@ -65,8 +71,9 @@ class FileType(EnumMixin, _StrEnum):
 
 # Valores canónicos (sin aliases) para PostgreSQL
 _FILE_TYPE_VALUES = [
-    "pdf", "docx", "xlsx", "pptx", "txt", "csv", "md", "rtf",
-    "html", "json", "xml", "image", "video", "audio", "zip"
+    "pdf", "docx", "doc", "odt", "xlsx", "xls", "ods", "pptx", "ppt", "odp",
+    "txt", "csv", "md", "rtf", "html", "json", "xml",
+    "image", "video", "audio", "zip"
 ]
 
 

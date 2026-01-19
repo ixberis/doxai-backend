@@ -31,9 +31,15 @@ logger = logging.getLogger(__name__)
 _TYPE_EXTENSIONS_MAP: Dict[FileType, Set[str]] = {
     # Documentos y texto
     FileType.pdf:  {".pdf"},
-    FileType.docx: {".docx", ".doc"},
-    FileType.xlsx: {".xlsx", ".xls"},
-    FileType.pptx: {".pptx", ".ppt"},
+    FileType.docx: {".docx"},
+    FileType.doc:  {".doc"},
+    FileType.odt:  {".odt"},
+    FileType.xlsx: {".xlsx"},
+    FileType.xls:  {".xls"},
+    FileType.ods:  {".ods"},
+    FileType.pptx: {".pptx"},
+    FileType.ppt:  {".ppt"},
+    FileType.odp:  {".odp"},
     FileType.txt:  {".txt"},
     FileType.csv:  {".csv"},
     FileType.md:   {".md", ".markdown"},
