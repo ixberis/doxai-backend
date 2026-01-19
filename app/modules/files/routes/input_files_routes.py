@@ -29,6 +29,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -37,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db  # Asumimos AsyncSession
 from app.modules.auth.services import get_current_user_ctx
+from app.shared.observability.request_telemetry import RequestTelemetry
 from app.modules.files.enums import (
     FileType,
     FileCategory,
@@ -181,6 +183,7 @@ def _to_input_file_response(item: Any, project_id: UUID | None = None) -> InputF
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_input_file(
+    request: Request,
     project_id: UUID = Form(...),
     file_type: FileType = Form(...),
     file: UploadFile = File(...),
@@ -199,19 +202,24 @@ async def upload_input_file(
       con las utilidades de pathing). Por simplicidad, usamos el nombre
       original como parte de la clave.
     """
+    telemetry = RequestTelemetry.create("files.upload-input-file")
+    status_code = 201
+    result = "success"
     try:
         original_name = file.filename or "input-file"
         mime_type = file.content_type or "application/octet-stream"
 
         # Validación rápida de tipo según MIME/filename
-        validate_file_type_consistency(
-            filename=original_name,
-            file_type=file_type,
-            mime_type=mime_type,
-        )
+        with telemetry.measure("validation_ms"):
+            validate_file_type_consistency(
+                filename=original_name,
+                file_type=file_type,
+                mime_type=mime_type,
+            )
 
-        file_bytes = await file.read()
-        size_bytes = len(file_bytes)
+        with telemetry.measure("read_ms"):
+            file_bytes = await file.read()
+            size_bytes = len(file_bytes)
 
         # Construimos un storage_key simple; en una versión más avanzada
         # podemos usar facades.storage.pathing.build_storage_key.
@@ -230,22 +238,30 @@ async def upload_input_file(
             input_file_class=input_file_class,
         )
 
-        return await facade.upload_input_file(
-            upload=upload_dto,
-            uploaded_by=ctx.auth_user_id,
-            file_bytes=file_bytes,
-            storage_key=storage_key,
-        )
+        with telemetry.measure("db_ms"):
+            response = await facade.upload_input_file(
+                upload=upload_dto,
+                uploaded_by=ctx.auth_user_id,
+                file_bytes=file_bytes,
+                storage_key=storage_key,
+            )
+        return response
     except FileValidationError as exc:
+        status_code = 400
+        result = "validation_error"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
+        status_code = 503
+        result = "error"
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    finally:
+        telemetry.finalize(request, status_code=status_code, result=result)
 
 
 @router.get(
@@ -254,19 +270,28 @@ async def upload_input_file(
     response_model=InputFilesListResponse,
 )
 async def list_project_input_files(
+    request: Request,
     project_id: UUID,
     include_archived: bool = False,
     facade: InputFilesFacade = Depends(get_input_files_facade),
 ):
-    raw_items = await facade.list_project_input_files(
-        project_id=project_id,
-        include_archived=include_archived,
-    )
-    normalized_items = [
-        _to_input_file_response(item, project_id=project_id)
-        for item in raw_items
-    ]
-    return InputFilesListResponse(items=normalized_items)
+    telemetry = RequestTelemetry.create("files.list-project-input-files")
+    status_code = 200
+    result = "success"
+    try:
+        with telemetry.measure("db_ms"):
+            raw_items = await facade.list_project_input_files(
+                project_id=project_id,
+                include_archived=include_archived,
+            )
+        with telemetry.measure("ser_ms"):
+            normalized_items = [
+                _to_input_file_response(item, project_id=project_id)
+                for item in raw_items
+            ]
+        return InputFilesListResponse(items=normalized_items)
+    finally:
+        telemetry.finalize(request, status_code=status_code, result=result)
 
 
 @router.get(
@@ -275,18 +300,28 @@ async def list_project_input_files(
     response_model=InputFileResponse,
 )
 async def get_input_file(
+    request: Request,
     file_id: UUID,
     facade: InputFilesFacade = Depends(get_input_files_facade),
 ):
+    telemetry = RequestTelemetry.create("files.get-input-file")
+    status_code = 200
+    result = "success"
     try:
-        raw_item = await facade.get_input_file_by_file_id(file_id=file_id)
-        normalized = _to_input_file_response(raw_item)
+        with telemetry.measure("db_ms"):
+            raw_item = await facade.get_input_file_by_file_id(file_id=file_id)
+        with telemetry.measure("ser_ms"):
+            normalized = _to_input_file_response(raw_item)
         return normalized
     except FileNotFoundError as exc:
+        status_code = 404
+        result = "not_found"
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+    finally:
+        telemetry.finalize(request, status_code=status_code, result=result)
 
 
 @router.get(
@@ -294,26 +329,37 @@ async def get_input_file(
     summary="Obtener URL de descarga temporal para un archivo insumo",
 )
 async def get_input_file_download_url(
+    request: Request,
     file_id: UUID,
     expires_in_seconds: int = 3600,
     facade: InputFilesFacade = Depends(get_input_files_facade),
 ):
+    telemetry = RequestTelemetry.create("files.get-download-url")
+    status_code = 200
+    result = "success"
     try:
-        url = await facade.get_download_url_for_file(
-            file_id=file_id,
-            expires_in_seconds=expires_in_seconds,
-        )
+        with telemetry.measure("db_ms"):
+            url = await facade.get_download_url_for_file(
+                file_id=file_id,
+                expires_in_seconds=expires_in_seconds,
+            )
         return {"download_url": url, "expires_in_seconds": expires_in_seconds}
     except FileNotFoundError as exc:
+        status_code = 404
+        result = "not_found"
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
+        status_code = 503
+        result = "error"
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    finally:
+        telemetry.finalize(request, status_code=status_code, result=result)
 
 
 @router.delete(
@@ -322,6 +368,7 @@ async def get_input_file_download_url(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_input_file(
+    request: Request,
     file_id: UUID,
     hard: bool = False,
     facade: InputFilesFacade = Depends(get_input_files_facade),
@@ -335,21 +382,31 @@ async def delete_input_file(
     Si `hard` es True:
         - Además intenta eliminar el fichero físico del storage.
     """
+    telemetry = RequestTelemetry.create("files.delete-input-file")
+    status_code = 204
+    result = "success"
     try:
-        await facade.delete_input_file(
-            file_id=file_id,
-            hard_delete=hard,
-        )
+        with telemetry.measure("db_ms"):
+            await facade.delete_input_file(
+                file_id=file_id,
+                hard_delete=hard,
+            )
     except FileNotFoundError as exc:
+        status_code = 404
+        result = "not_found"
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
+        status_code = 503
+        result = "error"
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    finally:
+        telemetry.finalize(request, status_code=status_code, result=result)
 
 
 # Fin del archivo backend/app/modules/files/routes/input_files_routes.py
