@@ -196,11 +196,11 @@ class BillingFinalizeService:
         )
         
         logger.info(
-            "checkout_intent_finalized intent_id=%d payment_id=%d "
+            "checkout_intent_finalized intent_id=%d payment_id=%s "
             "auth_user_id=%s credits_granted=%d currency=%s "
             "amount_cents=%d idempotency_key=%s result=created",
             intent_id,
-            payment.id,
+            payment.id,  # %s tolera None pre-flush
             str(intent.auth_user_id)[:8] + "...",
             intent.credits_amount,
             intent.currency,

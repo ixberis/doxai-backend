@@ -218,9 +218,29 @@ class RequestTelemetry:
         return self._build_summary()
     
     def _build_summary(self) -> Dict[str, Any]:
-        """Build summary dict with all timings and flags."""
+        """Build summary dict with all timings and flags.
+        
+        Ensures total_ms is always present (calculated or fallback).
+        """
+        timings = self.timings.copy()
+        
+        # Garantizar total_ms siempre presente
+        if "total_ms" not in timings:
+            # Fallback: calcular desde start_time o suma de timings
+            if self.start_time is not None:
+                timings["total_ms"] = max(0.0, (time.perf_counter() - self.start_time) * 1000)
+            else:
+                # Último fallback: suma de todos los _ms
+                timings["total_ms"] = max(0.0, sum(
+                    v for k, v in timings.items()
+                    if k.endswith("_ms") and isinstance(v, (int, float))
+                ))
+        
+        # Clamp defensivo
+        timings["total_ms"] = max(0.0, float(timings.get("total_ms", 0)))
+        
         return {
-            "timings": self.timings.copy(),
+            "timings": timings,
             "flags": self.flags.copy(),
         }
     

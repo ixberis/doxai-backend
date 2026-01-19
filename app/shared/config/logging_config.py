@@ -14,8 +14,13 @@ import os
 import sys
 from typing import Literal
 
+# Flag global para evitar múltiples prints de confirmación
+_LOGGING_SETUP_ONCE = False
+
 # Niveles válidos para MULTIPART_LOG_LEVEL
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+# Loggers de multipart a silenciar (cobertura completa)
 _MULTIPART_LOGGER_NAMES = (
     "multipart",
     "multipart.multipart",
@@ -63,15 +68,46 @@ def setup_logging(
         >>> setup_logging("DEBUG", "pretty")
         >>> setup_logging("WARNING", "json")
     """
+    global _LOGGING_SETUP_ONCE
+    
     # Normalización de formato (pretty == plain para efectos prácticos)
     use_json = fmt == "json"
-    # Resolver ruta correcta del JsonFormatter (v4 movió jsonlogger -> json)
-    try:
-        import importlib
-        importlib.import_module("pythonjsonlogger.json")
-        json_formatter_path = "pythonjsonlogger.json.JsonFormatter"
-    except Exception:  # pragma: no cover
-        json_formatter_path = "pythonjsonlogger.jsonlogger.JsonFormatter"
+    
+    # Detectar si pythonjsonlogger está disponible
+    json_formatter_path: str | None = None
+    if use_json:
+        try:
+            import importlib
+            # v4+ usa pythonjsonlogger.json
+            importlib.import_module("pythonjsonlogger.json")
+            json_formatter_path = "pythonjsonlogger.json.JsonFormatter"
+        except ImportError:
+            try:
+                # v3.x usa pythonjsonlogger.jsonlogger
+                importlib.import_module("pythonjsonlogger.jsonlogger")
+                json_formatter_path = "pythonjsonlogger.jsonlogger.JsonFormatter"
+            except ImportError:
+                # pythonjsonlogger no instalado - fallback a plain
+                print(
+                    "WARNING [logging_config]: fmt='json' solicitado pero pythonjsonlogger "
+                    "no está instalado. Usando formato plain.",
+                    file=sys.stderr,
+                )
+                use_json = False
+    
+    # Formatters base
+    formatters: dict = {
+        "default": {
+            "format": "%(levelname)s [%(name)s]: %(message)s"
+        },
+    }
+    
+    # Solo agregar formatter json si está disponible
+    if json_formatter_path:
+        formatters["json"] = {
+            "()": json_formatter_path,
+            "format": "%(asctime)s %(name)s %(levelname)s %(message)s"
+        }
     
     handlers = {
         "console": {
@@ -81,23 +117,14 @@ def setup_logging(
         }
     }
     
-    formatters = {
-        "default": {
-            "format": "%(levelname)s [%(name)s]: %(message)s"
-        },
-        "json": {
-             "()": json_formatter_path,
-            "format": "%(asctime)s %(name)s %(levelname)s %(message)s"
-        },
-    }
-    
     # Nivel dinámico para loggers multipart (via env var)
     multipart_level = _get_multipart_log_level()
     
     # Loggers ruidosos de multipart - silenciarlos completamente
-    # Sin handlers + propagate=False = silencio total
+    # handlers=[] explícito + propagate=False = silencio total garantizado
     multipart_loggers = {
         name: {
+            "handlers": [],  # Explícito: sin handlers
             "level": multipart_level,
             "propagate": False,
         }
@@ -118,8 +145,46 @@ def setup_logging(
     
     logging.config.dictConfig(logging_config)
     
+    # HARD-OVERRIDE: Aplicar configuración imperativa a multipart loggers
+    # Esto garantiza silencio incluso si otro dictConfig/basicConfig corre después
+    _apply_multipart_hard_override(multipart_level)
+    
     # Log de startup con niveles efectivos (una sola línea)
     _log_multipart_levels(multipart_level)
+    
+    # Print a stderr (no depende de logging) - solo una vez
+    if not _LOGGING_SETUP_ONCE:
+        _LOGGING_SETUP_ONCE = True
+        git_sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", os.environ.get("GIT_SHA", "local"))[:8]
+        env = os.environ.get("ENVIRONMENT", "development")
+        print(
+            f"LOGGING_SETUP_RAN build={git_sha} env={env} "
+            f"multipart_level={multipart_level} root_level={level}",
+            file=sys.stderr,
+        )
+
+
+def _apply_multipart_hard_override(level_str: str) -> None:
+    """
+    Aplica configuración imperativa a loggers multipart.
+    
+    Esto es defensa contra uvicorn/gunicorn u otros módulos que
+    puedan llamar dictConfig/basicConfig después de nosotros.
+    
+    Args:
+        level_str: Nivel de logging (e.g., "WARNING", "DEBUG")
+    """
+    import logging
+    level = getattr(logging, level_str, logging.WARNING)
+    
+    for name in _MULTIPART_LOGGER_NAMES:
+        logger = logging.getLogger(name)
+        # Forzar nivel
+        logger.setLevel(level)
+        # Evitar propagación al root (que tiene handler activo)
+        logger.propagate = False
+        # Limpiar cualquier handler que pueda existir
+        logger.handlers.clear()
 
 
 def _log_multipart_levels(configured_level: str) -> None:
@@ -133,5 +198,24 @@ def _log_multipart_levels(configured_level: str) -> None:
     app_logger.info("multipart_loggers_configured: level=%s levels=%s", configured_level, levels)
 
 
-__all__ = ["setup_logging"]
+def get_multipart_logger_states() -> list[dict]:
+    """
+    Retorna estado actual de cada logger multipart.
+    Útil para verificación en startup.
+    """
+    import logging
+    states = []
+    for name in _MULTIPART_LOGGER_NAMES:
+        logger = logging.getLogger(name)
+        states.append({
+            "name": name,
+            "level": logging.getLevelName(logger.level),
+            "effective_level": logging.getLevelName(logger.getEffectiveLevel()),
+            "propagate": logger.propagate,
+            "handlers_count": len(logger.handlers),
+        })
+    return states
+
+
+__all__ = ["setup_logging", "get_multipart_logger_states"]
 # Fin del archivo backend/app/shared/config/logging_config.py

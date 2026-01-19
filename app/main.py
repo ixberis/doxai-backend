@@ -41,13 +41,24 @@ _ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().strip('"').strip(
 _override_env = _ENVIRONMENT != "production"
 load_dotenv(dotenv_path=_ENV_PATH, override=_override_env)
 
-# Logging base (temprano)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Logging base (temprano) - usa setup_logging para aplicar config de multipart
+from app.shared.config.logging_config import setup_logging, get_multipart_logger_states
+
+# Determinar nivel y formato según entorno
+_log_level = "DEBUG" if _ENVIRONMENT != "production" else "INFO"
+_log_fmt = "json" if _ENVIRONMENT == "production" else "plain"
+setup_logging(level=_log_level, fmt=_log_fmt)
+
 logger = logging.getLogger(__name__)
+
+# Verificación de estado de loggers multipart en startup (print a stderr - no depende de logging)
+for state in get_multipart_logger_states():
+    msg = (
+        f"MULTIPART_LOGGER_STATE name={state['name']} "
+        f"level={state['level']} effective_level={state['effective_level']} "
+        f"propagate={state['propagate']} handlers={state['handlers_count']}"
+    )
+    print(msg, file=sys.stderr)
 
 logger.info(f"[dotenv] Loaded {_ENV_PATH} (override={_override_env}, ENVIRONMENT={_ENVIRONMENT})")
 logger.info(f"[LoopPolicy] {type(asyncio.get_event_loop_policy()).__name__}")
