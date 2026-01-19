@@ -79,6 +79,7 @@ async def register_uploaded_input_file(
     # 2) Crear FilesBase vinculado al InputFile
     files_base = await files_base_repository.create_for_input_file(
         session=session,
+        auth_user_id=uploaded_by,
         project_id=upload.project_id,
         input_file_id=input_file.input_file_id,
     )

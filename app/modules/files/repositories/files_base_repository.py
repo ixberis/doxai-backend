@@ -59,6 +59,7 @@ async def list_by_project(
 async def create_for_input_file(
     session: AsyncSession,
     *,
+    auth_user_id: UUID,
     project_id: UUID,
     input_file_id: UUID,
 ) -> FilesBase:
@@ -70,6 +71,7 @@ async def create_for_input_file(
       capa de servicio / fachada.
     """
     obj = FilesBase(
+        auth_user_id=auth_user_id,
         project_id=project_id,
         logical_role=FileRole.INPUT,
         input_file_id=input_file_id,
@@ -83,6 +85,7 @@ async def create_for_input_file(
 async def create_for_product_file(
     session: AsyncSession,
     *,
+    auth_user_id: UUID,
     project_id: UUID,
     product_file_id: UUID,
 ) -> FilesBase:
@@ -90,6 +93,7 @@ async def create_for_product_file(
     Crea un registro FilesBase asociado a un ProductFile.
     """
     obj = FilesBase(
+        auth_user_id=auth_user_id,
         project_id=project_id,
         logical_role=FileRole.PRODUCT,
         input_file_id=None,

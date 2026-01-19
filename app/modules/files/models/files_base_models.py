@@ -64,6 +64,12 @@ class FilesBase(Base):
         default=uuid4,
     )
 
+    # Ownership canónico (JWT.sub)
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+    )
+
     project_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="CASCADE"),
