@@ -102,7 +102,7 @@ async def build_bulk_download_manifest(
 
         # Resolver nombre definitivo
         file_name = info.file_name or str(info.file_id)
-        if fb.logical_role == FileRole.INPUT and isinstance(fb.input_file, InputFile):
+        if fb.file_role == FileRole.INPUT and isinstance(fb.input_file, InputFile):
             file_name = (
                 info.file_name
                 or fb.input_file.input_file_display_name
@@ -110,7 +110,7 @@ async def build_bulk_download_manifest(
                 or str(info.file_id)
             )
         elif (
-            fb.logical_role == FileRole.PRODUCT
+            fb.file_role == FileRole.PRODUCT
             and isinstance(fb.product_file, ProductFile)
         ):
             file_name = (

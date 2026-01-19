@@ -50,7 +50,7 @@ async def list_by_project(
     stmt = select(FilesBase).where(FilesBase.project_id == project_id)
 
     if role is not None:
-        stmt = stmt.where(FilesBase.logical_role == role)
+        stmt = stmt.where(FilesBase.file_role == role)
 
     result = await session.execute(stmt.order_by(FilesBase.created_at.desc()))
     return result.scalars().all()
@@ -73,7 +73,7 @@ async def create_for_input_file(
     obj = FilesBase(
         auth_user_id=auth_user_id,
         project_id=project_id,
-        logical_role=FileRole.INPUT,
+        file_role=FileRole.INPUT,
         input_file_id=input_file_id,
         product_file_id=None,
     )
@@ -95,7 +95,7 @@ async def create_for_product_file(
     obj = FilesBase(
         auth_user_id=auth_user_id,
         project_id=project_id,
-        logical_role=FileRole.PRODUCT,
+        file_role=FileRole.PRODUCT,
         input_file_id=None,
         product_file_id=product_file_id,
     )
@@ -117,7 +117,7 @@ async def attach_input_file(
     if obj is None:
         return None
 
-    obj.logical_role = FileRole.INPUT
+    obj.file_role = FileRole.INPUT
     obj.input_file_id = input_file_id
     obj.product_file_id = None
     await session.flush()
@@ -137,7 +137,7 @@ async def attach_product_file(
     if obj is None:
         return None
 
-    obj.logical_role = FileRole.PRODUCT
+    obj.file_role = FileRole.PRODUCT
     obj.product_file_id = product_file_id
     obj.input_file_id = None
     await session.flush()

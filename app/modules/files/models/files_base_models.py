@@ -11,8 +11,8 @@ Alineación con DB:
   y sus FKs en 08_files_base_foreign_keys.sql.
 - Cada fila representa un archivo lógico asociado a un proyecto.
 - Se vincula de forma exclusiva a `input_files` O `product_files`:
-  - logical_role = 'input'   ⇒ input_file_id NOT NULL, product_file_id NULL
-  - logical_role = 'product' ⇒ product_file_id NOT NULL, input_file_id NULL
+  - file_role = 'input'   ⇒ input_file_id NOT NULL, product_file_id NULL
+  - file_role = 'product' ⇒ product_file_id NOT NULL, input_file_id NULL
 
 Uso:
 - Identificador canónico `file_id` para integración inter-módulos (Projects, RAG, Admin).
@@ -76,7 +76,9 @@ class FilesBase(Base):
         nullable=False,
     )
 
-    logical_role: Mapped[FileRole] = mapped_column(
+    # SSOT: columna canónica file_role (DB 2.0)
+    file_role: Mapped[FileRole] = mapped_column(
+        "file_role",
         file_role_as_pg_enum(),
         nullable=False,
     )
@@ -135,9 +137,9 @@ class FilesBase(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "(logical_role = 'input' AND input_file_id IS NOT NULL "
+            "(file_role = 'input' AND input_file_id IS NOT NULL "
             "AND product_file_id IS NULL) "
-            "OR (logical_role = 'product' AND product_file_id IS NOT NULL "
+            "OR (file_role = 'product' AND product_file_id IS NOT NULL "
             "AND input_file_id IS NULL)",
             name="files_base_role_exclusive_chk",
         ),

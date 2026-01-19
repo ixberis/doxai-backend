@@ -98,16 +98,16 @@ async def build_selected_download_manifest(
             )
             continue
 
-        # Resolver archivo asociado según logical_role
+        # Resolver archivo asociado según file_role (SSOT)
         file_name: str = str(fid)
-        if fb.logical_role == FileRole.INPUT and isinstance(fb.input_file, InputFile):
+        if fb.file_role == FileRole.INPUT and isinstance(fb.input_file, InputFile):
             file_name = (
                 fb.input_file.input_file_display_name
                 or fb.input_file.input_file_original_name
                 or str(fid)
             )
         elif (
-            fb.logical_role == FileRole.PRODUCT
+            fb.file_role == FileRole.PRODUCT
             and isinstance(fb.product_file, ProductFile)
         ):
             file_name = (
