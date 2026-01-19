@@ -204,8 +204,8 @@ async def upload_input_file(
 
         # Validación rápida de tipo según MIME/filename
         validate_file_type_consistency(
+            filename=original_name,
             file_type=file_type,
-            file_name=original_name,
             mime_type=mime_type,
         )
 
