@@ -265,6 +265,22 @@ except Exception as e:
 # Files metrics ya están incluidos en files_routes.py bajo /files/metrics/*
 # No se monta por separado para evitar duplicación
 
+# ═══════════════════════════════════════════════════════════════════════════
+# PROJECT FILE ACTIVITY (contrato frontend 2026-01-19)
+# ═══════════════════════════════════════════════════════════════════════════
+# Este router se monta por separado porque su prefix es /projects/{project_id}/file-activity
+# y NO está incluido en files_routes.py que usa /files/* como prefix base.
+try:
+    from app.modules.files.routes.project_file_activity_routes import router as project_file_activity_router
+
+    # Solo en API - requiere autenticación
+    _include_once(api, project_file_activity_router, "project-file-activity", _mounted_api)
+    logger.info("✅ Project File Activity router montado en /api/projects/{id}/file-activity")
+except Exception as e:
+    logger.warning("⚠ Router de Project File Activity no montado: %s", e)
+
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # RAG

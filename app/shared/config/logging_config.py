@@ -28,6 +28,15 @@ _MULTIPART_LOGGER_NAMES = (
     "python_multipart.multipart",
 )
 
+# Loggers de aiosqlite a silenciar (muy verbosos en DEBUG)
+_AIOSQLITE_LOGGER_NAMES = (
+    "aiosqlite",
+    "aiosqlite.core",
+)
+
+# Todos los loggers ruidosos combinados
+_NOISY_LOGGER_NAMES = _MULTIPART_LOGGER_NAMES + _AIOSQLITE_LOGGER_NAMES
+
 
 def _get_multipart_log_level() -> str:
     """
@@ -120,15 +129,15 @@ def setup_logging(
     # Nivel dinámico para loggers multipart (via env var)
     multipart_level = _get_multipart_log_level()
     
-    # Loggers ruidosos de multipart - silenciarlos completamente
+    # Loggers ruidosos - silenciarlos completamente
     # handlers=[] explícito + propagate=False = silencio total garantizado
-    multipart_loggers = {
+    noisy_loggers = {
         name: {
             "handlers": [],  # Explícito: sin handlers
-            "level": multipart_level,
+            "level": multipart_level,  # Mismo nivel para todos (configurable via MULTIPART_LOG_LEVEL)
             "propagate": False,
         }
-        for name in _MULTIPART_LOGGER_NAMES
+        for name in _NOISY_LOGGER_NAMES
     }
     
     logging_config = {
@@ -140,17 +149,17 @@ def setup_logging(
             "handlers": ["console"],
             "level": level.upper(),
         },
-        "loggers": multipart_loggers,
+        "loggers": noisy_loggers,
     }
     
     logging.config.dictConfig(logging_config)
     
-    # HARD-OVERRIDE: Aplicar configuración imperativa a multipart loggers
+    # HARD-OVERRIDE: Aplicar configuración imperativa a todos los loggers ruidosos
     # Esto garantiza silencio incluso si otro dictConfig/basicConfig corre después
-    _apply_multipart_hard_override(multipart_level)
+    _apply_noisy_loggers_hard_override(multipart_level)
     
-    # Log de startup con niveles efectivos (una sola línea)
-    _log_multipart_levels(multipart_level)
+    # Log de startup con niveles efectivos
+    _log_noisy_logger_levels(multipart_level)
     
     # Print a stderr (no depende de logging) - solo una vez
     if not _LOGGING_SETUP_ONCE:
@@ -164,9 +173,9 @@ def setup_logging(
         )
 
 
-def _apply_multipart_hard_override(level_str: str) -> None:
+def _apply_noisy_loggers_hard_override(level_str: str) -> None:
     """
-    Aplica configuración imperativa a loggers multipart.
+    Aplica configuración imperativa a todos los loggers ruidosos.
     
     Esto es defensa contra uvicorn/gunicorn u otros módulos que
     puedan llamar dictConfig/basicConfig después de nosotros.
@@ -177,7 +186,7 @@ def _apply_multipart_hard_override(level_str: str) -> None:
     import logging
     level = getattr(logging, level_str, logging.WARNING)
     
-    for name in _MULTIPART_LOGGER_NAMES:
+    for name in _NOISY_LOGGER_NAMES:
         logger = logging.getLogger(name)
         # Forzar nivel
         logger.setLevel(level)
@@ -187,15 +196,15 @@ def _apply_multipart_hard_override(level_str: str) -> None:
         logger.handlers.clear()
 
 
-def _log_multipart_levels(configured_level: str) -> None:
-    """Emite log de startup con niveles efectivos de loggers multipart."""
+def _log_noisy_logger_levels(configured_level: str) -> None:
+    """Emite log de startup con niveles efectivos de loggers ruidosos."""
     import logging
     levels = {
         name: logging.getLevelName(logging.getLogger(name).getEffectiveLevel())
-        for name in _MULTIPART_LOGGER_NAMES
+        for name in _NOISY_LOGGER_NAMES
     }
     app_logger = logging.getLogger("app.shared.config.logging_config")
-    app_logger.info("multipart_loggers_configured: level=%s levels=%s", configured_level, levels)
+    app_logger.info("noisy_loggers_configured: level=%s levels=%s", configured_level, levels)
 
 
 def get_multipart_logger_states() -> list[dict]:
@@ -217,5 +226,24 @@ def get_multipart_logger_states() -> list[dict]:
     return states
 
 
-__all__ = ["setup_logging", "get_multipart_logger_states"]
+def get_noisy_logger_states() -> list[dict]:
+    """
+    Retorna estado actual de todos los loggers ruidosos (multipart + aiosqlite).
+    Útil para verificación en startup.
+    """
+    import logging
+    states = []
+    for name in _NOISY_LOGGER_NAMES:
+        logger = logging.getLogger(name)
+        states.append({
+            "name": name,
+            "level": logging.getLevelName(logger.level),
+            "effective_level": logging.getLevelName(logger.getEffectiveLevel()),
+            "propagate": logger.propagate,
+            "handlers_count": len(logger.handlers),
+        })
+    return states
+
+
+__all__ = ["setup_logging", "get_multipart_logger_states", "get_noisy_logger_states"]
 # Fin del archivo backend/app/shared/config/logging_config.py
