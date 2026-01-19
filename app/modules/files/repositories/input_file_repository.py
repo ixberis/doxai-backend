@@ -84,6 +84,8 @@ async def create_from_upload(
     """
     obj = InputFile(
         project_id=data.project_id,
+        # SSOT: auth_user_id = ownership, uploaded_by_auth_user_id = actor
+        auth_user_id=uploaded_by,
         uploaded_by_auth_user_id=uploaded_by,
         input_file_original_name=data.original_name,
         input_file_display_name=data.display_name,

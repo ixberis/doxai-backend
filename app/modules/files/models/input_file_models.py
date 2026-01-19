@@ -90,13 +90,18 @@ class InputFile(Base):
         nullable=True,
     )
 
-    # Proyecto y usuario que sube
+    # Proyecto y ownership
     project_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # Columna canónica en producción: uploaded_by_auth_user_id
+    # SSOT: Ownership canónico (JWT.sub)
+    auth_user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+    )
+    # Actor que sube el archivo (puede diferir del owner en workflows delegados)
     uploaded_by_auth_user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,

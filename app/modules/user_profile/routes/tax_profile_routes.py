@@ -169,7 +169,7 @@ async def upsert_tax_profile(
                 text("SELECT id FROM public.user_tax_profiles WHERE auth_user_id = :auth_uid"),
                 {"auth_uid": auth_uid}
             )
-            persisted_row = verify_result.fetchone()
+            persisted_row = verify_result.first()
             
             if persisted_row:
                 logger.info(
