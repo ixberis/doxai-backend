@@ -73,7 +73,7 @@ Este documento describe los índices compuestos optimizados para el módulo de a
 - **`ix_input_files_project_status`**: `(project_id, input_file_status)` - Filtrado por proyecto y estado
 - **`ix_input_files_status`**: `(input_file_status)` - Filtrado global por estado
 - **`ix_input_files_language`**: `(input_file_language)` - Filtrado por idioma
-- **`ix_input_files_user`**: `(input_file_uploaded_by)` - Búsquedas por usuario
+- **`ix_input_files_user`**: `(uploaded_by_auth_user_id)` - Búsquedas por usuario
 - **`ix_input_files_storage_backend`**: `(input_file_storage_backend)` - Filtrado por backend
 
 ## ProductFile (Índices Existentes)

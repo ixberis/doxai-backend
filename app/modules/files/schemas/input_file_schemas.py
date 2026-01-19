@@ -129,7 +129,7 @@ class InputFileResponse(BaseModel):
     )
     uploaded_by: UUID = Field(
         ...,
-        alias="input_file_uploaded_by",
+        alias="uploaded_by_auth_user_id",
         description="Usuario que subió el archivo",
     )
 

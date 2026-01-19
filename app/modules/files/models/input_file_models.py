@@ -96,7 +96,8 @@ class InputFile(Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
-    input_file_uploaded_by: Mapped[UUID] = mapped_column(
+    # Columna canónica en producción: uploaded_by_auth_user_id
+    uploaded_by_auth_user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,
     )

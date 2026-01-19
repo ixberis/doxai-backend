@@ -67,7 +67,7 @@ files/
 - `input_file_id` (UUID): Identificador único
 - `project_id` (UUID): Proyecto al que pertenece
 - `user_email` (citext): Email del propietario
-- `input_file_uploaded_by` (UUID): Usuario que subió el archivo
+- `uploaded_by_auth_user_id` (UUID): Usuario que subió el archivo
 - `input_file_name` (varchar): Nombre almacenado
 - `input_file_original_name` (varchar): Nombre original
 - `input_file_type` (enum): Tipo de archivo (PDF, DOCX, etc.)
@@ -206,7 +206,7 @@ delete_product_file(file_id, project_slug) -> None
     "input_file_id": "uuid",
     "project_id": "uuid",
     "user_email": "user@example.com",
-    "input_file_uploaded_by": "uuid",
+    "uploaded_by_auth_user_id": "uuid",
     "input_file_name": "documento-tecnico.pdf",
     "input_file_original_name": "Propuesta Técnica.pdf",
     "input_file_type": "PDF",

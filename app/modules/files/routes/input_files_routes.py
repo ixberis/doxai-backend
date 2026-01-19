@@ -151,7 +151,7 @@ def _to_input_file_response(item: Any, project_id: UUID | None = None) -> InputF
     
     # Completar campos requeridos con defaults razonables si no están presentes
     # Estos defaults permiten que los mocks minimalistas de tests pasen validación
-    data.setdefault("input_file_uploaded_by", uuid4())
+    data.setdefault("uploaded_by_auth_user_id", uuid4())
     data.setdefault("input_file_mime_type", "application/octet-stream")
     data.setdefault("size_bytes", 0)
     data.setdefault("input_file_type", FileType.txt)  # FileType no tiene 'other', usar txt como genérico
