@@ -76,19 +76,74 @@ async def get_storage_client() -> AsyncStorageClient:
     """
     Devuelve un cliente de storage que implemente AsyncStorageClient.
 
-    IMPORTANTE:
-    - En producción, esta dependencia debe ser overrideada con el cliente real.
-    - Por defecto devuelve un stub mínimo para permitir tests sin configuración.
+    Usa el SupabaseStorageHTTPClient real en producción.
     """
-    # Stub mínimo para tests - en producción debe ser overrideado
-    class StubStorageClient:
-        async def upload_bytes(self, bucket: str, key: str, data: bytes, mime_type: str | None = None):
-            pass
-        async def get_download_url(self, bucket: str, key: str, expires_in_seconds: int = 3600) -> str:
-            return f"https://stub-storage/{bucket}/{key}"
-        async def delete_object(self, bucket: str, key: str):
-            pass
-    return StubStorageClient()  # type: ignore
+    from app.shared.utils.http_storage_client import get_http_storage_client
+    from app.shared.config import settings
+    
+    # Obtener el cliente HTTP real de Supabase
+    http_client = get_http_storage_client()
+    
+    # Adaptador que implementa la interfaz AsyncStorageClient
+    class RealStorageClient:
+        """
+        Adaptador que conecta SupabaseStorageHTTPClient con AsyncStorageClient.
+        """
+        def __init__(self, client, bucket: str):
+            self._client = client
+            self._default_bucket = bucket
+        
+        async def upload_bytes(
+            self,
+            bucket: str,
+            key: str,
+            data: bytes,
+            mime_type: str | None = None,
+        ) -> None:
+            """Sube bytes al storage usando el cliente HTTP real."""
+            import logging
+            _logger = logging.getLogger("files.upload.diagnostic")
+            
+            _logger.info(
+                "storage_upload_start: bucket=%s key=%s size=%d mime=%s",
+                bucket, key[:60] if key else "<none>", len(data), mime_type,
+            )
+            
+            await self._client.upload_file(
+                bucket=bucket,
+                path=key,
+                file_data=data,
+                content_type=mime_type or "application/octet-stream",
+                overwrite=False,
+            )
+            
+            _logger.info(
+                "storage_upload_ok: bucket=%s key=%s",
+                bucket, key[:60] if key else "<none>",
+            )
+        
+        async def get_download_url(
+            self,
+            bucket: str,
+            key: str,
+            expires_in_seconds: int = 3600,
+        ) -> str:
+            """Genera una URL de descarga temporal firmada."""
+            return await self._client.create_signed_url(
+                bucket=bucket,
+                path=key,
+                expires_in=expires_in_seconds,
+            )
+        
+        async def delete_object(
+            self,
+            bucket: str,
+            key: str,
+        ) -> None:
+            """Elimina un objeto del storage."""
+            await self._client.delete_file(bucket=bucket, path=key)
+    
+    return RealStorageClient(http_client, settings.supabase_bucket_name)
 
 
 def get_input_files_facade(
@@ -313,16 +368,42 @@ async def upload_input_file(
                 input_file_id=input_file_id,  # Pasar el ID pre-generado
             )
         
+        # --- COMMIT EXPLÍCITO ---
+        # La facade hace flush pero no commit; el ruteador es responsable del commit
+        await db.commit()
+        
+        # --- DIAGNOSTIC: Verify storage.objects after upload ---
+        try:
+            storage_verify_result = await db.execute(
+                text("""
+                    SELECT count(*) as cnt 
+                    FROM storage.objects 
+                    WHERE bucket_id = :bucket AND name = :key
+                """),
+                {"bucket": "users-files", "key": storage_key},
+            )
+            storage_count = storage_verify_result.scalar()
+            _upload_logger.info(
+                "upload_diagnostic: storage_objects_verify bucket=users-files key=%s count=%s",
+                storage_key[:60] if storage_key else "<none>",
+                storage_count,
+            )
+        except Exception as e:
+            _upload_logger.warning(
+                "upload_diagnostic: storage_objects_verify_error=%s key=%s",
+                type(e).__name__,
+                storage_key[:60] if storage_key else "<none>",
+            )
+        
         # --- DIAGNOSTIC: Verify DB write after commit ---
         try:
-            # Commit should have happened in facade; verify the row exists
             verify_result = await db.execute(
                 text("SELECT count(*) FROM public.input_files WHERE input_file_id = :id"),
                 {"id": str(response.input_file_id)},
             )
             verify_count = verify_result.scalar()
             _upload_logger.info(
-                "upload_diagnostic: upload_success input_file_id=%s db_verify_count=%s storage_key=%s",
+                "upload_diagnostic: db_verify input_file_id=%s db_count=%s storage_key=%s",
                 str(response.input_file_id)[:8],
                 verify_count,
                 storage_key[:50] if storage_key else "<none>",
