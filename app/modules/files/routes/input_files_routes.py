@@ -372,6 +372,20 @@ async def upload_input_file(
         # La facade hace flush pero no commit; el ruteador es responsable del commit
         await db.commit()
         
+        # --- TOUCH PROJECT (SSOT: updated_at refleja actividad reciente) ---
+        # Best-effort: loguea warning si falla, no interrumpe el flujo
+        try:
+            from app.modules.projects.services import touch_project_updated_at
+            await touch_project_updated_at(db, project_id, reason="input_file_uploaded")
+            # No commit adicional: touch solo hace flush, commit ya hecho arriba
+        except Exception as touch_e:
+            _upload_logger.warning(
+                "touch_project_failed: project_id=%s reason=input_file_uploaded error=%s",
+                str(project_id)[:8],
+                str(touch_e),
+                exc_info=True,
+            )
+        
         # --- DIAGNOSTIC: Verify storage.objects after upload ---
         try:
             storage_verify_result = await db.execute(
@@ -555,12 +569,32 @@ async def delete_input_file(
     telemetry = RequestTelemetry.create("files.delete-input-file")
     status_code = 204
     result = "success"
+    
+    # Obtener project_id antes de borrar para touch posterior
+    project_id_for_touch: UUID | None = None
+    try:
+        input_file_detail = await facade.get_input_file_by_file_id(file_id=file_id)
+        project_id_for_touch = input_file_detail.project_id
+    except Exception:
+        pass
+    
     try:
         with telemetry.measure("db_ms"):
             await facade.delete_input_file(
                 file_id=file_id,
                 hard_delete=hard,
             )
+        
+        # --- TOUCH PROJECT ---
+        if project_id_for_touch:
+            try:
+                from app.modules.projects.services import touch_project_updated_at
+                db = facade._db
+                await touch_project_updated_at(db, project_id_for_touch, reason="input_file_deleted")
+                await db.commit()
+            except Exception:
+                pass
+                
     except FileNotFoundError as exc:
         status_code = 404
         result = "not_found"

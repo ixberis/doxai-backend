@@ -187,6 +187,10 @@ class RagJobRepository:
         
         await session.flush()
         await session.refresh(job)
+        
+        # Touch project para reflejar cambio de estado RAG
+        await self._touch_project(session, job.project_id, f"rag_status_{status.value}")
+        
         return job
 
     async def update_phase_and_status(
@@ -227,7 +231,38 @@ class RagJobRepository:
         
         await session.flush()
         await session.refresh(job)
+        
+        # Touch project para reflejar cambio de fase/estado RAG
+        await self._touch_project(session, job.project_id, f"rag_phase_{phase_current.value}_{status.value}")
+        
         return job
+
+    async def _touch_project(
+        self,
+        session: AsyncSession,
+        project_id: UUID,
+        reason: str,
+    ) -> None:
+        """
+        Helper interno para actualizar projects.updated_at.
+        
+        Best-effort: captura excepciones para no interrumpir el flujo RAG,
+        pero loguea warning con exc_info para diagnóstico.
+        """
+        import logging
+        _logger = logging.getLogger("rag.touch")
+        
+        try:
+            from app.modules.projects.services import touch_project_updated_at
+            await touch_project_updated_at(session, project_id, reason=reason)
+        except Exception as e:
+            _logger.warning(
+                "touch_project_failed: project_id=%s reason=%s error=%s",
+                str(project_id)[:8],
+                reason,
+                str(e),
+                exc_info=True,
+            )
 
 
 # Instancia global para compatibilidad con código existente que importa como módulo

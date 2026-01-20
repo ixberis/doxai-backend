@@ -243,7 +243,7 @@ async def create_product_file_endpoint(
         file_bytes = await file.read()
         storage_key = f"{project_id}/product/{original_name}"
 
-        return await create_product_file(
+        result = await create_product_file(
             db=db,
             storage_client=storage_client,
             bucket_name="users-files",
@@ -263,6 +263,23 @@ async def create_product_file_endpoint(
             generation_params=None,
             ragmodel_version_used=None,
         )
+        
+        # --- TOUCH PROJECT (best-effort con logging) ---
+        import logging
+        _pf_logger = logging.getLogger("files.product")
+        try:
+            from app.modules.projects.services import touch_project_updated_at
+            await touch_project_updated_at(db, project_id, reason="product_file_created")
+            await db.commit()
+        except Exception as touch_e:
+            _pf_logger.warning(
+                "touch_project_failed: project_id=%s reason=product_file_created error=%s",
+                str(project_id)[:8],
+                str(touch_e),
+                exc_info=True,
+            )
+        
+        return result
     except FileStorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -357,6 +374,14 @@ async def archive_product_file_endpoint(
     db: AsyncSession = Depends(get_db),
     storage_client: AsyncStorageClient = Depends(get_storage_client),
 ):
+    # Obtener project_id antes de archivar para touch posterior
+    project_id_for_touch: UUID | None = None
+    try:
+        product_details = await get_product_file_details(db=db, product_file_id=product_file_id)
+        project_id_for_touch = product_details.project_id
+    except Exception:
+        pass
+    
     try:
         await archive_product_file(
             db=db,
@@ -365,6 +390,23 @@ async def archive_product_file_endpoint(
             product_file_id=product_file_id,
             hard_delete=hard,
         )
+        
+        # --- TOUCH PROJECT (best-effort con logging) ---
+        if project_id_for_touch:
+            import logging
+            _pf_logger = logging.getLogger("files.product")
+            try:
+                from app.modules.projects.services import touch_project_updated_at
+                await touch_project_updated_at(db, project_id_for_touch, reason="product_file_archived")
+                await db.commit()
+            except Exception as touch_e:
+                _pf_logger.warning(
+                    "touch_project_failed: project_id=%s reason=product_file_archived error=%s",
+                    str(project_id_for_touch)[:8],
+                    str(touch_e),
+                    exc_info=True,
+                )
+                
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
