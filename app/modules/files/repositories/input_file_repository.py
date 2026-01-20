@@ -75,9 +75,14 @@ async def create_from_upload(
     storage_backend: StorageBackend,
     storage_path: str,
     file_extension: str | None,
+    input_file_id: UUID | None = None,
 ) -> InputFile:
     """
     Crea un InputFile a partir de los datos de carga.
+
+    Args:
+        input_file_id: UUID pre-generado para SSOT path. Si no se pasa,
+                      se genera uno nuevo automáticamente.
 
     NOTA:
     - No hace commit, sólo flush.
@@ -101,6 +106,10 @@ async def create_from_upload(
         input_file_storage_path=storage_path,
         input_file_status=InputProcessingStatus.uploaded,
     )
+    # Si se proporciona un ID pre-generado, usarlo
+    if input_file_id is not None:
+        obj.input_file_id = input_file_id
+    
     session.add(obj)
     await session.flush()
     return obj

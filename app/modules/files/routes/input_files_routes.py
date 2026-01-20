@@ -59,6 +59,7 @@ from app.modules.files.facades.input_files.validate import (
 )
 from app.modules.files.schemas import InputFileUpload, InputFileResponse
 from app.modules.files.services.storage_ops_service import AsyncStorageClient
+from app.modules.files.services.storage.storage_paths import get_storage_paths_service
 
 router = APIRouter(tags=["files:input"])
 
@@ -221,9 +222,18 @@ async def upload_input_file(
             file_bytes = await file.read()
             size_bytes = len(file_bytes)
 
-        # Construimos un storage_key simple; en una versión más avanzada
-        # podemos usar facades.storage.pathing.build_storage_key.
-        storage_key = f"{project_id}/input/{original_name}"
+        # SSOT v2: Generar input_file_id antes del upload para usarlo en el path
+        input_file_id = uuid4()
+        
+        # SSOT: usar StoragePathsService para construir el path canónico
+        # Structure: users/{auth_user_id}/projects/{project_id}/input-files/{file_id}/{filename}
+        paths_service = get_storage_paths_service()
+        storage_key = paths_service.generate_input_file_path(
+            user_id=str(ctx.auth_user_id),
+            project_id=str(project_id),
+            file_name=original_name,
+            file_id=str(input_file_id),
+        )
 
         upload_dto = InputFileUpload(
             project_id=project_id,
@@ -244,6 +254,7 @@ async def upload_input_file(
                 uploaded_by=ctx.auth_user_id,
                 file_bytes=file_bytes,
                 storage_key=storage_key,
+                input_file_id=input_file_id,  # Pasar el ID pre-generado
             )
         return response
     except FileValidationError as exc:

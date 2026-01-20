@@ -254,6 +254,7 @@ async def _log_activity(
     Persiste evento en product_file_activity y retorna activity_id.
     
     Args:
+        auth_user_id: SSOT - dueño del evento (JWT.sub)
         file_event: String del frontend (ej. 'input_file_uploaded') guardado en details.
     """
     # Guardar file_event en details para recuperarlo en GET
@@ -261,6 +262,7 @@ async def _log_activity(
     
     entry = await activity_repo.log_activity(
         db,
+        auth_user_id=auth_user_id,
         project_id=project_id,
         product_file_id=None,
         event_type=event_type,
@@ -271,6 +273,10 @@ async def _log_activity(
         details=merged_details,
     )
     await db.commit()
+    
+    # DEBUG level para evitar rate limit en uploads masivos
+    logger.debug("Activity logged: %s for project %s", file_event, project_id)
+    
     return str(entry.product_file_activity_id)
 
 

@@ -29,6 +29,7 @@ from app.modules.files.models.product_file_activity_models import ProductFileAct
 async def log_activity(
     session: AsyncSession,
     *,
+    auth_user_id: UUID,
     project_id: UUID,
     product_file_id: UUID | None,
     event_type: ProductFileEvent,
@@ -42,8 +43,14 @@ async def log_activity(
 ) -> ProductFileActivity:
     """
     Registra un evento de actividad para un ProductFile.
+    
+    Args:
+        auth_user_id: SSOT - dueño del evento (JWT.sub)
+        project_id: Proyecto al que pertenece el evento
+        event_by: Actor que dispara el evento (puede diferir de auth_user_id)
     """
     obj = ProductFileActivity(
+        auth_user_id=auth_user_id,
         project_id=project_id,
         product_file_id=product_file_id,
         event_type=event_type,

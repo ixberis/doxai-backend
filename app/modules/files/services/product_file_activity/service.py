@@ -34,6 +34,7 @@ from app.modules.files.repositories import product_file_activity_repository
 async def log_product_file_event(
     session: AsyncSession,
     *,
+    auth_user_id: UUID,
     project_id: UUID,
     product_file_id: Optional[UUID],
     event_type: ProductFileEvent,
@@ -47,9 +48,13 @@ async def log_product_file_event(
 ) -> ProductFileActivity:
     """
     Registra un evento de actividad para un archivo producto.
+    
+    Args:
+        auth_user_id: SSOT - dueño del evento (JWT.sub)
     """
     return await product_file_activity_repository.log_activity(
         session=session,
+        auth_user_id=auth_user_id,
         project_id=project_id,
         product_file_id=product_file_id,
         event_type=event_type,

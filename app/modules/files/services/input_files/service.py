@@ -53,6 +53,7 @@ async def register_uploaded_input_file(
     file_extension: Optional[str],
     checksum: Optional[str] = None,
     parser_version: Optional[str] = None,
+    input_file_id: Optional[UUID] = None,
 ) -> tuple[InputFile, FilesBase, Optional[InputFileMetadata]]:
     """
     Registra un archivo insumo subido por la persona usuaria.
@@ -61,6 +62,10 @@ async def register_uploaded_input_file(
     1. Crea el registro en `input_files`.
     2. Crea el registro canónico en `files_base` con rol = 'input'.
     3. Registra metadatos iniciales en `input_file_metadata` (opcional).
+
+    Args:
+        input_file_id: UUID pre-generado para SSOT path. Si no se pasa,
+                      se genera uno nuevo en el repositorio.
 
     NOTA:
     - No hace commit; sólo realiza flush sobre la sesión.
@@ -74,6 +79,7 @@ async def register_uploaded_input_file(
         storage_backend=storage_backend,
         storage_path=storage_path,
         file_extension=file_extension,
+        input_file_id=input_file_id,
     )
 
     # 2) Crear FilesBase vinculado al InputFile

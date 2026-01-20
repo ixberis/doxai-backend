@@ -102,6 +102,7 @@ class InputFilesFacade:
         uploaded_by: UUID,
         file_bytes: bytes,
         storage_key: str,
+        input_file_id: Optional[UUID] = None,
         checksum: Optional[str] = None,
         parser_version: Optional[str] = None,
     ) -> InputFileResponse:
@@ -112,6 +113,10 @@ class InputFilesFacade:
         1. Sube `file_bytes` a storage usando (bucket_name, storage_key).
         2. Crea InputFile + FilesBase + (opcional) InputFileMetadata.
         3. Devuelve un InputFileResponse listo para API.
+
+        Args:
+            input_file_id: UUID pre-generado para SSOT path. Si no se pasa,
+                          se genera uno nuevo en el servicio.
 
         NOTA:
         - No realiza commit; sólo hace flush en la AsyncSession.
@@ -139,6 +144,7 @@ class InputFilesFacade:
             file_extension=None,
             checksum=checksum,
             parser_version=parser_version,
+            input_file_id=input_file_id,
         )
 
         return InputFileResponse(
