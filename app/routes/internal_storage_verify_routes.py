@@ -202,7 +202,7 @@ async def verify_storage_users_files(
         response.error_phase = "list"
         response.error_code = type(e).__name__
         response.error_message = str(e)[:200]
-        logger.error("storage_verify: list failed: %s", e)
+        logger.error("storage_verify: list failed: %s", e, exc_info=True)
         # Continue to try DB check and delete anyway
     
     # Phase 2.5: Verify in storage.objects table (DB side)
@@ -252,7 +252,7 @@ async def verify_storage_users_files(
             response.error_phase = "delete"
             response.error_code = type(e).__name__
             response.error_message = str(e)[:200]
-        logger.warning("storage_verify: delete failed (non-fatal): %s", e)
+        logger.warning("storage_verify: delete failed (non-fatal): %s", e, exc_info=True)
     
     # Overall success if upload worked and we found the object (API or DB)
     response.success = response.upload_success and (response.object_found or response.db_object_exists)

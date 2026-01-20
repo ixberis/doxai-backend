@@ -117,7 +117,7 @@ async def storage_exists(storage_path: str) -> bool:
     """
     from app.shared.config import settings
     
-    client = await get_http_client()
+    client = await get_pooled_client()
     
     # Extract folder and filename from storage path
     path_parts = storage_path.rstrip('/').split('/')
@@ -243,7 +243,7 @@ class SupabaseStorageHTTPClient:
         }
         
         try:
-            client = await get_http_client()
+            client = await get_pooled_client()
             response = await client.head(url, headers=headers)
             
             if response.status_code in (200, 206):
@@ -330,7 +330,7 @@ class SupabaseStorageHTTPClient:
             headers["If-None-Match"] = if_none_match
         
         try:
-            client = await get_http_client()
+            client = await get_pooled_client()
             response = await client.get(url, headers=headers)
             
             if response.status_code == 304:
@@ -381,7 +381,7 @@ class SupabaseStorageHTTPClient:
         }
         
         try:
-            client = await get_http_client()
+            client = await get_pooled_client()
             response = await client.delete(url, headers=delete_headers)
                 
             # ✅ FASE 2: Manejo detallado de códigos de estado
@@ -447,7 +447,7 @@ class SupabaseStorageHTTPClient:
         }
 
         try:
-            client = await get_http_client()
+            client = await get_pooled_client()
             response = await client.post(url, headers=self.headers, json=payload)
 
             if response.status_code != 200:
@@ -492,7 +492,7 @@ class SupabaseStorageHTTPClient:
         payload = {"expiresIn": expires_in}
         
         try:
-            client = await get_http_client()
+            client = await get_pooled_client()
             response = await client.post(url, headers=self.headers, json=payload)
                 
             if response.status_code != 200:
