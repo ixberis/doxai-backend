@@ -438,11 +438,33 @@ async def upload_input_file(
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
-        status_code = 503
-        result = "error"
+        # Detect InvalidKey from Supabase - this is a sanitization bug, not service unavailable
+        error_str = str(exc).lower()
+        if "invalidkey" in error_str or "invalid key" in error_str:
+            status_code = 500
+            result = "storage_invalid_key_after_sanitize"
+            _upload_logger.error(
+                "STORAGE_INVALID_KEY_AFTER_SANITIZE: key=%s error=%s",
+                storage_key[:80] if 'storage_key' in dir() else "<unknown>",
+                str(exc),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error_code": "STORAGE_INVALID_KEY_AFTER_SANITIZE",
+                    "message": "Error interno al procesar nombre de archivo",
+                },
+            ) from exc
+        # Other storage errors (permissions, connectivity)
+        status_code = 502
+        result = "storage_error"
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error_code": "STORAGE_BACKEND_ERROR",
+                "message": str(exc),
+            },
         ) from exc
     finally:
         telemetry.finalize(request, status_code=status_code, result=result)

@@ -64,14 +64,20 @@ class StoragePathsService:
         return self.normalize(path)
 
     def validate_filename(self, filename: str) -> str:
-        """Valida y retorna el filename normalizado."""
+        """
+        Valida y retorna el filename normalizado.
+        
+        NOTE: This method is now lenient - it validates structure but
+        does NOT reject arbitrary characters. Use make_safe_storage_filename()
+        to sanitize before calling this.
+        """
         if not isinstance(filename, str) or not filename.strip():
             raise ValueError("filename vacío")
         filename = filename.strip()
         if "/" in filename or "\\" in filename:
             raise ValueError("filename no debe contener separadores")
-        if not _SAFE_FILENAME_RE.match(filename):
-            raise ValueError("filename con caracteres no permitidos")
+        # Relaxed: only check for path separators, not arbitrary characters
+        # The safe_filename module handles character sanitization
         return filename
 
     def ensure_safe_path(self, filename: str) -> None:
@@ -122,17 +128,30 @@ class StoragePathsService:
         """
         Genera path SSOT para input file.
         
-        SSOT v2: users/{user_id}/projects/{project_id}/input-files/{file_id}/{filename}
+        SSOT v2: users/{user_id}/projects/{project_id}/input-files/{file_id}/{safe_filename}
+        
+        IMPORTANT: file_name is automatically sanitized to be Supabase-safe.
+        Original name should be preserved separately in the database.
         
         Si file_id no se proporciona, usa estructura legacy (sin carpeta file_id).
         """
+        from app.modules.files.services.storage.safe_filename import make_safe_storage_filename
+        from uuid import UUID as UUIDType
+        
         uid = str(user_id or kwargs.get("user_id", "")).strip()
         pid = str(project_id or kwargs.get("project_id", "")).strip()
         fid = str(file_id or kwargs.get("file_id", "")).strip() if file_id else ""
         fname = str(file_name or kwargs.get("file_name", "") or kwargs.get("filename", "")).strip()
         
+        # SSOT: Always sanitize filename for storage
         if fname:
-            self.validate_filename(fname)
+            fid_uuid = None
+            if fid:
+                try:
+                    fid_uuid = UUIDType(fid)
+                except (ValueError, TypeError):
+                    pass
+            fname = make_safe_storage_filename(fname, file_id=fid_uuid)
         
         if fid:
             # SSOT v2: con file_id como carpeta intermedia
@@ -166,17 +185,30 @@ class StoragePathsService:
         """
         Genera path SSOT para product file.
         
-        SSOT v2: users/{user_id}/projects/{project_id}/product-files/{file_id}/{filename}
+        SSOT v2: users/{user_id}/projects/{project_id}/product-files/{file_id}/{safe_filename}
+        
+        IMPORTANT: file_name is automatically sanitized to be Supabase-safe.
+        Original name should be preserved separately in the database.
         
         Si file_id no se proporciona, usa estructura legacy.
         """
+        from app.modules.files.services.storage.safe_filename import make_safe_storage_filename
+        from uuid import UUID as UUIDType
+        
         uid = str(user_id or kwargs.get("user_id", "")).strip()
         pid = str(project_id or kwargs.get("project_id", "")).strip()
         fid = str(file_id or kwargs.get("file_id", "")).strip() if file_id else ""
         fname = str(file_name or kwargs.get("file_name", "") or kwargs.get("filename", "")).strip()
         
+        # SSOT: Always sanitize filename for storage
         if fname:
-            self.validate_filename(fname)
+            fid_uuid = None
+            if fid:
+                try:
+                    fid_uuid = UUIDType(fid)
+                except (ValueError, TypeError):
+                    pass
+            fname = make_safe_storage_filename(fname, file_id=fid_uuid)
         
         if fid:
             # SSOT v2: con file_id como carpeta intermedia

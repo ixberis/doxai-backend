@@ -237,11 +237,27 @@ async def create_product_file_endpoint(
     - El storage_key se construye de manera simple; en un futuro puede
       delegarse a utilidades de pathing.
     """
+    import logging
+    from app.modules.files.services.storage.storage_paths import get_storage_paths_service
+    
+    _pf_logger = logging.getLogger("files.product")
+    
     try:
         original_name = file.filename or "product-file"
         mime_type = file.content_type or "application/octet-stream"
         file_bytes = await file.read()
-        storage_key = f"{project_id}/product/{original_name}"
+        
+        # SSOT v2: Generate product_file_id first for path
+        product_file_id = uuid4()
+        
+        # SSOT: Use StoragePathsService for safe path generation
+        paths_service = get_storage_paths_service()
+        storage_key = paths_service.generate_product_file_path(
+            user_id=str(ctx.auth_user_id),
+            project_id=str(project_id),
+            file_name=original_name,
+            file_id=str(product_file_id),
+        )
 
         result = await create_product_file(
             db=db,
@@ -264,13 +280,14 @@ async def create_product_file_endpoint(
             ragmodel_version_used=None,
         )
         
-        # --- TOUCH PROJECT (best-effort con logging) ---
-        import logging
-        _pf_logger = logging.getLogger("files.product")
+        # --- COMMIT: Single commit per request (SSOT pattern) ---
+        await db.commit()
+        
+        # --- TOUCH PROJECT (best-effort, flush-only, no additional commit) ---
         try:
             from app.modules.projects.services import touch_project_updated_at
             await touch_project_updated_at(db, project_id, reason="product_file_created")
-            await db.commit()
+            # touch does flush only; commit already done above
         except Exception as touch_e:
             _pf_logger.warning(
                 "touch_project_failed: project_id=%s reason=product_file_created error=%s",
@@ -281,9 +298,29 @@ async def create_product_file_endpoint(
         
         return result
     except FileStorageError as exc:
+        # Detect InvalidKey from Supabase - this is a sanitization bug
+        error_str = str(exc).lower()
+        if "invalidkey" in error_str or "invalid key" in error_str:
+            _pf_logger.error(
+                "STORAGE_INVALID_KEY_AFTER_SANITIZE: key=%s error=%s",
+                storage_key[:80] if 'storage_key' in dir() else "<unknown>",
+                str(exc),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error_code": "STORAGE_INVALID_KEY_AFTER_SANITIZE",
+                    "message": "Error interno al procesar nombre de archivo",
+                },
+            ) from exc
+        # Other storage errors
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error_code": "STORAGE_BACKEND_ERROR",
+                "message": str(exc),
+            },
         ) from exc
 
 
@@ -391,14 +428,17 @@ async def archive_product_file_endpoint(
             hard_delete=hard,
         )
         
-        # --- TOUCH PROJECT (best-effort con logging) ---
+        # --- COMMIT: Single commit per request (SSOT pattern) ---
+        await db.commit()
+        
+        # --- TOUCH PROJECT (best-effort, flush-only, no additional commit) ---
         if project_id_for_touch:
             import logging
             _pf_logger = logging.getLogger("files.product")
             try:
                 from app.modules.projects.services import touch_project_updated_at
                 await touch_project_updated_at(db, project_id_for_touch, reason="product_file_archived")
-                await db.commit()
+                # touch does flush only; commit already done above
             except Exception as touch_e:
                 _pf_logger.warning(
                     "touch_project_failed: project_id=%s reason=product_file_archived error=%s",

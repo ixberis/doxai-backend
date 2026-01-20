@@ -26,6 +26,7 @@ from .storage_migration_service import StorageMigrationService
 from .file_list_storage import FileListStorage
 from .file_download_storage import FileDownloadStorage
 from .file_get_url_storage import FileGetUrlStorage
+from .safe_filename import make_safe_storage_filename
 
 # Servicios optimizados (opcional - para producción)
 try:
@@ -43,6 +44,7 @@ __all__ = [
     "FileListStorage",
     "FileDownloadStorage",
     "FileGetUrlStorage",
+    "make_safe_storage_filename",
 ]
 
 if OPTIMIZATIONS_AVAILABLE:
