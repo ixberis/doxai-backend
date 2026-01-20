@@ -350,6 +350,18 @@ except Exception as e:
     logger.debug("Endpoint interno de DB ping no montado: %s", e)
 
 try:
+    from app.routes.internal_db_fingerprint_routes import router as internal_db_fingerprint_router
+
+    # Montar en AMBAS capas para acceso consistente:
+    # - /api/_internal/db/fingerprint
+    # - /_internal/db/fingerprint
+    _include_once(api, internal_db_fingerprint_router, "internal-db-fingerprint", _mounted_api)
+    _include_once(public, internal_db_fingerprint_router, "internal-db-fingerprint", _mounted_public)
+    logger.info("✅ Endpoint interno de DB fingerprint montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de DB fingerprint no montado: %s", e)
+
+try:
     from app.routes.internal_db_user_query_routes import router as internal_db_user_query_router
 
     # Montar en AMBAS capas para acceso consistente:
@@ -387,6 +399,38 @@ try:
     logger.info("✅ Endpoint interno DB checkout-intent-model montado (api + public)")
 except Exception as e:
     logger.debug("Endpoint interno de DB checkout-intent-model no montado: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERNAL STORAGE DIAGNOSTICS (diagnóstico temporal)
+# ═══════════════════════════════════════════════════════════════════════════
+try:
+    from app.routes.internal_storage_verify_routes import router as internal_storage_verify_router
+
+    # Montar en AMBAS capas:
+    # - /api/_internal/storage/verify-users-files
+    # - /_internal/storage/verify-users-files
+    _include_once(api, internal_storage_verify_router, "internal-storage-verify", _mounted_api)
+    _include_once(public, internal_storage_verify_router, "internal-storage-verify", _mounted_public)
+    logger.info("✅ Endpoint interno de Storage verify montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de Storage verify no montado: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERNAL FILES RECENT (diagnóstico temporal)
+# ═══════════════════════════════════════════════════════════════════════════
+try:
+    from app.routes.internal_files_recent_routes import router as internal_files_recent_router
+
+    # Montar en AMBAS capas:
+    # - /api/_internal/files/input-files/recent
+    # - /_internal/files/input-files/recent
+    _include_once(api, internal_files_recent_router, "internal-files-recent", _mounted_api)
+    _include_once(public, internal_files_recent_router, "internal-files-recent", _mounted_public)
+    logger.info("✅ Endpoint interno de Files recent montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de Files recent no montado: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

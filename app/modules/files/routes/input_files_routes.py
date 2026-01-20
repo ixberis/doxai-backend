@@ -193,6 +193,7 @@ async def upload_input_file(
     input_file_class: InputFileClass = Form(InputFileClass.source),
     facade: InputFilesFacade = Depends(get_input_files_facade),
     ctx = Depends(get_current_user_ctx),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Sube un archivo insumo y lo registra en la base de datos.
@@ -203,9 +204,56 @@ async def upload_input_file(
       con las utilidades de pathing). Por simplicidad, usamos el nombre
       original como parte de la clave.
     """
+    import logging
+    from sqlalchemy import text
+    from app.shared.config import settings
+    
+    _upload_logger = logging.getLogger("files.upload.diagnostic")
+    
     telemetry = RequestTelemetry.create("files.upload-input-file")
     status_code = 201
     result = "success"
+    
+    # --- DIAGNOSTIC: Log configured vs connected DB fingerprint ---
+    try:
+        # Configured (from settings)
+        configured_db_host = getattr(settings, 'db_host', '<unknown>')
+        configured_db_port = getattr(settings, 'db_port', '<unknown>')
+        configured_db_name = getattr(settings, 'db_name', '<unknown>')
+        bucket_name = getattr(settings, 'supabase_bucket_name', 'users-files')
+        
+        _upload_logger.info(
+            "upload_diagnostic: configured_db=%s:%s/%s bucket=%s user=%s project=%s",
+            configured_db_host[:20] if isinstance(configured_db_host, str) else configured_db_host,
+            configured_db_port,
+            configured_db_name,
+            bucket_name,
+            str(ctx.auth_user_id)[:8],
+            str(project_id)[:8],
+        )
+        
+        # Connected (actual DB query)
+        try:
+            conn_result = await db.execute(text("""
+                SELECT 
+                    inet_server_addr()::text AS srv_addr,
+                    inet_server_port() AS srv_port,
+                    current_database() AS db_name
+            """))
+            conn_row = conn_result.mappings().fetchone()
+            if conn_row:
+                _upload_logger.info(
+                    "upload_diagnostic: connected_db=%s:%s/%s",
+                    conn_row.get("srv_addr", "<null>"),
+                    conn_row.get("srv_port", "<null>"),
+                    conn_row.get("db_name", "<null>"),
+                )
+        except Exception as conn_e:
+            _upload_logger.warning("upload_diagnostic: connected_fingerprint_error=%s", type(conn_e).__name__)
+            
+    except Exception as e:
+        _upload_logger.warning("upload_diagnostic: fingerprint_error=%s", type(e).__name__)
+    
     try:
         original_name = file.filename or "input-file"
         mime_type = file.content_type or "application/octet-stream"
@@ -234,6 +282,14 @@ async def upload_input_file(
             file_name=original_name,
             file_id=str(input_file_id),
         )
+        
+        # --- DIAGNOSTIC: Log storage key ---
+        _upload_logger.info(
+            "upload_diagnostic: storage_key=%s size=%d mime=%s",
+            storage_key[:80] if storage_key else "<none>",
+            size_bytes,
+            mime_type,
+        )
 
         upload_dto = InputFileUpload(
             project_id=project_id,
@@ -256,6 +312,28 @@ async def upload_input_file(
                 storage_key=storage_key,
                 input_file_id=input_file_id,  # Pasar el ID pre-generado
             )
+        
+        # --- DIAGNOSTIC: Verify DB write after commit ---
+        try:
+            # Commit should have happened in facade; verify the row exists
+            verify_result = await db.execute(
+                text("SELECT count(*) FROM public.input_files WHERE input_file_id = :id"),
+                {"id": str(response.input_file_id)},
+            )
+            verify_count = verify_result.scalar()
+            _upload_logger.info(
+                "upload_diagnostic: upload_success input_file_id=%s db_verify_count=%s storage_key=%s",
+                str(response.input_file_id)[:8],
+                verify_count,
+                storage_key[:50] if storage_key else "<none>",
+            )
+        except Exception as e:
+            _upload_logger.warning(
+                "upload_diagnostic: db_verify_error=%s input_file_id=%s",
+                type(e).__name__,
+                str(response.input_file_id)[:8] if response else "<none>",
+            )
+        
         return response
     except FileValidationError as exc:
         status_code = 400
