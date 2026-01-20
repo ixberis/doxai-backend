@@ -74,7 +74,7 @@ class ConnectionPool:
             self._client = httpx.AsyncClient(
                 limits=limits,
                 timeout=timeout,
-                http2=True,  # Habilitar HTTP/2 para mejor performance
+                http2=False,  # Deshabilitado: 'h2' package not installed in production
                 follow_redirects=True,
             )
             
