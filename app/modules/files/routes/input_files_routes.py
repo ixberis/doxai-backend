@@ -368,16 +368,16 @@ async def upload_input_file(
                 input_file_id=input_file_id,  # Pasar el ID pre-generado
             )
         
-        # --- COMMIT EXPLÍCITO ---
-        # La facade hace flush pero no commit; el ruteador es responsable del commit
-        await db.commit()
-        
         # --- TOUCH PROJECT (SSOT: updated_at refleja actividad reciente) ---
-        # Best-effort: loguea warning si falla, no interrumpe el flujo
+        # Debe ocurrir ANTES del commit para que quede en la misma transacción
+        touch_success = False
         try:
             from app.modules.projects.services import touch_project_updated_at
-            await touch_project_updated_at(db, project_id, reason="input_file_uploaded")
-            # No commit adicional: touch solo hace flush, commit ya hecho arriba
+            _upload_logger.info(
+                "project_touch_attempt project_id=%s reason=input_file_uploaded",
+                str(project_id)[:8],
+            )
+            touch_success = await touch_project_updated_at(db, project_id, reason="input_file_uploaded")
         except Exception as touch_e:
             _upload_logger.warning(
                 "touch_project_failed: project_id=%s reason=input_file_uploaded error=%s",
@@ -385,6 +385,30 @@ async def upload_input_file(
                 str(touch_e),
                 exc_info=True,
             )
+        
+        # --- COMMIT ÚNICO (incluye file + touch en la misma transacción) ---
+        await db.commit()
+        
+        # --- Instrumentación: verificar updated_at post-commit ---
+        if touch_success:
+            try:
+                from sqlalchemy import text
+                verify_updated = await db.execute(
+                    text("SELECT updated_at FROM public.projects WHERE id = :id"),
+                    {"id": str(project_id)},
+                )
+                updated_at_value = verify_updated.scalar()
+                _upload_logger.info(
+                    "project_touch_committed project_id=%s updated_at=%s",
+                    str(project_id)[:8],
+                    updated_at_value,
+                )
+            except Exception as verify_e:
+                _upload_logger.warning(
+                    "project_touch_verify_failed: project_id=%s error=%s",
+                    str(project_id)[:8],
+                    str(verify_e),
+                )
         
         # --- DIAGNOSTIC: Verify storage.objects after upload ---
         try:

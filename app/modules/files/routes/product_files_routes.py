@@ -280,14 +280,16 @@ async def create_product_file_endpoint(
             ragmodel_version_used=None,
         )
         
-        # --- COMMIT: Single commit per request (SSOT pattern) ---
-        await db.commit()
-        
-        # --- TOUCH PROJECT (best-effort, flush-only, no additional commit) ---
+        # --- TOUCH PROJECT (SSOT: updated_at refleja actividad reciente) ---
+        # Debe ocurrir ANTES del commit para que quede en la misma transacción
+        touch_success = False
         try:
             from app.modules.projects.services import touch_project_updated_at
-            await touch_project_updated_at(db, project_id, reason="product_file_created")
-            # touch does flush only; commit already done above
+            _pf_logger.info(
+                "project_touch_attempt project_id=%s reason=product_file_created",
+                str(project_id)[:8],
+            )
+            touch_success = await touch_project_updated_at(db, project_id, reason="product_file_created")
         except Exception as touch_e:
             _pf_logger.warning(
                 "touch_project_failed: project_id=%s reason=product_file_created error=%s",
@@ -295,6 +297,30 @@ async def create_product_file_endpoint(
                 str(touch_e),
                 exc_info=True,
             )
+        
+        # --- COMMIT ÚNICO (incluye file + touch en la misma transacción) ---
+        await db.commit()
+        
+        # --- Instrumentación: verificar updated_at post-commit ---
+        if touch_success:
+            try:
+                from sqlalchemy import text
+                verify_updated = await db.execute(
+                    text("SELECT updated_at FROM public.projects WHERE id = :id"),
+                    {"id": str(project_id)},
+                )
+                updated_at_value = verify_updated.scalar()
+                _pf_logger.info(
+                    "project_touch_committed project_id=%s updated_at=%s",
+                    str(project_id)[:8],
+                    updated_at_value,
+                )
+            except Exception as verify_e:
+                _pf_logger.warning(
+                    "project_touch_verify_failed: project_id=%s error=%s",
+                    str(project_id)[:8],
+                    str(verify_e),
+                )
         
         return result
     except FileStorageError as exc:
