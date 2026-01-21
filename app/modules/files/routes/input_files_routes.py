@@ -466,26 +466,45 @@ async def upload_input_file(
         
         return response
     
-    except HTTPException:
-        # SIEMPRE rollback para cualquier HTTPException (incluso las que no vienen del touch)
-        # para evitar dejar la sesión en estado inconsistente
-        await db.rollback()
+    except FileValidationError as exc:
+        # Manejar errores de validación ANTES de HTTPException genérica
+        status_code = 400
+        result = "validation_error"
+        try:
+            await db.rollback()
+        except Exception:
+            pass  # Rollback puede fallar si la sesión ya está limpia
         _upload_logger.info(
-            "upload_tx_rollback: project_id=%s txid=%s reason=http_exception",
+            "upload_tx_rollback: project_id=%s txid=%s reason=validation_error",
             str(project_id)[:8],
             txid,
         )
-        raise
-    except FileValidationError as exc:
-        status_code = 400
-        result = "validation_error"
-        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except HTTPException as http_exc:
+        # HTTPException ya formada (ej. de touch_failed) - solo rollback y re-raise
+        # NOTA: Este bloque viene DESPUÉS de FileValidationError para evitar
+        # capturar las HTTPException que lanzamos nosotros desde otros handlers
+        status_code = http_exc.status_code
+        result = "http_exception"
+        try:
+            await db.rollback()
+        except Exception:
+            pass  # Rollback puede fallar si ya se hizo
+        _upload_logger.info(
+            "upload_tx_rollback: project_id=%s txid=%s reason=http_exception status=%d",
+            str(project_id)[:8],
+            txid,
+            http_exc.status_code,
+        )
+        raise
     except FileStorageError as exc:
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            pass  # Rollback puede fallar si la sesión ya está limpia
         # Detect InvalidKey from Supabase - this is a sanitization bug, not service unavailable
         error_str = str(exc).lower()
         if "invalidkey" in error_str or "invalid key" in error_str:
@@ -518,7 +537,10 @@ async def upload_input_file(
         # Catch-all para errores inesperados
         status_code = 500
         result = "internal_error"
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            pass  # Rollback puede fallar si la sesión ya está limpia
         _upload_logger.info(
             "upload_tx_rollback: project_id=%s txid=%s reason=unexpected_exception",
             str(project_id)[:8],

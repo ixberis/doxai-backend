@@ -204,11 +204,11 @@ async def get_latest_file_event_at(
         Exception: Re-raise si strict=True (default) y ocurre error de DB
     """
     try:
-        # SSOT: Cast explícito a uuid para evitar coerciones implícitas
+        # SSOT: Usar CAST en vez de ::uuid para evitar syntax error en asyncpg
         stmt = text("""
             SELECT MAX(created_at) AS latest_event
             FROM public.project_file_event_logs
-            WHERE project_id = :project_id::uuid
+            WHERE project_id = CAST(:project_id AS uuid)
         """)
         
         result = await db.execute(stmt, {"project_id": project_id})
@@ -253,11 +253,11 @@ async def get_latest_input_file_at_single(
         Timestamp del último input_file_uploaded_at o None
     """
     try:
-        # SSOT: Usar input_file_uploaded_at (alineado con UI de archivos)
+        # SSOT: Usar CAST en vez de ::uuid para evitar syntax error en asyncpg
         stmt = text("""
             SELECT MAX(input_file_uploaded_at) AS latest_input_file
             FROM public.input_files
-            WHERE project_id = :project_id::uuid
+            WHERE project_id = CAST(:project_id AS uuid)
         """)
         
         result = await db.execute(stmt, {"project_id": project_id})

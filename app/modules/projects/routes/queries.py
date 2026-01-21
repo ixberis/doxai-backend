@@ -701,7 +701,7 @@ async def get_project_timestamps(
         )
     
     # Obtener timestamps directamente de la BD usando Depends(get_db)
-    # SSOT: Cast explícito ::uuid y pasar UUID directamente
+    # SSOT: Cast explícito CAST(:id AS uuid) y pasar UUID directamente
     result = await db.execute(
         text("""
             SELECT 
@@ -710,7 +710,7 @@ async def get_project_timestamps(
                 updated_at,
                 (updated_at > created_at) AS has_been_updated
             FROM public.projects 
-            WHERE id = :id::uuid
+            WHERE id = CAST(:id AS uuid)
         """),
         {"id": project_id},
     )
