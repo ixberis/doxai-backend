@@ -370,45 +370,48 @@ async def upload_input_file(
         
         # --- TOUCH PROJECT (SSOT: updated_at refleja actividad reciente) ---
         # Debe ocurrir ANTES del commit para que quede en la misma transacción
-        touch_success = False
-        try:
-            from app.modules.projects.services import touch_project_updated_at
-            _upload_logger.info(
-                "project_touch_attempt project_id=%s reason=input_file_uploaded",
+        # Si falla o retorna False, abort con rollback explícito
+        from app.modules.projects.services import touch_project_updated_at
+        _upload_logger.info(
+            "project_touch_attempt project_id=%s reason=input_file_uploaded",
+            str(project_id)[:8],
+        )
+        touch_success = await touch_project_updated_at(db, project_id, reason="input_file_uploaded")
+        
+        if touch_success is not True:
+            _upload_logger.error(
+                "touch_project_returned_false: project_id=%s reason=input_file_uploaded - rolling back",
                 str(project_id)[:8],
             )
-            touch_success = await touch_project_updated_at(db, project_id, reason="input_file_uploaded")
-        except Exception as touch_e:
-            _upload_logger.warning(
-                "touch_project_failed: project_id=%s reason=input_file_uploaded error=%s",
-                str(project_id)[:8],
-                str(touch_e),
-                exc_info=True,
+            await db.rollback()
+            # False significa que el proyecto no existe en DB
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado al actualizar timestamp",
             )
         
         # --- COMMIT ÚNICO (incluye file + touch en la misma transacción) ---
         await db.commit()
         
         # --- Instrumentación: verificar updated_at post-commit ---
-        if touch_success:
-            try:
-                from sqlalchemy import text
-                verify_updated = await db.execute(
-                    text("SELECT updated_at FROM public.projects WHERE id = :id"),
-                    {"id": str(project_id)},
-                )
-                updated_at_value = verify_updated.scalar()
-                _upload_logger.info(
-                    "project_touch_committed project_id=%s updated_at=%s",
-                    str(project_id)[:8],
-                    updated_at_value,
-                )
-            except Exception as verify_e:
-                _upload_logger.warning(
-                    "project_touch_verify_failed: project_id=%s error=%s",
-                    str(project_id)[:8],
-                    str(verify_e),
-                )
+        try:
+            from sqlalchemy import text
+            verify_updated = await db.execute(
+                text("SELECT updated_at FROM public.projects WHERE id = :id"),
+                {"id": str(project_id)},
+            )
+            updated_at_value = verify_updated.scalar()
+            _upload_logger.info(
+                "project_touch_committed project_id=%s updated_at=%s",
+                str(project_id)[:8],
+                updated_at_value,
+            )
+        except Exception as verify_e:
+            _upload_logger.warning(
+                "project_touch_verify_failed: project_id=%s error=%s",
+                str(project_id)[:8],
+                str(verify_e),
+            )
         
         # --- DIAGNOSTIC: Verify storage.objects after upload ---
         try:
@@ -454,14 +457,22 @@ async def upload_input_file(
             )
         
         return response
+    
+    except HTTPException:
+        # SIEMPRE rollback para cualquier HTTPException (incluso las que no vienen del touch)
+        # para evitar dejar la sesión en estado inconsistente
+        await db.rollback()
+        raise
     except FileValidationError as exc:
         status_code = 400
         result = "validation_error"
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
+        await db.rollback()
         # Detect InvalidKey from Supabase - this is a sanitization bug, not service unavailable
         error_str = str(exc).lower()
         if "invalidkey" in error_str or "invalid key" in error_str:
@@ -489,6 +500,21 @@ async def upload_input_file(
                 "error_code": "STORAGE_BACKEND_ERROR",
                 "message": str(exc),
             },
+        ) from exc
+    except Exception as exc:
+        # Catch-all para errores inesperados
+        status_code = 500
+        result = "internal_error"
+        await db.rollback()
+        _upload_logger.error(
+            "upload_unexpected_error: project_id=%s error=%s",
+            str(project_id)[:8] if 'project_id' in dir() else "<unknown>",
+            str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al procesar archivo",
         ) from exc
     finally:
         telemetry.finalize(request, status_code=status_code, result=result)

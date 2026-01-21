@@ -282,48 +282,57 @@ async def create_product_file_endpoint(
         
         # --- TOUCH PROJECT (SSOT: updated_at refleja actividad reciente) ---
         # Debe ocurrir ANTES del commit para que quede en la misma transacción
-        touch_success = False
-        try:
-            from app.modules.projects.services import touch_project_updated_at
-            _pf_logger.info(
-                "project_touch_attempt project_id=%s reason=product_file_created",
+        # Si falla o retorna False, abort con rollback explícito
+        from app.modules.projects.services import touch_project_updated_at
+        _pf_logger.info(
+            "project_touch_attempt project_id=%s reason=product_file_created",
+            str(project_id)[:8],
+        )
+        touch_success = await touch_project_updated_at(db, project_id, reason="product_file_created")
+        
+        if touch_success is not True:
+            _pf_logger.error(
+                "touch_project_returned_false: project_id=%s reason=product_file_created - rolling back",
                 str(project_id)[:8],
             )
-            touch_success = await touch_project_updated_at(db, project_id, reason="product_file_created")
-        except Exception as touch_e:
-            _pf_logger.warning(
-                "touch_project_failed: project_id=%s reason=product_file_created error=%s",
-                str(project_id)[:8],
-                str(touch_e),
-                exc_info=True,
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado al actualizar timestamp",
             )
         
         # --- COMMIT ÚNICO (incluye file + touch en la misma transacción) ---
         await db.commit()
         
         # --- Instrumentación: verificar updated_at post-commit ---
-        if touch_success:
-            try:
-                from sqlalchemy import text
-                verify_updated = await db.execute(
-                    text("SELECT updated_at FROM public.projects WHERE id = :id"),
-                    {"id": str(project_id)},
-                )
-                updated_at_value = verify_updated.scalar()
-                _pf_logger.info(
-                    "project_touch_committed project_id=%s updated_at=%s",
-                    str(project_id)[:8],
-                    updated_at_value,
-                )
-            except Exception as verify_e:
-                _pf_logger.warning(
-                    "project_touch_verify_failed: project_id=%s error=%s",
-                    str(project_id)[:8],
-                    str(verify_e),
-                )
+        try:
+            from sqlalchemy import text
+            verify_updated = await db.execute(
+                text("SELECT updated_at FROM public.projects WHERE id = :id"),
+                {"id": str(project_id)},
+            )
+            updated_at_value = verify_updated.scalar()
+            _pf_logger.info(
+                "project_touch_committed project_id=%s updated_at=%s",
+                str(project_id)[:8],
+                updated_at_value,
+            )
+        except Exception as verify_e:
+            _pf_logger.warning(
+                "project_touch_verify_failed: project_id=%s error=%s",
+                str(project_id)[:8],
+                str(verify_e),
+            )
         
         return result
+    
+    except HTTPException:
+        # SIEMPRE rollback para cualquier HTTPException (incluso las que no vienen del touch)
+        # para evitar dejar la sesión en estado inconsistente
+        await db.rollback()
+        raise
     except FileStorageError as exc:
+        await db.rollback()
         # Detect InvalidKey from Supabase - this is a sanitization bug
         error_str = str(exc).lower()
         if "invalidkey" in error_str or "invalid key" in error_str:
@@ -347,6 +356,19 @@ async def create_product_file_endpoint(
                 "error_code": "STORAGE_BACKEND_ERROR",
                 "message": str(exc),
             },
+        ) from exc
+    except Exception as exc:
+        # Catch-all para errores inesperados
+        await db.rollback()
+        _pf_logger.error(
+            "product_upload_unexpected_error: project_id=%s error=%s",
+            str(project_id)[:8] if 'project_id' in dir() else "<unknown>",
+            str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al procesar archivo producto",
         ) from exc
 
 

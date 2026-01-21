@@ -22,7 +22,10 @@ import logging
 from uuid import UUID
 from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
+
+from app.shared.database.database import get_db
 
 # Servicios y esquemas
 from app.modules.projects.services import ProjectsQueryService
@@ -564,6 +567,95 @@ async def list_project_file_events(
         items=normalized_items,
         total=total,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico: timestamps de proyecto (requiere auth del usuario dueño)
+# ---------------------------------------------------------------------------
+@router.get(
+    "/{project_id}/timestamps",
+    summary="Diagnóstico: obtener created_at y updated_at del proyecto",
+    tags=["projects:diagnostic"],
+    responses={
+        200: {"description": "Timestamps del proyecto"},
+        404: {"description": "Proyecto no encontrado"},
+    },
+)
+async def get_project_timestamps(
+    project_id: UUID,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
+    q: ProjectsQueryService = Depends(get_projects_query_service),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Endpoint de diagnóstico para verificar que projects.updated_at
+    se actualiza correctamente tras uploads de archivos.
+    
+    Uso: comparar created_at vs updated_at antes/después de subir un archivo.
+    
+    Requiere autenticación: solo el usuario dueño del proyecto puede acceder.
+    Montado bajo /api/projects (requiere auth vía get_current_user_ctx).
+    """
+    from sqlalchemy import text
+    
+    # Verificar ownership: el proyecto debe pertenecer al usuario autenticado
+    project = await q.get_project_by_id(project_id=project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Proyecto no encontrado",
+        )
+    
+    # Verificar que el usuario es dueño del proyecto
+    project_owner_id = getattr(project, 'auth_user_id', None)
+    if project_owner_id is None:
+        # Intentar obtener de dict si es un mapping
+        if hasattr(project, '_mapping'):
+            project_owner_id = project._mapping.get('auth_user_id')
+        elif isinstance(project, dict):
+            project_owner_id = project.get('auth_user_id')
+    
+    if project_owner_id != ctx.auth_user_id:
+        logger.warning(
+            "timestamps_access_denied: user=%s tried to access project=%s owned_by=%s",
+            str(ctx.auth_user_id)[:8],
+            str(project_id)[:8],
+            str(project_owner_id)[:8] if project_owner_id else "<none>",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes acceso a este proyecto",
+        )
+    
+    # Obtener timestamps directamente de la BD usando Depends(get_db)
+    result = await db.execute(
+        text("""
+            SELECT 
+                id,
+                created_at,
+                updated_at,
+                (updated_at > created_at) AS has_been_updated
+            FROM public.projects 
+            WHERE id = :id
+        """),
+        {"id": str(project_id)},
+    )
+    row = result.mappings().fetchone()
+    
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Proyecto no encontrado en BD",
+        )
+    
+    return {
+        "project_id": str(project_id),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        "has_been_updated": row["has_been_updated"],
+        "diagnostic_note": "Si has_been_updated=False después de subir archivos, hay un bug de persistencia.",
+    }
 
 
 # Fin del archivo backend/app/modules/projects/routes/queries.py
