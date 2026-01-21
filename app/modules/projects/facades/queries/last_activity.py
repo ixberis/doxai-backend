@@ -36,21 +36,24 @@ async def get_latest_input_file_at_batch(
     """
     Obtiene el timestamp del input_file más reciente para múltiples proyectos.
     
+    SSOT: Usa input_file_uploaded_at (UI) en lugar de created_at.
+    
     Args:
         db: Sesión async de base de datos
         project_ids: Lista de UUIDs de proyectos
         
     Returns:
-        Dict mapping project_id -> latest_input_file_created_at
+        Dict mapping project_id -> latest_input_file_uploaded_at
     """
     if not project_ids:
         return {}
     
     try:
+        # SSOT: Usar input_file_uploaded_at (alineado con UI de archivos)
         stmt = text("""
             SELECT 
                 project_id,
-                MAX(created_at) AS latest_input_file_at
+                MAX(input_file_uploaded_at) AS latest_input_file_at
             FROM public.input_files
             WHERE project_id IN :project_ids
             GROUP BY project_id
@@ -90,7 +93,7 @@ async def get_last_activity_at_batch(
         projects.updated_at, 
         COALESCE(
             MAX(project_file_event_logs.created_at),
-            MAX(input_files.created_at),
+            MAX(input_files.input_file_uploaded_at),  -- SSOT: UI usa uploaded_at
             projects.updated_at
         )
     )
@@ -111,7 +114,7 @@ async def get_last_activity_at_batch(
         return {}
     
     try:
-        # SSOT AMPLIADO: incluir input_files.created_at para uploads históricos
+        # SSOT AMPLIADO: incluir input_files.input_file_uploaded_at para uploads históricos
         stmt = text("""
             SELECT 
                 p.id AS project_id,
@@ -121,7 +124,7 @@ async def get_last_activity_at_batch(
                         (SELECT MAX(e.created_at) 
                          FROM public.project_file_event_logs e 
                          WHERE e.project_id = p.id),
-                        (SELECT MAX(i.created_at)
+                        (SELECT MAX(i.input_file_uploaded_at)
                          FROM public.input_files i
                          WHERE i.project_id = p.id),
                         p.updated_at
@@ -240,16 +243,19 @@ async def get_latest_input_file_at_single(
     """
     Obtiene el timestamp del input_file más reciente para un proyecto.
     
+    SSOT: Usa input_file_uploaded_at (UI) en lugar de created_at.
+    
     Args:
         db: Sesión async de base de datos
         project_id: UUID del proyecto
         
     Returns:
-        Timestamp del último input_file o None
+        Timestamp del último input_file_uploaded_at o None
     """
     try:
+        # SSOT: Usar input_file_uploaded_at (alineado con UI de archivos)
         stmt = text("""
-            SELECT MAX(created_at) AS latest_input_file
+            SELECT MAX(input_file_uploaded_at) AS latest_input_file
             FROM public.input_files
             WHERE project_id = :project_id::uuid
         """)

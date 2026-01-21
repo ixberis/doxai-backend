@@ -727,10 +727,10 @@ async def get_project_timestamps(
     latest_input_file_at = await get_latest_input_file_at_single(db, project_id)
     last_activity_at = await get_last_activity_at_single(db, project_id)
     
-    # Log de resultado completo
+    # Log de resultado completo (SSOT: usando input_file_uploaded_at)
     logger.info(
         "timestamps_endpoint_result: project_id=%s updated_at=%s "
-        "latest_input_file=%s latest_file_event=%s last_activity=%s",
+        "latest_input_file_uploaded=%s latest_file_event=%s last_activity=%s",
         str(project_id)[:8],
         row["updated_at"],
         latest_input_file_at,
@@ -743,13 +743,13 @@ async def get_project_timestamps(
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         "has_been_updated": row["has_been_updated"],
-        # NUEVO: timestamps de input_files históricos
-        "latest_input_file_created_at": latest_input_file_at.isoformat() if latest_input_file_at else None,
+        # SSOT: timestamps de input_files usando input_file_uploaded_at
+        "latest_input_file_uploaded_at": latest_input_file_at.isoformat() if latest_input_file_at else None,
         "latest_file_event_created_at": latest_file_event_at.isoformat() if latest_file_event_at else None,
         "last_activity_at": last_activity_at.isoformat() if last_activity_at else None,
         "diagnostic_note": (
-            "last_activity_at = GREATEST(updated_at, COALESCE(latest_file_event, latest_input_file)). "
-            "Para proyectos históricos sin eventos, se usa input_files.created_at."
+            "last_activity_at = GREATEST(updated_at, COALESCE(latest_file_event, latest_input_file_uploaded)). "
+            "Para proyectos históricos sin eventos, se usa input_files.input_file_uploaded_at."
         ),
     }
 
