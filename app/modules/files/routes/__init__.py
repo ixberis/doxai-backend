@@ -24,6 +24,7 @@ from .input_files_routes import router as input_files_router
 from .product_files_routes import router as product_files_router
 from .files_routes import router as files_router
 from .project_file_activity_routes import router as project_file_activity_router
+from .selected_download_routes import router as selected_download_router
 
 
 def get_files_routers() -> list[APIRouter]:
@@ -39,6 +40,7 @@ def get_files_routers() -> list[APIRouter]:
         product_files_router,
         files_router,
         project_file_activity_router,
+        selected_download_router,
     ]
 
 
@@ -50,6 +52,7 @@ __all__ = [
     "product_files_router",
     "files_router",
     "project_file_activity_router",
+    "selected_download_router",
 ]
 
 # Fin del archivo backend/app/modules/files/routes/__init__.py

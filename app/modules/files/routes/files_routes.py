@@ -26,6 +26,7 @@ from fastapi import APIRouter
 from .input_files_routes import router as input_files_router
 from .product_files_routes import router as product_files_router
 from .activity_routes import router as activity_router
+from .selected_download_routes import router as selected_download_router
 
 # Métricas (router ya existente, se monta bajo /files/metrics)
 try:
@@ -39,6 +40,9 @@ router = APIRouter(prefix="/files", tags=["files"])
 router.include_router(input_files_router, prefix="/input", tags=["files:input"])
 router.include_router(product_files_router, prefix="/product", tags=["files:product"])
 router.include_router(activity_router, prefix="/activity", tags=["files:activity"])
+
+# Montaje de descarga seleccionada (sin prefix adicional - ya tiene /{project_id}/...)
+router.include_router(selected_download_router, tags=["files:download"])
 
 # Montaje de métricas del módulo Files
 router.include_router(files_metrics_router, prefix="/metrics", tags=["files:metrics"])
