@@ -268,46 +268,28 @@ async def upload_input_file(
     telemetry = RequestTelemetry.create("files.upload-input-file")
     status_code = 201
     result = "success"
+    txid = None  # Para correlación transaccional
     
-    # --- DIAGNOSTIC: Log configured vs connected DB fingerprint ---
+    # --- LOGGING OBLIGATORIO: upload_started ---
+    _upload_logger.info(
+        "upload_started: project_id=%s user=%s filename=%s",
+        str(project_id)[:8],
+        str(ctx.auth_user_id)[:8],
+        file.filename[:40] if file.filename else "<none>",
+    )
+    
+    # --- Obtener txid_current() para correlación transaccional ---
     try:
-        # Configured (from settings)
-        configured_db_host = getattr(settings, 'db_host', '<unknown>')
-        configured_db_port = getattr(settings, 'db_port', '<unknown>')
-        configured_db_name = getattr(settings, 'db_name', '<unknown>')
-        bucket_name = getattr(settings, 'supabase_bucket_name', 'users-files')
-        
+        txid_result = await db.execute(text("SELECT txid_current() AS txid"))
+        txid_row = txid_result.mappings().fetchone()
+        txid = txid_row.get("txid") if txid_row else None
         _upload_logger.info(
-            "upload_diagnostic: configured_db=%s:%s/%s bucket=%s user=%s project=%s",
-            configured_db_host[:20] if isinstance(configured_db_host, str) else configured_db_host,
-            configured_db_port,
-            configured_db_name,
-            bucket_name,
-            str(ctx.auth_user_id)[:8],
+            "upload_tx_started: project_id=%s txid=%s",
             str(project_id)[:8],
+            txid,
         )
-        
-        # Connected (actual DB query)
-        try:
-            conn_result = await db.execute(text("""
-                SELECT 
-                    inet_server_addr()::text AS srv_addr,
-                    inet_server_port() AS srv_port,
-                    current_database() AS db_name
-            """))
-            conn_row = conn_result.mappings().fetchone()
-            if conn_row:
-                _upload_logger.info(
-                    "upload_diagnostic: connected_db=%s:%s/%s",
-                    conn_row.get("srv_addr", "<null>"),
-                    conn_row.get("srv_port", "<null>"),
-                    conn_row.get("db_name", "<null>"),
-                )
-        except Exception as conn_e:
-            _upload_logger.warning("upload_diagnostic: connected_fingerprint_error=%s", type(conn_e).__name__)
-            
-    except Exception as e:
-        _upload_logger.warning("upload_diagnostic: fingerprint_error=%s", type(e).__name__)
+    except Exception as txid_e:
+        _upload_logger.warning("upload_tx_id_error: %s", type(txid_e).__name__)
     
     try:
         original_name = file.filename or "input-file"
@@ -372,18 +354,36 @@ async def upload_input_file(
         # Debe ocurrir ANTES del commit para que quede en la misma transacción
         # Si falla o retorna False, abort con rollback explícito
         from app.modules.projects.services import touch_project_updated_at
+        
+        # LOGGING OBLIGATORIO: touch_project_before con txid_current()
         _upload_logger.info(
-            "project_touch_attempt project_id=%s reason=input_file_uploaded",
+            "touch_project_before: project_id=%s txid=%s reason=input_file_uploaded",
             str(project_id)[:8],
+            txid,
         )
+        
         touch_success = await touch_project_updated_at(db, project_id, reason="input_file_uploaded")
+        
+        # LOGGING OBLIGATORIO: touch_project_after
+        _upload_logger.info(
+            "touch_project_after: project_id=%s txid=%s success=%s reason=input_file_uploaded",
+            str(project_id)[:8],
+            txid,
+            touch_success,
+        )
         
         if touch_success is not True:
             _upload_logger.error(
-                "touch_project_returned_false: project_id=%s reason=input_file_uploaded - rolling back",
+                "touch_project_returned_false: project_id=%s txid=%s reason=input_file_uploaded - rolling back",
                 str(project_id)[:8],
+                txid,
             )
             await db.rollback()
+            _upload_logger.info(
+                "upload_tx_rollback: project_id=%s txid=%s reason=touch_failed",
+                str(project_id)[:8],
+                txid,
+            )
             # False significa que el proyecto no existe en DB
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -393,22 +393,30 @@ async def upload_input_file(
         # --- COMMIT ÚNICO (incluye file + touch en la misma transacción) ---
         await db.commit()
         
+        # LOGGING OBLIGATORIO: upload_tx_commit
+        _upload_logger.info(
+            "upload_tx_commit: project_id=%s txid=%s file_id=%s",
+            str(project_id)[:8],
+            txid,
+            str(response.input_file_id)[:8],
+        )
+        
         # --- Instrumentación: verificar updated_at post-commit ---
         try:
-            from sqlalchemy import text
             verify_updated = await db.execute(
                 text("SELECT updated_at FROM public.projects WHERE id = :id"),
                 {"id": str(project_id)},
             )
             updated_at_value = verify_updated.scalar()
             _upload_logger.info(
-                "project_touch_committed project_id=%s updated_at=%s",
+                "upload_verify_updated_at: project_id=%s txid=%s updated_at=%s",
                 str(project_id)[:8],
+                txid,
                 updated_at_value,
             )
         except Exception as verify_e:
             _upload_logger.warning(
-                "project_touch_verify_failed: project_id=%s error=%s",
+                "upload_verify_updated_at_error: project_id=%s error=%s",
                 str(project_id)[:8],
                 str(verify_e),
             )
@@ -462,6 +470,11 @@ async def upload_input_file(
         # SIEMPRE rollback para cualquier HTTPException (incluso las que no vienen del touch)
         # para evitar dejar la sesión en estado inconsistente
         await db.rollback()
+        _upload_logger.info(
+            "upload_tx_rollback: project_id=%s txid=%s reason=http_exception",
+            str(project_id)[:8],
+            txid,
+        )
         raise
     except FileValidationError as exc:
         status_code = 400
@@ -506,9 +519,15 @@ async def upload_input_file(
         status_code = 500
         result = "internal_error"
         await db.rollback()
+        _upload_logger.info(
+            "upload_tx_rollback: project_id=%s txid=%s reason=unexpected_exception",
+            str(project_id)[:8],
+            txid,
+        )
         _upload_logger.error(
-            "upload_unexpected_error: project_id=%s error=%s",
-            str(project_id)[:8] if 'project_id' in dir() else "<unknown>",
+            "upload_unexpected_error: project_id=%s txid=%s error=%s",
+            str(project_id)[:8],
+            txid,
             str(exc),
             exc_info=True,
         )

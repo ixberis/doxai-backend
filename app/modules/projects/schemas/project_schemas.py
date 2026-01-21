@@ -154,6 +154,9 @@ class ProjectRead(UTF8SafeModel):
     ProjectState/ProjectStatus.
     
     BD 2.0 SSOT: auth_user_id es el ownership canónico (UUID).
+    
+    last_activity_at: Máximo entre updated_at y el último evento de archivo.
+    Usado por el frontend para mostrar "Actualizado: ..." correctamente.
     """
     project_id: UUID = Field(..., alias="id", description="ID único del proyecto")
     auth_user_id: UUID = Field(..., description="ID del usuario propietario (UUID SSOT)")
@@ -166,6 +169,12 @@ class ProjectRead(UTF8SafeModel):
     updated_at: datetime = Field(..., description="Última actualización")
     ready_at: Optional[datetime] = Field(None, description="Fecha cuando alcanzó estado 'ready'")
     archived_at: Optional[datetime] = Field(None, description="Fecha de archivo")
+    
+    # Campos de actividad calculados (opcional, set por queries de listado)
+    last_activity_at: Optional[datetime] = Field(
+        None,
+        description="Máximo entre updated_at y último evento de archivo. Para display de 'Actualizado:'."
+    )
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -182,7 +191,8 @@ class ProjectRead(UTF8SafeModel):
                 "created_at": "2025-10-01T10:00:00Z",
                 "updated_at": "2025-10-18T15:30:00Z",
                 "ready_at": "2025-10-18T15:30:00Z",
-                "archived_at": None
+                "archived_at": None,
+                "last_activity_at": "2025-10-18T16:00:00Z"
             }
         }
     )

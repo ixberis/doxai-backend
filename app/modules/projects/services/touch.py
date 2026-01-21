@@ -14,6 +14,7 @@ SSOT:
 - Usa UPDATE ... SET updated_at = timezone('utc', now()) RETURNING updated_at
 - El timestamp viene del servidor de DB (no del reloj del app)
 - Transaction-agnostic: no hace flush() ni commit(), el caller maneja la transacción
+- Logging con txid_current() para correlación transaccional
 
 Autor: DoxAI
 Fecha: 2026-01-21
@@ -51,14 +52,42 @@ async def touch_project_updated_at(
         Transaction-agnostic: NO hace flush() ni commit().
         El UPDATE con RETURNING ya sincroniza los cambios en la transacción actual.
         El caller es responsable de commit() o rollback().
+        
+        Incluye logging con txid_current() para correlación transaccional.
     """
     try:
-        # Primero obtener el valor actual de updated_at para logging
+        # Obtener txid_current() y updated_at ANTES para logging de correlación
         before_result = await db.execute(
-            text("SELECT updated_at FROM public.projects WHERE id = :id"),
+            text("""
+                SELECT 
+                    txid_current() AS txid,
+                    updated_at 
+                FROM public.projects 
+                WHERE id = :id
+            """),
             {"id": str(project_id)},
         )
-        updated_at_before = before_result.scalar()
+        before_row = before_result.mappings().fetchone()
+        
+        if before_row is None:
+            # El proyecto no existe
+            _logger.warning(
+                "touch_project_before_not_found: project_id=%s reason=%s (project does not exist)",
+                str(project_id)[:8],
+                reason,
+            )
+            return False
+        
+        txid = before_row.get("txid")
+        updated_at_before = before_row.get("updated_at")
+        
+        _logger.info(
+            "touch_project_before: project_id=%s txid=%s updated_at_before=%s reason=%s",
+            str(project_id)[:8],
+            txid,
+            updated_at_before,
+            reason,
+        )
         
         # Ejecutar UPDATE con RETURNING para obtener el nuevo valor
         # El RETURNING asegura que el cambio está sincronizado en la transacción
@@ -77,17 +106,19 @@ async def touch_project_updated_at(
         if row is not None:
             updated_at_after = row[0]
             _logger.info(
-                "touch_project_ok: project_id=%s reason=%s before=%s after=%s",
+                "touch_project_after: project_id=%s txid=%s updated_at_after=%s rowcount=1 reason=%s",
                 str(project_id)[:8],
-                reason,
-                updated_at_before,
+                txid,
                 updated_at_after,
+                reason,
             )
             return True
         else:
-            _logger.warning(
-                "touch_project_not_found: project_id=%s reason=%s (no rows updated)",
+            # Esto no debería ocurrir si before_row existía, pero por seguridad
+            _logger.error(
+                "touch_project_update_no_rows: project_id=%s txid=%s reason=%s (unexpected: project existed before but UPDATE returned no rows)",
                 str(project_id)[:8],
+                txid,
                 reason,
             )
             return False

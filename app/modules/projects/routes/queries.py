@@ -218,6 +218,9 @@ async def list_projects_for_user(
 # ---------------------------------------------------------------------------
 # Listar proyectos activos (state != ARCHIVED)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Listar proyectos activos (state != ARCHIVED) con last_activity_at
+# ---------------------------------------------------------------------------
 @router.get(
     "/active-projects",
     response_model=ProjectListResponse,
@@ -233,8 +236,10 @@ async def list_active_projects(
     include_total: bool = Query(False),
     ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
     q: ProjectsQueryService = Depends(get_projects_query_service_timed),  # DB instrumentation
+    db: AsyncSession = Depends(get_db),  # Para calcular last_activity_at
 ):
     from app.shared.observability.request_telemetry import RequestTelemetry
+    from app.modules.projects.facades.queries.last_activity import get_last_activity_at_batch
     
     telemetry = RequestTelemetry.create("projects.active-projects")
     
@@ -276,14 +281,37 @@ async def list_active_projects(
                 include_total=include_total,
             )
 
-        # Fase: Serialization
+        # Fase: Serialization + last_activity_at enrichment
         with telemetry.measure("ser_ms"):
             if isinstance(items_or_tuple, tuple):
                 items, total = items_or_tuple
             else:
                 items = items_or_tuple
                 total = len(items)
-            response_items = [_project_read_validate(p) for p in items]
+            
+            # Obtener IDs de proyectos para batch query de last_activity_at
+            project_ids = []
+            for p in items:
+                pid = getattr(p, 'id', None) or getattr(p, 'project_id', None)
+                if pid:
+                    project_ids.append(pid if isinstance(pid, UUID) else UUID(str(pid)))
+            
+            # Batch query para last_activity_at (NO catch silencioso - propaga errores)
+            activity_map = {}
+            if project_ids:
+                activity_map = await get_last_activity_at_batch(db, project_ids)
+            
+            # Serializar con last_activity_at enriquecido
+            response_items = []
+            for p in items:
+                validated = _project_read_validate(p)
+                pid = validated.project_id
+                if pid in activity_map and activity_map[pid]:
+                    validated.last_activity_at = activity_map[pid]
+                else:
+                    # Fallback: usar updated_at si no hay datos de actividad
+                    validated.last_activity_at = validated.updated_at
+                response_items.append(validated)
 
         # Set flags for observability
         telemetry.set_flag("rows", len(items))
@@ -309,7 +337,7 @@ async def list_active_projects(
 
 
 # ---------------------------------------------------------------------------
-# Listar proyectos cerrados (state == ARCHIVED)
+# Listar proyectos cerrados (state == ARCHIVED) con last_activity_at
 # ---------------------------------------------------------------------------
 @router.get(
     "/closed-projects",
@@ -326,8 +354,10 @@ async def list_closed_projects(
     include_total: bool = Query(False),
     ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms vs ~1200ms ORM)
     q: ProjectsQueryService = Depends(get_projects_query_service_timed),  # DB instrumentation
+    db: AsyncSession = Depends(get_db),  # Para calcular last_activity_at
 ):
     from app.shared.observability.request_telemetry import RequestTelemetry
+    from app.modules.projects.facades.queries.last_activity import get_last_activity_at_batch
     
     telemetry = RequestTelemetry.create("projects.closed-projects")
     
@@ -368,14 +398,37 @@ async def list_closed_projects(
                 include_total=include_total,
             )
 
-        # Fase: Serialization
+        # Fase: Serialization + last_activity_at enrichment
         with telemetry.measure("ser_ms"):
             if isinstance(items_or_tuple, tuple):
                 items, total = items_or_tuple
             else:
                 items = items_or_tuple
                 total = len(items)
-            response_items = [_project_read_validate(p) for p in items]
+            
+            # Obtener IDs de proyectos para batch query de last_activity_at
+            project_ids = []
+            for p in items:
+                pid = getattr(p, 'id', None) or getattr(p, 'project_id', None)
+                if pid:
+                    project_ids.append(pid if isinstance(pid, UUID) else UUID(str(pid)))
+            
+            # Batch query para last_activity_at (NO catch silencioso - propaga errores)
+            activity_map = {}
+            if project_ids:
+                activity_map = await get_last_activity_at_batch(db, project_ids)
+            
+            # Serializar con last_activity_at enriquecido
+            response_items = []
+            for p in items:
+                validated = _project_read_validate(p)
+                pid = validated.project_id
+                if pid in activity_map and activity_map[pid]:
+                    validated.last_activity_at = activity_map[pid]
+                else:
+                    # Fallback: usar updated_at si no hay datos de actividad
+                    validated.last_activity_at = validated.updated_at
+                response_items.append(validated)
 
         # Set flags for observability
         telemetry.set_flag("rows", len(items))
@@ -575,10 +628,10 @@ async def list_project_file_events(
 # ---------------------------------------------------------------------------
 @router.get(
     "/{project_id}/timestamps",
-    summary="Diagnóstico: obtener created_at y updated_at del proyecto",
+    summary="Diagnóstico: obtener timestamps del proyecto con actividad de archivos",
     tags=["projects:diagnostic"],
     responses={
-        200: {"description": "Timestamps del proyecto"},
+        200: {"description": "Timestamps del proyecto con última actividad"},
         404: {"description": "Proyecto no encontrado"},
     },
 )
@@ -592,12 +645,30 @@ async def get_project_timestamps(
     Endpoint de diagnóstico para verificar que projects.updated_at
     se actualiza correctamente tras uploads de archivos.
     
+    Retorna:
+    - created_at: Fecha de creación del proyecto
+    - updated_at: Última actualización del proyecto (campo BD)
+    - latest_file_event_created_at: Timestamp del último evento de archivo
+    - last_activity_at: GREATEST(updated_at, latest_file_event_created_at)
+    - has_been_updated: True si updated_at > created_at
+    
     Uso: comparar created_at vs updated_at antes/después de subir un archivo.
     
     Requiere autenticación: solo el usuario dueño del proyecto puede acceder.
     Montado bajo /api/projects (requiere auth vía get_current_user_ctx).
     """
     from sqlalchemy import text
+    from app.modules.projects.facades.queries.last_activity import (
+        get_latest_file_event_at,
+        get_last_activity_at_single,
+    )
+    
+    # Log de acceso al endpoint
+    logger.info(
+        "timestamps_endpoint_called: project_id=%s user=%s",
+        str(project_id)[:8],
+        str(ctx.auth_user_id)[:8],
+    )
     
     # Verificar ownership: el proyecto debe pertenecer al usuario autenticado
     project = await q.get_project_by_id(project_id=project_id)
@@ -649,12 +720,32 @@ async def get_project_timestamps(
             detail="Proyecto no encontrado en BD",
         )
     
+    # Obtener datos de actividad de archivos
+    latest_file_event_at = await get_latest_file_event_at(db, project_id)
+    last_activity_at = await get_last_activity_at_single(db, project_id)
+    
+    # Log de resultado
+    logger.info(
+        "timestamps_endpoint_result: project_id=%s updated_at=%s latest_file_event=%s last_activity=%s",
+        str(project_id)[:8],
+        row["updated_at"],
+        latest_file_event_at,
+        last_activity_at,
+    )
+    
     return {
         "project_id": str(project_id),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         "has_been_updated": row["has_been_updated"],
-        "diagnostic_note": "Si has_been_updated=False después de subir archivos, hay un bug de persistencia.",
+        "latest_file_event_created_at": latest_file_event_at.isoformat() if latest_file_event_at else None,
+        "last_activity_at": last_activity_at.isoformat() if last_activity_at else None,
+        "diagnostic_note": (
+            "Después de un upload exitoso: "
+            "1) updated_at debe cambiar (has_been_updated=True), "
+            "2) latest_file_event_created_at debe tener el timestamp del upload, "
+            "3) last_activity_at debe ser >= latest_file_event_created_at."
+        ),
     }
 
 
