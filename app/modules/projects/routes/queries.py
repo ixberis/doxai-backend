@@ -661,6 +661,7 @@ async def get_project_timestamps(
     from app.modules.projects.facades.queries.last_activity import (
         get_latest_file_event_at,
         get_last_activity_at_single,
+        get_latest_input_file_at_single,
     )
     
     # Log de acceso al endpoint
@@ -700,6 +701,7 @@ async def get_project_timestamps(
         )
     
     # Obtener timestamps directamente de la BD usando Depends(get_db)
+    # SSOT: Cast explícito ::uuid y pasar UUID directamente
     result = await db.execute(
         text("""
             SELECT 
@@ -708,9 +710,9 @@ async def get_project_timestamps(
                 updated_at,
                 (updated_at > created_at) AS has_been_updated
             FROM public.projects 
-            WHERE id = :id
+            WHERE id = :id::uuid
         """),
-        {"id": str(project_id)},
+        {"id": project_id},
     )
     row = result.mappings().fetchone()
     
@@ -720,15 +722,18 @@ async def get_project_timestamps(
             detail="Proyecto no encontrado en BD",
         )
     
-    # Obtener datos de actividad de archivos
+    # Obtener datos de actividad de archivos (incluye input_files históricos)
     latest_file_event_at = await get_latest_file_event_at(db, project_id)
+    latest_input_file_at = await get_latest_input_file_at_single(db, project_id)
     last_activity_at = await get_last_activity_at_single(db, project_id)
     
-    # Log de resultado
+    # Log de resultado completo
     logger.info(
-        "timestamps_endpoint_result: project_id=%s updated_at=%s latest_file_event=%s last_activity=%s",
+        "timestamps_endpoint_result: project_id=%s updated_at=%s "
+        "latest_input_file=%s latest_file_event=%s last_activity=%s",
         str(project_id)[:8],
         row["updated_at"],
+        latest_input_file_at,
         latest_file_event_at,
         last_activity_at,
     )
@@ -738,13 +743,13 @@ async def get_project_timestamps(
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         "has_been_updated": row["has_been_updated"],
+        # NUEVO: timestamps de input_files históricos
+        "latest_input_file_created_at": latest_input_file_at.isoformat() if latest_input_file_at else None,
         "latest_file_event_created_at": latest_file_event_at.isoformat() if latest_file_event_at else None,
         "last_activity_at": last_activity_at.isoformat() if last_activity_at else None,
         "diagnostic_note": (
-            "Después de un upload exitoso: "
-            "1) updated_at debe cambiar (has_been_updated=True), "
-            "2) latest_file_event_created_at debe tener el timestamp del upload, "
-            "3) last_activity_at debe ser >= latest_file_event_created_at."
+            "last_activity_at = GREATEST(updated_at, COALESCE(latest_file_event, latest_input_file)). "
+            "Para proyectos históricos sin eventos, se usa input_files.created_at."
         ),
     }
 

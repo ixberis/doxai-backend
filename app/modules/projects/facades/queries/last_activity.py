@@ -29,6 +29,55 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _logger = logging.getLogger("projects.last_activity")
 
 
+async def get_latest_input_file_at_batch(
+    db: AsyncSession,
+    project_ids: List[UUID],
+) -> Dict[UUID, Optional[datetime]]:
+    """
+    Obtiene el timestamp del input_file más reciente para múltiples proyectos.
+    
+    Args:
+        db: Sesión async de base de datos
+        project_ids: Lista de UUIDs de proyectos
+        
+    Returns:
+        Dict mapping project_id -> latest_input_file_created_at
+    """
+    if not project_ids:
+        return {}
+    
+    try:
+        stmt = text("""
+            SELECT 
+                project_id,
+                MAX(created_at) AS latest_input_file_at
+            FROM public.input_files
+            WHERE project_id IN :project_ids
+            GROUP BY project_id
+        """).bindparams(bindparam("project_ids", expanding=True))
+        
+        result = await db.execute(stmt, {"project_ids": project_ids})
+        rows = result.mappings().fetchall()
+        
+        input_map: Dict[UUID, Optional[datetime]] = {}
+        for row in rows:
+            pid = row["project_id"]
+            if not isinstance(pid, UUID):
+                pid = UUID(str(pid))
+            input_map[pid] = row["latest_input_file_at"]
+        
+        return input_map
+        
+    except Exception as e:
+        _logger.error(
+            "latest_input_file_batch_error: project_ids_count=%d error=%s",
+            len(project_ids),
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
 async def get_last_activity_at_batch(
     db: AsyncSession,
     project_ids: List[UUID],
@@ -36,7 +85,17 @@ async def get_last_activity_at_batch(
     """
     Obtiene last_activity_at para múltiples proyectos.
     
-    SSOT: GREATEST(projects.updated_at, MAX(project_file_event_logs.created_at))
+    SSOT AMPLIADO: 
+    last_activity_at = GREATEST(
+        projects.updated_at, 
+        COALESCE(
+            MAX(project_file_event_logs.created_at),
+            MAX(input_files.created_at),
+            projects.updated_at
+        )
+    )
+    
+    Esto incluye uploads históricos que no tienen eventos en project_file_event_logs.
     
     Args:
         db: Sesión async de base de datos
@@ -52,8 +111,7 @@ async def get_last_activity_at_batch(
         return {}
     
     try:
-        # SSOT: Usar IN con bindparam(expanding=True) para lista de UUIDs
-        # NO convertir a strings - pasar UUIDs directamente
+        # SSOT AMPLIADO: incluir input_files.created_at para uploads históricos
         stmt = text("""
             SELECT 
                 p.id AS project_id,
@@ -63,6 +121,9 @@ async def get_last_activity_at_batch(
                         (SELECT MAX(e.created_at) 
                          FROM public.project_file_event_logs e 
                          WHERE e.project_id = p.id),
+                        (SELECT MAX(i.created_at)
+                         FROM public.input_files i
+                         WHERE i.project_id = p.id),
                         p.updated_at
                     )
                 ) AS last_activity_at
@@ -172,10 +233,48 @@ async def get_latest_file_event_at(
             return None
 
 
+async def get_latest_input_file_at_single(
+    db: AsyncSession,
+    project_id: UUID,
+) -> Optional[datetime]:
+    """
+    Obtiene el timestamp del input_file más reciente para un proyecto.
+    
+    Args:
+        db: Sesión async de base de datos
+        project_id: UUID del proyecto
+        
+    Returns:
+        Timestamp del último input_file o None
+    """
+    try:
+        stmt = text("""
+            SELECT MAX(created_at) AS latest_input_file
+            FROM public.input_files
+            WHERE project_id = :project_id::uuid
+        """)
+        
+        result = await db.execute(stmt, {"project_id": project_id})
+        row = result.fetchone()
+        
+        return row[0] if row and row[0] else None
+        
+    except Exception as e:
+        _logger.error(
+            "latest_input_file_error: project_id=%s error=%s",
+            str(project_id)[:8],
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
 __all__ = [
     "get_last_activity_at_batch",
     "get_last_activity_at_single", 
     "get_latest_file_event_at",
+    "get_latest_input_file_at_batch",
+    "get_latest_input_file_at_single",
 ]
 
 # Fin del archivo backend/app/modules/projects/facades/queries/last_activity.py
