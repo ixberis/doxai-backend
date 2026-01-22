@@ -434,6 +434,24 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# INTERNAL FILES RECONCILE (reconciliación de archivos fantasma)
+# ═══════════════════════════════════════════════════════════════════════════
+try:
+    from app.modules.files.routes.internal_reconcile_routes import router as internal_reconcile_router
+
+    # Montar en AMBAS capas:
+    # - /api/_internal/files/reconcile-all
+    # - /_internal/files/reconcile-all
+    # - /api/_internal/files/{project_id}/reconcile-storage
+    # - /_internal/files/{project_id}/reconcile-storage
+    _include_once(api, internal_reconcile_router, "internal-files-reconcile", _mounted_api)
+    _include_once(public, internal_reconcile_router, "internal-files-reconcile", _mounted_public)
+    logger.info("✅ Endpoint interno de Files reconcile montado (api + public)")
+except Exception as e:
+    logger.debug("Endpoint interno de Files reconcile no montado: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # DEBUG ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════
 @api.get("/_debug/loaded-routers")

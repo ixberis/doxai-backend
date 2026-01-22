@@ -422,6 +422,14 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.debug(f"Expire intents job no disponible: {e}")
 
+            # Job 3: reconciliación de archivos fantasma
+            # Usa env vars: FILES_RECONCILE_GHOSTS_ENABLED, FILES_RECONCILE_GHOSTS_INTERVAL_HOURS
+            try:
+                from app.modules.files.jobs.reconcile_ghost_files_job import register_reconcile_ghost_files_job
+                register_reconcile_ghost_files_job(scheduler)
+            except Exception as e:
+                logger.debug(f"Reconcile ghost files job no disponible: {e}")
+
             scheduler.start()
             logger.info("⏰ Scheduler iniciado con jobs programados")
         except Exception as e:

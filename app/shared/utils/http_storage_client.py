@@ -20,7 +20,10 @@ import logging
 import httpx
 import threading
 from typing import List, Dict, Any, Optional, Union
+from urllib.parse import quote
+
 from app.shared.config import settings
+from app.shared.utils.storage_errors import StorageRequestError
 
 # Usar connection pool si está disponible
 try:
@@ -42,27 +45,52 @@ def _is_not_found(response: httpx.Response) -> bool:
     """
     Helper para detectar respuestas 'not found' de Supabase Storage.
     
-    ROBUSTO: Maneja HTTP 404, HTTP 400 con error="not_found", y HTTP 400 genérico
-    como "no existe" para eliminar ruido en logs cuando archivos simplemente no existen.
+    SOLO 404 se considera "not found". 
+    400/401/403/5xx son errores de storage que deben propagarse.
     """
-    if response.status_code == 404:
-        return True
+    return response.status_code == 404
+
+
+# Patrones en body que indican "objeto no encontrado" (Supabase a veces retorna 400 en vez de 404)
+_NOT_FOUND_PATTERNS = (
+    "object not found",
+    "not found",
+    "no such object",
+    "the resource was not found",
+    "key not found",
+    "file not found",
+    "does not exist",
+)
+
+
+def _is_not_found_body(status_code: int, body: str) -> bool:
+    """
+    Detecta si un error 400 de Supabase realmente indica 'objeto no encontrado'.
     
-    # Tratamiento robusto de HTTP 400 como "not found" genérico
-    # Esto elimina el ruido de logs cuando se verifica existencia de archivos
-    if response.status_code == 400:
-        try:
-            data = response.json()
-            # Verificar si es explícitamente "not_found"
-            if data.get("error") == "not_found":
-                return True
-            # Tratar otros 400 como "no existe" para HEAD requests (robustez)
-            return True
-        except Exception:
-            # Si no se puede parsear JSON, asumir que es "not found"
-            return True
+    Algunos endpoints de Supabase retornan 400 con mensaje descriptivo
+    cuando el objeto no existe en vez de 404.
     
-    return False
+    Args:
+        status_code: Código HTTP de la respuesta
+        body: Cuerpo de la respuesta como string
+        
+    Returns:
+        True si es 400 y el body indica "not found"
+    """
+    if status_code != 400:
+        return False
+    
+    body_lower = body.lower()
+    return any(pattern in body_lower for pattern in _NOT_FOUND_PATTERNS)
+
+
+def _encode_path(path: str) -> str:
+    """
+    URL-encode del path preservando slashes.
+    
+    Ejemplo: "users/abc/file name.pdf" -> "users/abc/file%20name.pdf"
+    """
+    return quote(path, safe="/")
 
 
 async def exists(storage_path: str, bucket: str = None) -> bool:
@@ -79,10 +107,11 @@ async def exists(storage_path: str, bucket: str = None) -> bool:
     from app.shared.config import settings
     
     bucket = bucket or settings.supabase_bucket_name
-    client = await get_pooled_client()  # Usar pool de conexiones
+    base_url = str(settings.supabase_url).rstrip("/")
+    encoded_path = _encode_path(storage_path)
+    client = await get_pooled_client()
     
-    # Use HEAD request to check existence
-    url = f"{settings.supabase_url}/storage/v1/object/{bucket}/{storage_path}"
+    url = f"{base_url}/storage/v1/object/{bucket}/{encoded_path}"
     headers = {
         "Authorization": f"Bearer {settings.supabase_service_role_key}"
     }
@@ -130,7 +159,8 @@ async def storage_exists(storage_path: str) -> bool:
         target_file = path_parts[-1]
     
     # List files in folder and check if target file exists
-    list_url = f"{settings.supabase_url}/storage/v1/object/list/{settings.supabase_bucket_name}"
+    base_url = str(settings.supabase_url).rstrip("/")
+    list_url = f"{base_url}/storage/v1/object/list/{settings.supabase_bucket_name}"
     headers = {
         "Authorization": f"Bearer {settings.supabase_service_role_key}",
         "Content-Type": "application/json"
@@ -165,7 +195,8 @@ class SupabaseStorageHTTPClient:
         if not all([settings.supabase_url, settings.supabase_service_role_key]):
             raise RuntimeError("❌ Faltan variables de entorno para Supabase Storage")
         
-        self.base_url = settings.supabase_url
+        # SSOT: Normalizar base_url sin trailing slash
+        self.base_url = str(settings.supabase_url).rstrip("/")
         self.headers = {
             "Authorization": f"Bearer {settings.supabase_service_role_key}",
             "Content-Type": "application/json"
@@ -195,7 +226,8 @@ class SupabaseStorageHTTPClient:
         Raises:
             RuntimeError: Si la operación falla
         """
-        url = f"{self.base_url}/storage/v1/object/{bucket}/{path}"
+        encoded_path = _encode_path(path)
+        url = f"{self.base_url}/storage/v1/object/{bucket}/{encoded_path}"
         headers = {
             "Authorization": f"Bearer {settings.supabase_service_role_key}",
             "Content-Type": content_type
@@ -237,7 +269,8 @@ class SupabaseStorageHTTPClient:
         Retorna dict con 'exists', 'etag', 'content_length', etc.
         Retorna None si no puede obtener los metadatos.
         """
-        url = f"{self.base_url}/storage/v1/object/{bucket}/{path}"
+        encoded_path = _encode_path(path)
+        url = f"{self.base_url}/storage/v1/object/{bucket}/{encoded_path}"
         headers = {
             "Authorization": f"Bearer {settings.supabase_service_role_key}"
         }
@@ -278,7 +311,8 @@ class SupabaseStorageHTTPClient:
         Si if_none_match coincide, retorna {"not_modified": True}.
         Si no coincide o no existe ETag, descarga normalmente.
         """
-        url = f"{self.base_url}/storage/v1/object/{bucket}/{path}"
+        encoded_path = _encode_path(path)
+        url = f"{self.base_url}/storage/v1/object/{bucket}/{encoded_path}"
         headers = {
             "Authorization": f"Bearer {settings.supabase_service_role_key}"
         }
@@ -288,11 +322,10 @@ class SupabaseStorageHTTPClient:
             headers["If-None-Match"] = f'"{if_none_match}"'
         
         try:
-            client = await get_pooled_client()  # Usar pool de conexiones
+            client = await get_pooled_client()
             response = await client.get(url, headers=headers)
             
             if response.status_code == 304:
-                # Not Modified - contenido no ha cambiado
                 logger.debug(f"📋 If-None-Match: Not modified for {path}")
                 return {"not_modified": True}
             elif response.status_code == 200:
@@ -301,12 +334,30 @@ class SupabaseStorageHTTPClient:
             elif _is_not_found(response):
                 raise FileNotFoundError(f"Archivo no encontrado: {path}")
             else:
-                raise RuntimeError(f"Error al descargar archivo: HTTP {response.status_code}")
+                # 400/401/403/5xx -> StorageRequestError
+                body_snippet = response.text[:300] if response.text else ""
+                logger.warning(
+                    "storage_download_failed status=%d bucket=%s path=%s url=%s body=%s",
+                    response.status_code, bucket, path, url.split("?")[0], body_snippet
+                )
+                raise StorageRequestError(
+                    status_code=response.status_code,
+                    url=url,
+                    bucket=bucket,
+                    path=path,
+                    body_snippet=body_snippet,
+                )
                 
         except httpx.RequestError as e:
             raise RuntimeError(f"Error de conexión al descargar archivo: {e}")
     
-    async def download_file(self, bucket: str, path: str, if_none_match: str = None) -> dict:
+    async def download_file(
+        self, 
+        bucket: str, 
+        path: str, 
+        if_none_match: str = None,
+        try_signed_fallback: bool = True,
+    ) -> dict:
         """
         Descarga un archivo desde Supabase Storage con soporte para conditional requests.
         
@@ -314,15 +365,18 @@ class SupabaseStorageHTTPClient:
             bucket (str): Nombre del bucket
             path (str): Ruta completa del archivo en el bucket
             if_none_match (str): ETag para conditional request (opcional)
+            try_signed_fallback (bool): Si True, intenta signed URL en caso de 400/403
             
         Returns:
             dict: {"content": bytes, "etag": str, "not_modified": bool}
             
         Raises:
-            FileNotFoundError: Si el archivo no existe
-            RuntimeError: Si la operación falla
+            FileNotFoundError: Si el archivo no existe (404 o 400 con body "not found")
+            StorageRequestError: Si hay error de storage (400/401/403/5xx)
+            RuntimeError: Si la operación falla por conexión
         """
-        url = f"{self.base_url}/storage/v1/object/{bucket}/{path}"
+        encoded_path = _encode_path(path)
+        url = f"{self.base_url}/storage/v1/object/{bucket}/{encoded_path}"
         headers = self.headers.copy()
         
         # Add conditional headers if provided
@@ -334,29 +388,104 @@ class SupabaseStorageHTTPClient:
             response = await client.get(url, headers=headers)
             
             if response.status_code == 304:
-                # Not modified - content hasn't changed
                 logger.debug(f"📋 Conditional GET: Not modified for {path}")
                 return {"content": None, "etag": if_none_match, "not_modified": True}
-            elif _is_not_found(response):
+            
+            if _is_not_found(response):
                 raise FileNotFoundError(f"El archivo '{path}' no existe en el bucket '{bucket}'")
-            elif response.status_code != 200:
-                logger.error(f"❌ Error al descargar archivo: {response.status_code} - {response.text}")
-                raise RuntimeError(f"Error al descargar archivo: {response.status_code}")
+            
+            if response.status_code == 200:
+                # Extract ETag from response headers
+                etag = response.headers.get("etag", "").strip('"')
                 
-            # Extract ETag from response headers
-            etag = response.headers.get("etag", "").strip('"')
+                # Log download with conditional info
+                if if_none_match:
+                    logger.debug(f"📥 Conditional GET: Content changed for {path} ({len(response.content)} bytes)")
+                else:
+                    logger.debug(f"📥 Downloaded {path} ({len(response.content)} bytes, etag: {etag[:8] if etag else 'none'}...)")
+                
+                return {"content": response.content, "etag": etag, "not_modified": False}
             
-            # Log download with conditional info
-            if if_none_match:
-                logger.debug(f"📥 Conditional GET: Content changed for {path} ({len(response.content)} bytes)")
-            else:
-                logger.debug(f"📥 Downloaded {path} ({len(response.content)} bytes, etag: {etag[:8]}...)")
+            # Error case: 400/401/403/5xx
+            body_snippet = response.text[:300] if response.text else ""
             
-            return {"content": response.content, "etag": etag, "not_modified": False}
+            # Check if 400 is actually "not found"
+            if _is_not_found_body(response.status_code, body_snippet):
+                logger.debug(
+                    "storage_download_400_as_not_found bucket=%s path=%s body=%s",
+                    bucket, path, body_snippet[:100]
+                )
+                raise FileNotFoundError(f"El archivo '{path}' no existe en el bucket '{bucket}' (400 not found)")
             
+            # Log full error for diagnostics
+            logger.warning(
+                "storage_download_failed status=%d bucket=%s path=%s url=%s body=%s",
+                response.status_code, bucket, path, url.split("?")[0], body_snippet
+            )
+            
+            # Try signed URL fallback for 400/403
+            if try_signed_fallback and response.status_code in (400, 403):
+                logger.info(
+                    "storage_download_trying_signed_fallback bucket=%s path=%s",
+                    bucket, path
+                )
+                fallback_result = await self._download_via_signed_url(bucket, path)
+                if fallback_result is not None:
+                    logger.info(
+                        "storage_download_signed_fallback_ok bucket=%s path=%s bytes=%d",
+                        bucket, path, len(fallback_result)
+                    )
+                    return {"content": fallback_result, "etag": "", "not_modified": False}
+                logger.warning(
+                    "storage_download_signed_fallback_failed bucket=%s path=%s",
+                    bucket, path
+                )
+            
+            raise StorageRequestError(
+                status_code=response.status_code,
+                url=url,
+                bucket=bucket,
+                path=path,
+                body_snippet=body_snippet,
+            )
+                
         except httpx.RequestError as e:
             logger.error(f"🔥 Error de conexión al descargar archivo: {str(e)}")
             raise RuntimeError(f"Error de conexión: {str(e)}")
+    
+    async def _download_via_signed_url(self, bucket: str, path: str) -> Optional[bytes]:
+        """
+        Fallback: descarga archivo usando signed URL.
+        
+        Returns:
+            bytes si exitoso, None si falla
+        """
+        try:
+            signed_url = await self.create_signed_url(bucket, path, expires_in=60)
+            if not signed_url:
+                return None
+            
+            # Construir URL completa si es relativa
+            if signed_url.startswith("/"):
+                full_url = f"{self.base_url}{signed_url}"
+            else:
+                full_url = signed_url
+            
+            client = await get_pooled_client()
+            response = await client.get(full_url)
+            
+            if response.status_code == 200:
+                return response.content
+            
+            logger.debug(
+                "signed_url_download_failed status=%d url=%s",
+                response.status_code, full_url.split("?")[0]
+            )
+            return None
+            
+        except Exception as e:
+            logger.debug("signed_url_fallback_exception error=%s", str(e))
+            return None
     
     async def delete_file(self, bucket: str, path: str) -> bool:
         """
@@ -373,7 +502,8 @@ class SupabaseStorageHTTPClient:
             FileNotFoundError: Si el archivo no existe (404)
             RuntimeError: Si la operación falla por otras causas
         """
-        url = f"{self.base_url}/storage/v1/object/{bucket}/{path}"
+        encoded_path = _encode_path(path)
+        url = f"{self.base_url}/storage/v1/object/{bucket}/{encoded_path}"
         
         # Headers específicos para DELETE (sin Content-Type)
         delete_headers = {
@@ -488,7 +618,8 @@ class SupabaseStorageHTTPClient:
         Raises:
             RuntimeError: Si la operación falla
         """
-        url = f"{self.base_url}/storage/v1/object/sign/{bucket}/{path}"
+        encoded_path = _encode_path(path)
+        url = f"{self.base_url}/storage/v1/object/sign/{bucket}/{encoded_path}"
         payload = {"expiresIn": expires_in}
         
         try:

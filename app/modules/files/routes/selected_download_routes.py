@@ -19,17 +19,18 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
 from app.shared.config import settings
+from app.shared.utils.storage_errors import StorageRequestError
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 from app.modules.projects.models import Project
@@ -121,30 +122,43 @@ def is_system_file(path: str) -> bool:
     return filename.startswith(".")
 
 
-async def download_file_content(path: str, bucket: str) -> Optional[bytes]:
+async def download_file_content(path: str, bucket: str) -> Tuple[Optional[bytes], Optional[StorageRequestError]]:
     """
     Descarga contenido de un archivo desde Supabase Storage.
     
     Returns:
-        bytes si existe, None si no existe
+        Tuple[bytes | None, StorageRequestError | None]:
+        - (bytes, None) si existe
+        - (None, None) si no existe (404 o 400 con body "not found")
+        - (None, StorageRequestError) si hay error de storage (400/401/403/5xx genuino)
     """
     from app.shared.utils.http_storage_client import get_http_storage_client
     
     try:
         client = get_http_storage_client()
-        result = await client.download_file(bucket, path)
+        result = await client.download_file(bucket, path, try_signed_fallback=True)
         
         if result.get("not_modified"):
-            # Shouldn't happen without If-None-Match, but handle it
-            return None
+            return None, None
         
-        return result.get("content")
+        return result.get("content"), None
     except FileNotFoundError:
         logger.debug("download_file_not_found path=%s", path)
-        return None
+        return None, None
+    except StorageRequestError as e:
+        # Log con detalles completos para diagnóstico
+        logger.warning(
+            "download_selected_storage_error status=%d bucket=%s path=%s url=%s body=%s",
+            e.status_code, 
+            e.bucket, 
+            e.path,
+            e.url.split("?")[0] if e.url else "unknown",
+            e.body_snippet[:200] if e.body_snippet else "empty"
+        )
+        return None, e
     except Exception as e:
-        logger.warning("download_file_error path=%s error=%s", path, str(e))
-        return None
+        logger.warning("download_file_unexpected_error path=%s error=%s type=%s", path, str(e), type(e).__name__)
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +171,8 @@ async def download_file_content(path: str, bucket: str) -> Optional[bytes]:
     response_class=Response,
     responses={
         200: {
-            "description": "ZIP con archivos solicitados",
-            "content": {"application/zip": {}},
+            "description": "Archivo descargado o ZIP con archivos solicitados",
+            "content": {"application/zip": {}, "application/octet-stream": {}},
         },
         207: {
             "description": "ZIP parcial - algunos archivos no encontrados",
@@ -166,7 +180,8 @@ async def download_file_content(path: str, bucket: str) -> Optional[bytes]:
         },
         400: {"description": "Request inválido"},
         403: {"description": "Sin acceso al proyecto"},
-        404: {"description": "Proyecto no encontrado o todos los archivos faltantes"},
+        404: {"description": "Proyecto no encontrado o archivo no encontrado"},
+        502: {"description": "Error de storage backend"},
     },
 )
 async def download_selected_files(
@@ -183,8 +198,9 @@ async def download_selected_files(
     - Valida ownership del proyecto
     - Filtra paths inválidos y archivos del sistema
     - Retorna 200 si todos existen
-    - Retorna 207 con ZIP parcial si algunos faltan (header X-Download-Missing-Count)
-    - Retorna 404 si todos faltan
+    - Retorna 207 con ZIP parcial si algunos faltan (solo para multi-file, header X-Download-Missing-Count)
+    - Retorna 404 si todos faltan o si el único archivo solicitado no existe
+    - Retorna 502 si hay error de storage (400/401/403/5xx desde Supabase)
     """
     # Robust UUID normalization - handles both str and UUID objects
     raw_auth_user_id = ctx.auth_user_id
@@ -243,8 +259,20 @@ async def download_selected_files(
     # --- SINGLE FILE: descarga directa (no ZIP) ---
     if len(valid_paths) == 1:
         single_path = valid_paths[0]
-        content = await download_file_content(single_path, bucket)
+        content, storage_error = await download_file_content(single_path, bucket)
         
+        # Si hay error de storage (400/401/403/5xx) -> 502
+        if storage_error is not None:
+            logger.warning(
+                "download_selected_single_storage_error project_id=%s path=%s status=%d",
+                project_id, single_path, storage_error.status_code
+            )
+            return JSONResponse(
+                status_code=502,
+                content=storage_error.to_dict(),
+            )
+        
+        # Si no existe -> 404
         if content is None:
             logger.warning(
                 "download_selected_single_missing project_id=%s path=%s",
@@ -288,7 +316,18 @@ async def download_selected_files(
     
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in valid_paths:
-            content = await download_file_content(path, bucket)
+            content, storage_error = await download_file_content(path, bucket)
+            
+            # Si hay error de storage (400/401/403/5xx) en multi-file -> 502 inmediato
+            if storage_error is not None:
+                logger.warning(
+                    "download_selected_multi_storage_error project_id=%s path=%s status=%d",
+                    project_id, path, storage_error.status_code
+                )
+                return JSONResponse(
+                    status_code=502,
+                    content=storage_error.to_dict(),
+                )
             
             if content is None:
                 missing_paths.append(path)

@@ -11,8 +11,8 @@ Agrupa subrutas de:
 - /files/activity/*  (actividad de archivos producto)
 - /files/metrics/*   (métricas del módulo Files)
 
-Este router debe ser incluido desde el ensamblador principal de la app
-para exponer todo bajo el prefijo /files.
+NOTA: El endpoint de reconciliación está en internal_reconcile_routes.py
+y se monta bajo /_internal/files/* (requiere service token).
 
 Autor: Ixchel Beristáin Mendoza
 Fecha: 2025-11-22

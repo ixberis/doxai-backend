@@ -184,12 +184,67 @@ class InputFilesFacade:
 
         Si `include_archived` es False, sólo devuelve archivos activos
         y no archivados.
+        
+        Incluye campo calculado `storage_exists` que indica si el archivo
+        existe físicamente en storage.objects (detección de fantasmas).
+        
+        Degradación segura:
+        - Si storage.objects no es accesible, storage_exists = None (unknown)
+        - El frontend debe tratar None como "desconocido", permitiendo selección
         """
+        import logging
+        from sqlalchemy import text, bindparam
+        
+        _logger = logging.getLogger("files.list.storage_check")
+        
         items = await list_project_input_files(
             session=self._db,
             project_id=project_id,
             include_archived=include_archived,
         )
+        
+        # Obtener paths existentes en storage.objects para este bucket
+        # Query eficiente: batch check solo sobre items de esta página
+        storage_paths: set[str] | None = None  # None = unknown/error
+        storage_check_failed = False
+        
+        if items:
+            all_paths = [inp.input_file_storage_path for inp in items if inp.input_file_storage_path]
+            if all_paths:
+                try:
+                    # SQL robusto asyncpg: usar IN :paths con bindparam(expanding=True)
+                    storage_check_sql = text("""
+                        SELECT name 
+                        FROM storage.objects 
+                        WHERE bucket_id = :bucket 
+                        AND name IN :paths
+                    """).bindparams(
+                        bindparam("bucket"),
+                        bindparam("paths", expanding=True)
+                    )
+                    result = await self._db.execute(
+                        storage_check_sql,
+                        {"bucket": self._bucket, "paths": all_paths}
+                    )
+                    storage_paths = {row[0] for row in result.fetchall()}
+                except Exception as e:
+                    # Degradación segura: log error, marcar como unknown
+                    storage_check_failed = True
+                    _logger.error(
+                        "storage_objects_check_failed: project=%s bucket=%s error=%s paths_count=%d",
+                        str(project_id)[:8],
+                        self._bucket,
+                        str(e)[:200],
+                        len(all_paths),
+                    )
+        
+        def _compute_storage_exists(path: str | None) -> bool | None:
+            """Compute storage_exists with safe degradation."""
+            if storage_check_failed or storage_paths is None:
+                return None  # Unknown - storage check failed
+            if not path:
+                return None  # No path recorded
+            return path in storage_paths
 
         return [
             InputFileResponse(
@@ -213,6 +268,7 @@ class InputFilesFacade:
                 is_active=inp.input_file_is_active,
                 is_archived=inp.input_file_is_archived,
                 uploaded_at=inp.input_file_uploaded_at,
+                storage_exists=_compute_storage_exists(inp.input_file_storage_path),
             )
             for inp in items
         ]

@@ -238,6 +238,15 @@ class InputFileResponse(BaseModel):
         alias="input_file_uploaded_at",
         description="Fecha/hora de carga del archivo",
     )
+    
+    # Ghost file detection: 
+    # - True = file exists in storage
+    # - False = DB record without storage object (ghost)
+    # - None = unknown (storage.objects not accessible, treat as available)
+    storage_exists: Optional[bool] = Field(
+        default=None,
+        description="Indica si el archivo existe físicamente en storage. null=desconocido, false=fantasma",
+    )
 
 
 # Alias para compatibilidad interna
