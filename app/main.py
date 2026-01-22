@@ -779,6 +779,8 @@ def _log_critical_routes():
         "/api/projects/active-projects",
         "/api/projects/closed-projects",
         "/api/projects/ready",
+        # Files - download selected (causa de 404 en producción 2026-01-21)
+        "/api/files/{project_id}/download-selected",
     ]
     
     # Collect all registered routes with full paths

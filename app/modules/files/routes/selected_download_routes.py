@@ -176,16 +176,23 @@ async def download_selected_files(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Descarga archivos seleccionados como ZIP.
+    Descarga archivos seleccionados.
     
+    - Si hay 1 archivo: descarga directa (no ZIP)
+    - Si hay 2+: genera ZIP
     - Valida ownership del proyecto
     - Filtra paths inválidos y archivos del sistema
-    - Genera ZIP en memoria
-    - Retorna 200 con ZIP si todos existen
+    - Retorna 200 si todos existen
     - Retorna 207 con ZIP parcial si algunos faltan (header X-Download-Missing-Count)
     - Retorna 404 si todos faltan
     """
-    auth_user_id = UUID(ctx.auth_user_id)
+    # Robust UUID normalization - handles both str and UUID objects
+    raw_auth_user_id = ctx.auth_user_id
+    if isinstance(raw_auth_user_id, UUID):
+        auth_user_id = raw_auth_user_id
+    else:
+        auth_user_id = UUID(str(raw_auth_user_id))
+    
     paths = request.paths
     
     logger.info(
@@ -231,8 +238,49 @@ async def download_selected_files(
             }
         )
     
-    # Descargar archivos y crear ZIP
     bucket = settings.supabase_bucket_name
+    
+    # --- SINGLE FILE: descarga directa (no ZIP) ---
+    if len(valid_paths) == 1:
+        single_path = valid_paths[0]
+        content = await download_file_content(single_path, bucket)
+        
+        if content is None:
+            logger.warning(
+                "download_selected_single_missing project_id=%s path=%s",
+                project_id, single_path
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "file_missing",
+                    "message": "El archivo solicitado no fue encontrado",
+                    "path": single_path,
+                }
+            )
+        
+        filename = single_path.split("/")[-1] if "/" in single_path else single_path
+        
+        # Detect content type from extension
+        content_type = _guess_content_type(filename)
+        
+        logger.info(
+            "download_selected_single_ok project_id=%s file=%s bytes=%d",
+            project_id, filename, len(content)
+        )
+        
+        return Response(
+            content=content,
+            status_code=200,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Download-Count": "1",
+                "X-Download-Missing-Count": "0",
+            },
+        )
+    
+    # --- MULTIPLE FILES: generar ZIP ---
     zip_buffer = io.BytesIO()
     
     downloaded_count = 0
@@ -311,6 +359,36 @@ async def download_selected_files(
         media_type="application/zip",
         headers=headers,
     )
+
+
+def _guess_content_type(filename: str) -> str:
+    """
+    Determina el Content-Type basado en la extensión del archivo.
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    
+    content_types = {
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls": "application/vnd.ms-excel",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ppt": "application/vnd.ms-powerpoint",
+        "txt": "text/plain",
+        "csv": "text/csv",
+        "odt": "application/vnd.oasis.opendocument.text",
+        "ods": "application/vnd.oasis.opendocument.spreadsheet",
+        "odp": "application/vnd.oasis.opendocument.presentation",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+        "json": "application/json",
+        "xml": "application/xml",
+    }
+    
+    return content_types.get(ext, "application/octet-stream")
 
 
 # Fin del archivo backend/app/modules/files/routes/selected_download_routes.py
