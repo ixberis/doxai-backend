@@ -450,12 +450,12 @@ async def get_product_file_download_url_endpoint(
 
 @router.delete(
     "/{product_file_id}",
-    summary="Archivar archivo producto (y opcionalmente eliminar fichero físico)",
+    summary="Eliminar archivo producto (hard delete por defecto)",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def archive_product_file_endpoint(
     product_file_id: UUID,
-    hard: bool = False,
+    hard: bool = True,
     db: AsyncSession = Depends(get_db),
     storage_client: AsyncStorageClient = Depends(get_storage_client),
 ):
@@ -496,11 +496,19 @@ async def archive_product_file_endpoint(
                 )
                 
     except FileNotFoundError as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),

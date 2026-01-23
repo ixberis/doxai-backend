@@ -40,9 +40,23 @@ async def get_by_id(
     input_file_id: UUID,
 ) -> Optional[InputFile]:
     """
-    Obtiene un InputFile por su ID.
+    Obtiene un InputFile por su input_file_id (PK).
     """
     stmt = select(InputFile).where(InputFile.input_file_id == input_file_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_by_file_id(
+    session: AsyncSession,
+    file_id: UUID,
+) -> Optional[InputFile]:
+    """
+    Obtiene un InputFile por su file_id (FK a files_base).
+    
+    Busca directamente en input_files.file_id sin requerir JOIN con files_base.
+    """
+    stmt = select(InputFile).where(InputFile.file_id == file_id)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -134,11 +148,59 @@ async def mark_archived(
     return obj
 
 
+async def hard_delete(
+    session: AsyncSession,
+    *,
+    input_file_id: UUID,
+) -> bool:
+    """
+    Elimina físicamente un InputFile de la base de datos.
+    
+    También elimina el registro relacionado en files_base si existe.
+    
+    Returns:
+        True si se eliminó correctamente, False si no existía.
+    
+    NOTA:
+    - No hace commit, sólo ejecuta DELETE y flush.
+    - files_base tiene FK con ON DELETE CASCADE si está configurado,
+      pero hacemos delete explícito para ser defensivos.
+    """
+    from sqlalchemy import delete, text
+    
+    obj = await get_by_id(session, input_file_id)
+    if obj is None:
+        return False
+    
+    # Guardar file_id antes de borrar para limpiar files_base
+    file_id = obj.file_id
+    
+    # 1) Eliminar de input_files
+    await session.delete(obj)
+    await session.flush()
+    
+    # 2) Eliminar de files_base si existe (defensivo, por si no hay CASCADE)
+    if file_id is not None:
+        try:
+            await session.execute(
+                text("DELETE FROM public.files_base WHERE file_id = CAST(:file_id AS uuid)"),
+                {"file_id": str(file_id)},
+            )
+            await session.flush()
+        except Exception:
+            # Si falla (ej. ya fue eliminado por CASCADE), ignorar
+            pass
+    
+    return True
+
+
 __all__ = [
     "get_by_id",
+    "get_by_file_id",
     "list_by_project",
     "create_from_upload",
     "mark_archived",
+    "hard_delete",
 ]
 
 # Fin del archivo backend/app/modules/files/repositories/input_file_repository.py

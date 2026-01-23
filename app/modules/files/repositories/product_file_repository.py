@@ -46,9 +46,26 @@ async def get_by_id(
     file_id: UUID,
 ) -> Optional[ProductFile]:
     """
-    Obtiene un ProductFile por su ID.
+    Obtiene un ProductFile por su product_file_id (PK).
+    
+    NOTA: El parámetro se llama file_id por compatibilidad histórica,
+    pero en realidad es product_file_id.
     """
     stmt = select(ProductFile).where(ProductFile.product_file_id == file_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_by_file_id(
+    session: AsyncSession,
+    file_id: UUID,
+) -> Optional[ProductFile]:
+    """
+    Obtiene un ProductFile por su file_id (FK a files_base).
+    
+    Busca directamente en product_files.file_id sin requerir JOIN.
+    """
+    stmt = select(ProductFile).where(ProductFile.file_id == file_id)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -259,11 +276,63 @@ async def archive(
     return file_obj
 
 
+async def hard_delete(
+    session: AsyncSession,
+    product_file_id: UUID,
+) -> bool:
+    """
+    Elimina físicamente un ProductFile de la base de datos.
+    
+    También elimina el registro relacionado en files_base si existe.
+    
+    Returns:
+        True si se eliminó correctamente, False si no existía.
+    
+    NOTA:
+    - No hace commit, sólo ejecuta DELETE y flush.
+    """
+    from sqlalchemy import text
+    
+    file_obj = await get_by_id(session, product_file_id)
+    if file_obj is None:
+        return False
+    
+    # Guardar file_id antes de borrar para limpiar files_base
+    file_id = file_obj.file_id
+    
+    # 1) Eliminar de product_files
+    await session.delete(file_obj)
+    await session.flush()
+    
+    logger.info(
+        "product_file_hard_deleted",
+        extra={
+            "product_file_id": str(product_file_id),
+            "display_name": file_obj.product_file_display_name,
+        },
+    )
+    
+    # 2) Eliminar de files_base si existe (defensivo)
+    if file_id is not None:
+        try:
+            await session.execute(
+                text("DELETE FROM public.files_base WHERE file_id = CAST(:file_id AS uuid)"),
+                {"file_id": str(file_id)},
+            )
+            await session.flush()
+        except Exception:
+            pass
+    
+    return True
+
+
 __all__ = [
     "get_by_id",
+    "get_by_file_id",
     "upsert_by_project_and_path",
     "list_active",
     "archive",
+    "hard_delete",
 ]
 
 # Fin del archivo backend/app/modules/files/repositories/product_file_repository.py

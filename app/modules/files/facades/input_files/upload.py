@@ -46,6 +46,7 @@ from app.modules.files.services import (
     list_project_input_files,
     archive_input_file,
 )
+from app.modules.files.repositories import input_file_repository
 from app.modules.files.services.input_file_lookup_service import (
     get_input_file_by_file_id,
 )
@@ -356,23 +357,26 @@ class InputFilesFacade:
         self,
         *,
         file_id: UUID,
-        hard_delete: bool = False,
+        hard_delete: bool = True,
     ) -> None:
         """
         Elimina un archivo insumo.
 
-        Si `hard_delete` es False (por defecto):
-        - Marca el archivo como archivado (lógico) en BD.
-        - El archivo puede conservarse en el storage (o borrarse según
-          estrategia de retención futura).
+        Si `hard_delete` es True (por defecto):
+        - Elimina el archivo del storage (Supabase).
+        - Elimina el registro de la BD (input_files + files_base).
 
-        Si `hard_delete` es True:
-        - Marca como archivado y desactiva.
-        - Intenta eliminar el archivo del storage.
+        Si `hard_delete` es False (modo legacy/compat):
+        - Marca el archivo como archivado (lógico) en BD.
+        - El archivo se conserva en el storage.
 
         NOTA:
-        - Cualquier error de storage lanza FileStorageError.
+        - Si el archivo no existe en storage, se trata como idempotente (no error).
+        - Cualquier otro error de storage lanza FileStorageError.
         """
+        import logging
+        _logger = logging.getLogger("files.delete")
+        
         input_file = await get_input_file_by_file_id(
             session=self._db,
             file_id=file_id,
@@ -380,24 +384,50 @@ class InputFilesFacade:
         if input_file is None:
             raise FileNotFoundError("No se encontró un archivo insumo para ese file_id")
 
-        # 1) Archivado lógico
-        await archive_input_file(
-            session=self._db,
-            input_file_id=input_file.input_file_id,
-        )
-
-        # 2) Borrado físico opcional
         if hard_delete:
+            # 1) Eliminar del storage (idempotente si no existe)
+            storage_path = input_file.input_file_storage_path
             try:
                 await delete_file_from_storage(
                     self._storage,
                     bucket=self._bucket,
-                    key=input_file.input_file_storage_path,
+                    key=storage_path,
                 )
-            except Exception as exc:  # pragma: no cover - defensivo
-                raise FileStorageError(
-                    f"No se pudo eliminar el archivo del storage: {exc}"
-                ) from exc
+                _logger.info(
+                    "storage_delete_ok: bucket=%s path=%s",
+                    self._bucket,
+                    storage_path[:60] if storage_path else "<none>",
+                )
+            except Exception as exc:
+                error_str = str(exc).lower()
+                # Tratar "not found" como idempotente
+                if "not found" in error_str or "404" in error_str or "does not exist" in error_str:
+                    _logger.info(
+                        "storage_delete_idempotent: bucket=%s path=%s (already deleted or never existed)",
+                        self._bucket,
+                        storage_path[:60] if storage_path else "<none>",
+                    )
+                else:
+                    raise FileStorageError(
+                        f"No se pudo eliminar el archivo del storage: {exc}"
+                    ) from exc
+            
+            # 2) Eliminar de BD (input_files + files_base)
+            deleted = await input_file_repository.hard_delete(
+                session=self._db,
+                input_file_id=input_file.input_file_id,
+            )
+            if deleted:
+                _logger.info(
+                    "db_hard_delete_ok: input_file_id=%s",
+                    str(input_file.input_file_id)[:8],
+                )
+        else:
+            # Modo legacy: solo archivado lógico
+            await archive_input_file(
+                session=self._db,
+                input_file_id=input_file.input_file_id,
+            )
 
 
 __all__ = ["InputFilesFacade"]

@@ -661,23 +661,24 @@ async def get_input_file_download_url(
 
 @router.delete(
     "/{file_id}",
-    summary="Eliminar (archivar) un archivo insumo",
+    summary="Eliminar un archivo insumo (hard delete por defecto)",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_input_file(
     request: Request,
     file_id: UUID,
-    hard: bool = False,
+    hard: bool = True,
     facade: InputFilesFacade = Depends(get_input_files_facade),
 ):
     """
     Elimina un archivo insumo.
 
-    Si `hard` es False:
-        - Se archiva lógicamente en BD.
+    Si `hard` es True (por defecto):
+        - Elimina el fichero físico del storage.
+        - Elimina el registro de la BD.
 
-    Si `hard` es True:
-        - Además intenta eliminar el fichero físico del storage.
+    Si `hard` es False (modo legacy):
+        - Solo se archiva lógicamente en BD.
     """
     telemetry = RequestTelemetry.create("files.delete-input-file")
     status_code = 204
@@ -698,19 +699,26 @@ async def delete_input_file(
                 hard_delete=hard,
             )
         
-        # --- TOUCH PROJECT ---
+        # --- COMMIT: Single commit per request (SSOT pattern) ---
+        db = facade._db
+        await db.commit()
+        
+        # --- TOUCH PROJECT (best-effort, flush-only, no additional commit) ---
         if project_id_for_touch:
             try:
                 from app.modules.projects.services import touch_project_updated_at
-                db = facade._db
                 await touch_project_updated_at(db, project_id_for_touch, reason="input_file_deleted")
-                await db.commit()
+                # touch does flush only; commit already done above
             except Exception:
                 pass
                 
     except FileNotFoundError as exc:
         status_code = 404
         result = "not_found"
+        try:
+            await facade._db.rollback()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
@@ -718,6 +726,10 @@ async def delete_input_file(
     except FileStorageError as exc:
         status_code = 503
         result = "error"
+        try:
+            await facade._db.rollback()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),

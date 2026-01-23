@@ -30,6 +30,7 @@ from app.modules.files.services.storage_ops_service import (
     AsyncStorageClient,
     delete_file_from_storage,
 )
+from app.modules.files.repositories import product_file_repository
 
 
 async def archive_product_file(
@@ -38,19 +39,24 @@ async def archive_product_file(
     bucket_name: str,
     *,
     product_file_id: UUID,
-    hard_delete: bool = False,
+    hard_delete: bool = True,
 ) -> None:
     """
-    Archiva un archivo producto (y opcionalmente elimina el fichero físico).
+    Elimina un archivo producto.
 
-    Si `hard_delete` es False:
+    Si `hard_delete` es True (por defecto):
+        - Elimina el archivo del storage (Supabase).
+        - Elimina el registro de la BD (product_files + files_base).
+
+    Si `hard_delete` es False (modo legacy/compat):
         - Marca el archivo como archivado y no activo en BD.
-
-    Si `hard_delete` es True:
-        - Además intenta eliminar el archivo del storage.
+        - El archivo se conserva en el storage.
 
     Lanza FileNotFoundError si el archivo no existe.
     """
+    import logging
+    _logger = logging.getLogger("files.delete")
+    
     obj = await get_product_file(
         session=db,
         product_file_id=product_file_id,
@@ -58,24 +64,50 @@ async def archive_product_file(
     if obj is None:
         raise FileNotFoundError("No se encontró el archivo producto solicitado")
 
-    # 1) Archivado lógico
-    await archive_product_file_service(
-        session=db,
-        product_file_id=product_file_id,
-    )
-
-    # 2) Borrado físico opcional
     if hard_delete:
+        # 1) Eliminar del storage (idempotente si no existe)
+        storage_path = obj.product_file_storage_path
         try:
             await delete_file_from_storage(
                 storage_client,
                 bucket=bucket_name,
-                key=obj.product_file_storage_path,
+                key=storage_path,
             )
-        except Exception as exc:  # pragma: no cover - defensivo
-            raise FileStorageError(
-                f"No se pudo eliminar el archivo producto del storage: {exc}"
-            ) from exc
+            _logger.info(
+                "storage_delete_ok: bucket=%s path=%s",
+                bucket_name,
+                storage_path[:60] if storage_path else "<none>",
+            )
+        except Exception as exc:
+            error_str = str(exc).lower()
+            # Tratar "not found" como idempotente
+            if "not found" in error_str or "404" in error_str or "does not exist" in error_str:
+                _logger.info(
+                    "storage_delete_idempotent: bucket=%s path=%s (already deleted or never existed)",
+                    bucket_name,
+                    storage_path[:60] if storage_path else "<none>",
+                )
+            else:
+                raise FileStorageError(
+                    f"No se pudo eliminar el archivo producto del storage: {exc}"
+                ) from exc
+        
+        # 2) Eliminar de BD (product_files + files_base)
+        deleted = await product_file_repository.hard_delete(
+            session=db,
+            product_file_id=product_file_id,
+        )
+        if deleted:
+            _logger.info(
+                "db_hard_delete_ok: product_file_id=%s",
+                str(product_file_id)[:8],
+            )
+    else:
+        # Modo legacy: solo archivado lógico
+        await archive_product_file_service(
+            session=db,
+            product_file_id=product_file_id,
+        )
 
 
 __all__ = ["archive_product_file"]

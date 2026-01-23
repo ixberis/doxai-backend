@@ -38,14 +38,27 @@ async def get_input_file_by_file_id(
     """
     Devuelve el InputFile asociado a un file_id canónico, si existe.
 
-    Usa la tabla `files_base` para resolver la vinculación.
+    Estrategia de búsqueda (robusta):
+    1. Busca directamente en input_files.file_id (FK)
+    2. Fallback: JOIN con files_base para casos legacy
+    
+    Esto permite que funcione aunque files_base no tenga el registro.
     """
-    stmt = (
+    # 1) Búsqueda directa en input_files.file_id
+    stmt_direct = select(InputFile).where(InputFile.file_id == file_id)
+    result = await session.execute(stmt_direct)
+    input_file = result.scalar_one_or_none()
+    
+    if input_file is not None:
+        return input_file
+    
+    # 2) Fallback: JOIN con files_base (para casos legacy)
+    stmt_join = (
         select(InputFile)
         .join(FilesBase, FilesBase.input_file_id == InputFile.input_file_id)
         .where(FilesBase.file_id == file_id)
     )
-    result = await session.execute(stmt)
+    result = await session.execute(stmt_join)
     return result.scalar_one_or_none()
 
 
