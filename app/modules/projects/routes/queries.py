@@ -55,12 +55,13 @@ logger = logging.getLogger(__name__)
 # Mapea nombres de parámetros del frontend a columnas reales de la BD
 # ---------------------------------------------------------------------------
 SORT_COLUMN_WHITELIST = {
-    # Legacy aliases (frontend antiguo) - loggear warning cuando se usen
     # SOLO valores canónicos (nombres directos de columna)
     "updated_at": "updated_at",
     "created_at": "created_at",
     "ready_at": "ready_at",
     "archived_at": "archived_at",
+    "project_name": "project_name",  # Para ordenar por nombre (A-Z, Z-A)
+    # NOTA: last_activity_at fue removido - usar updated_at para "Más reciente"
 }
 
 # Set de valores legacy RECHAZADOS (para validación explícita y error 400)
@@ -752,6 +753,79 @@ async def get_project_timestamps(
             "Para proyectos históricos sin eventos, se usa input_files.input_file_uploaded_at."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Conteo de archivos de entrada por proyecto (batch, sin N+1)
+# ---------------------------------------------------------------------------
+@router.get(
+    "/input-files-counts",
+    summary="Conteo de archivos de entrada por proyecto (batch)",
+    response_model_exclude_none=True,
+)
+async def get_input_files_counts(
+    project_ids: list[UUID] = Query(default=[], description="Lista de project_ids (máx 200)"),
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Devuelve el conteo de input_files activos (no archivados) para cada proyecto.
+    
+    - Máximo 200 project_ids por request.
+    - Solo cuenta proyectos del usuario autenticado (auth_user_id).
+    - Excluye archivos con input_file_is_archived=true.
+    - Devuelve 0 para proyectos sin archivos (via LEFT JOIN).
+    """
+    from sqlalchemy import text
+    
+    # Validar límite
+    if len(project_ids) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "Máximo 200 project_ids por request",
+                "error_code": "TOO_MANY_PROJECT_IDS",
+            }
+        )
+    
+    if not project_ids:
+        return {"success": True, "items": []}
+    
+    auth_user_id = ctx.auth_user_id
+    
+    # Query agregada: una sola query para todos los proyectos
+    sql = text("""
+        SELECT 
+            p.id AS project_id,
+            COUNT(f.input_file_id) AS input_files_count
+        FROM public.projects p
+        LEFT JOIN public.input_files f
+            ON f.project_id = p.id
+            AND f.input_file_is_archived = false
+        WHERE p.auth_user_id = CAST(:auth_user_id AS uuid)
+            AND p.id = ANY(CAST(:project_ids AS uuid[]))
+        GROUP BY p.id
+    """)
+    
+    result = await db.execute(
+        sql,
+        {
+            "auth_user_id": str(auth_user_id),
+            "project_ids": [str(pid) for pid in project_ids],
+        }
+    )
+    rows = result.fetchall()
+    
+    # Construir respuesta con todos los IDs (incluye 0s via LEFT JOIN)
+    items = [
+        {
+            "project_id": str(row.project_id),
+            "input_files_count": row.input_files_count,
+        }
+        for row in rows
+    ]
+    
+    return {"success": True, "items": items}
 
 
 # Fin del archivo backend/app/modules/projects/routes/queries.py
