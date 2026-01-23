@@ -703,14 +703,26 @@ async def delete_input_file(
         db = facade._db
         await db.commit()
         
-        # --- TOUCH PROJECT (best-effort, flush-only, no additional commit) ---
+        # --- TOUCH PROJECT (debounced, best-effort, no additional commit) ---
+        # Usa Redis TTL para evitar múltiples touches en delete batch
         if project_id_for_touch:
+            import logging
+            _delete_logger = logging.getLogger("files.delete")
             try:
-                from app.modules.projects.services import touch_project_updated_at
-                await touch_project_updated_at(db, project_id_for_touch, reason="input_file_deleted")
-                # touch does flush only; commit already done above
-            except Exception:
-                pass
+                from app.modules.projects.services import touch_project_debounced
+                touched = await touch_project_debounced(
+                    db, 
+                    project_id_for_touch, 
+                    reason="input_file_deleted",
+                    # window_seconds usa DEFAULT_WINDOW_SECONDS (configurable via env var)
+                )
+                # Log ya se hace dentro de touch_project_debounced
+            except Exception as touch_e:
+                _delete_logger.warning(
+                    "touch_project_debounced_error: project_id=%s reason=input_file_deleted error=%s",
+                    str(project_id_for_touch)[:8],
+                    str(touch_e),
+                )
                 
     except FileNotFoundError as exc:
         status_code = 404

@@ -479,20 +479,25 @@ async def archive_product_file_endpoint(
         # --- COMMIT: Single commit per request (SSOT pattern) ---
         await db.commit()
         
-        # --- TOUCH PROJECT (best-effort, flush-only, no additional commit) ---
+        # --- TOUCH PROJECT (debounced, best-effort, no additional commit) ---
+        # Usa Redis TTL para evitar múltiples touches en delete batch
         if project_id_for_touch:
             import logging
             _pf_logger = logging.getLogger("files.product")
             try:
-                from app.modules.projects.services import touch_project_updated_at
-                await touch_project_updated_at(db, project_id_for_touch, reason="product_file_archived")
-                # touch does flush only; commit already done above
+                from app.modules.projects.services import touch_project_debounced
+                touched = await touch_project_debounced(
+                    db,
+                    project_id_for_touch,
+                    reason="product_file_deleted",
+                    # window_seconds usa DEFAULT_WINDOW_SECONDS (configurable via env var)
+                )
+                # Log ya se hace dentro de touch_project_debounced
             except Exception as touch_e:
                 _pf_logger.warning(
-                    "touch_project_failed: project_id=%s reason=product_file_archived error=%s",
+                    "touch_project_debounced_error: project_id=%s reason=product_file_deleted error=%s",
                     str(project_id_for_touch)[:8],
                     str(touch_e),
-                    exc_info=True,
                 )
                 
     except FileNotFoundError as exc:

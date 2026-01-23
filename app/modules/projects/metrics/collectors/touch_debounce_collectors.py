@@ -1,0 +1,144 @@
+# -*- coding: utf-8 -*-
+"""
+backend/app/modules/projects/metrics/collectors/touch_debounce_collectors.py
+
+Prometheus counters para observabilidad del touch_project_debounced.
+
+Métricas expuestas:
+- touch_debounced_allowed_total{reason} - Touch ejecutado
+- touch_debounced_skipped_total{reason} - Touch omitido por debounce
+- touch_debounced_redis_error_total{reason} - Error de Redis (fail-open)
+- touch_debounced_redis_unavailable_total{reason} - Redis no disponible
+
+Autor: DoxAI
+Fecha: 2026-01-23
+"""
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+from app.shared.core.metrics_helpers import get_or_create_counter
+
+_logger = logging.getLogger("projects.touch_debounce.metrics")
+
+# ---------------------------------------------------------------------------
+# Counter names (Prometheus naming convention)
+# ---------------------------------------------------------------------------
+TOUCH_ALLOWED_COUNTER_NAME = "touch_debounced_allowed_total"
+TOUCH_SKIPPED_COUNTER_NAME = "touch_debounced_skipped_total"
+TOUCH_REDIS_ERROR_COUNTER_NAME = "touch_debounced_redis_error_total"
+TOUCH_REDIS_UNAVAILABLE_COUNTER_NAME = "touch_debounced_redis_unavailable_total"
+
+# ---------------------------------------------------------------------------
+# Label names
+# ---------------------------------------------------------------------------
+LABEL_NAMES = ("reason",)
+
+
+# ---------------------------------------------------------------------------
+# Lazy initialization (evita errores si Prometheus no está configurado)
+# ---------------------------------------------------------------------------
+_counters_initialized = False
+_allowed_counter = None
+_skipped_counter = None
+_redis_error_counter = None
+_redis_unavailable_counter = None
+
+
+def _ensure_counters() -> bool:
+    """
+    Inicializa los counters de Prometheus de forma lazy.
+    
+    Returns:
+        True si los counters están disponibles, False si hubo error.
+    """
+    global _counters_initialized
+    global _allowed_counter, _skipped_counter
+    global _redis_error_counter, _redis_unavailable_counter
+    
+    if _counters_initialized:
+        return True
+    
+    try:
+        _allowed_counter = get_or_create_counter(
+            TOUCH_ALLOWED_COUNTER_NAME,
+            "Touch project debounced - allowed (executed)",
+            labelnames=LABEL_NAMES,
+        )
+        _skipped_counter = get_or_create_counter(
+            TOUCH_SKIPPED_COUNTER_NAME,
+            "Touch project debounced - skipped (debounce hit)",
+            labelnames=LABEL_NAMES,
+        )
+        _redis_error_counter = get_or_create_counter(
+            TOUCH_REDIS_ERROR_COUNTER_NAME,
+            "Touch project debounced - Redis error (fail-open)",
+            labelnames=LABEL_NAMES,
+        )
+        _redis_unavailable_counter = get_or_create_counter(
+            TOUCH_REDIS_UNAVAILABLE_COUNTER_NAME,
+            "Touch project debounced - Redis unavailable",
+            labelnames=LABEL_NAMES,
+        )
+        _counters_initialized = True
+        return True
+    except Exception as e:
+        _logger.warning(
+            "touch_debounce_metrics_init_error: %s - metrics disabled",
+            str(e),
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Public API - Safe increment functions (no exceptions)
+# ---------------------------------------------------------------------------
+def inc_touch_allowed(reason: str = "unspecified") -> None:
+    """Incrementa contador de touch permitido."""
+    try:
+        if _ensure_counters() and _allowed_counter:
+            _allowed_counter.labels(reason=reason).inc()
+    except Exception:
+        pass  # Never break caller flow
+
+
+def inc_touch_skipped(reason: str = "unspecified") -> None:
+    """Incrementa contador de touch omitido por debounce."""
+    try:
+        if _ensure_counters() and _skipped_counter:
+            _skipped_counter.labels(reason=reason).inc()
+    except Exception:
+        pass
+
+
+def inc_touch_redis_error(reason: str = "unspecified") -> None:
+    """Incrementa contador de error Redis (fail-open activo)."""
+    try:
+        if _ensure_counters() and _redis_error_counter:
+            _redis_error_counter.labels(reason=reason).inc()
+    except Exception:
+        pass
+
+
+def inc_touch_redis_unavailable(reason: str = "unspecified") -> None:
+    """Incrementa contador de Redis no disponible."""
+    try:
+        if _ensure_counters() and _redis_unavailable_counter:
+            _redis_unavailable_counter.labels(reason=reason).inc()
+    except Exception:
+        pass
+
+
+__all__ = [
+    "inc_touch_allowed",
+    "inc_touch_skipped",
+    "inc_touch_redis_error",
+    "inc_touch_redis_unavailable",
+    "TOUCH_ALLOWED_COUNTER_NAME",
+    "TOUCH_SKIPPED_COUNTER_NAME",
+    "TOUCH_REDIS_ERROR_COUNTER_NAME",
+    "TOUCH_REDIS_UNAVAILABLE_COUNTER_NAME",
+]
+
+# Fin del archivo

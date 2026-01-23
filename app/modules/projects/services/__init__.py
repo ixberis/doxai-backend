@@ -21,6 +21,7 @@ from .commands import ProjectsCommandService
 from .queries import ProjectsQueryService
 from .inmemory import InMemoryProjectsQueryService, InMemoryProjectsCommandService
 from .touch import touch_project_updated_at
+from .touch_debouncer import touch_project_debounced
 
 __all__ = [
     # Application services
@@ -31,6 +32,8 @@ __all__ = [
     "InMemoryProjectsCommandService",
     # Touch service (async only)
     "touch_project_updated_at",
+    # Touch debouncer (Redis TTL)
+    "touch_project_debounced",
 ]
 
 # Fin del archivo backend/app/modules/projects/services/__init__.py
