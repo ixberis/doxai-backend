@@ -680,9 +680,17 @@ async def delete_input_file(
     Si `hard` es False (modo legacy):
         - Solo se archiva lógicamente en BD.
     """
+    import time as _time
+    from app.modules.files.metrics.collectors.delete_collectors import (
+        inc_delete_total,
+        observe_delete_latency,
+        inc_delete_error,
+    )
+    
     telemetry = RequestTelemetry.create("files.delete-input-file")
     status_code = 204
     result = "success"
+    delete_start = _time.perf_counter()
     
     # Obtener project_id antes de borrar para touch posterior
     project_id_for_touch: UUID | None = None
@@ -702,6 +710,11 @@ async def delete_input_file(
         # --- COMMIT: Single commit per request (SSOT pattern) ---
         db = facade._db
         await db.commit()
+        
+        # --- METRICS: Record successful delete ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="input", op="single_delete")
+        inc_delete_total(file_type="input", op="single_delete", result="success")
         
         # --- TOUCH PROJECT (debounced, best-effort, no additional commit) ---
         # Usa Redis TTL para evitar múltiples touches en delete batch
@@ -727,6 +740,11 @@ async def delete_input_file(
     except FileNotFoundError as exc:
         status_code = 404
         result = "not_found"
+        # --- METRICS: Record 404 error ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="input", op="single_delete")
+        inc_delete_total(file_type="input", op="single_delete", result="failure")
+        inc_delete_error(file_type="input", status_code="404")
         try:
             await facade._db.rollback()
         except Exception:
@@ -738,6 +756,11 @@ async def delete_input_file(
     except FileStorageError as exc:
         status_code = 503
         result = "error"
+        # --- METRICS: Record 503 error ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="input", op="single_delete")
+        inc_delete_total(file_type="input", op="single_delete", result="failure")
+        inc_delete_error(file_type="input", status_code="503")
         try:
             await facade._db.rollback()
         except Exception:

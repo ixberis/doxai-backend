@@ -1,0 +1,340 @@
+# -*- coding: utf-8 -*-
+# backend/app/monitoring/prometheus_alerts.yaml
+#
+# Reglas de alerta Prometheus para DoxAI - Admin Operations
+#
+# Estas reglas se deben agregar a tu configuración de Prometheus:
+#   rule_files:
+#     - /path/to/prometheus_alerts.yaml
+#
+# O incluir en Alertmanager según tu infraestructura.
+#
+# Autor: DoxAI
+# Fecha: 2026-01-23
+# Updated: FASE 3.4 - DB-to-Prometheus Exporter
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# MÉTRICAS DISPONIBLES EN /metrics
+# ═══════════════════════════════════════════════════════════════════════════════
+# 
+# Files Delete (instrumentación directa):
+#   - files_delete_total{file_type, op, result}
+#   - files_delete_batch_size (histogram)
+#   - files_delete_latency_seconds{file_type, op} (histogram)
+#   - files_delete_partial_failures_total{file_type, op}
+#   - files_delete_errors_total{file_type, status_code}
+#
+# Touch Debounce - Redis (instrumentación directa):
+#   - touch_debounced_allowed_total{reason}
+#   - touch_debounced_skipped_total{reason}
+#   - touch_debounced_redis_error_total{reason}
+#   - touch_debounced_redis_unavailable_total{reason}
+#
+# DB-to-Prometheus Exporter (DBMetricsCollector - FASE 3.4):
+#   - doxai_ghost_files_count                    # Ghost files pendientes
+#   - doxai_jobs_failed_24h                      # Jobs fallidos últimas 24h
+#   - doxai_jobs_critical_last_status{job_id}    # Estado último job crítico (1=ok, 0=fail, -1=never)
+#   - doxai_storage_delta_total                  # abs(input_delta) + abs(product_delta)
+#   - doxai_db_metrics_last_refresh_timestamp    # Timestamp último refresh
+#   - doxai_db_metrics_errors_total{metric}      # Errores por métrica
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMANDOS DE VALIDACIÓN
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Verificar métricas disponibles:
+#   curl -s https://<BASE_URL>/metrics | grep -E "files_delete_|touch_debounced_|doxai_"
+#
+# PromQL sanity checks (Grafana):
+#   doxai_ghost_files_count                       # Ghost files count
+#   doxai_jobs_failed_24h                         # Jobs failed 24h
+#   doxai_storage_delta_total                     # Storage delta
+#   time() - doxai_db_metrics_last_refresh_timestamp  # Freshness (< 120s)
+#
+#
+
+groups:
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # GROUP: Files Delete Operations
+  # ═══════════════════════════════════════════════════════════════════════════════
+  - name: doxai_files_delete
+    interval: 30s
+    rules:
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert A: Alta tasa de errores en delete (>10% por 5min)
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: FilesDeleteErrorRateHigh
+        expr: |
+          (
+            sum(rate(files_delete_total{result="failure"}[5m])) 
+            / 
+            clamp_min(sum(rate(files_delete_total[5m])), 0.001)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          module: files
+          team: platform
+        annotations:
+          summary: "Alta tasa de errores en eliminación de archivos (>10%)"
+          description: |
+            Más del 10% de las operaciones de delete están fallando.
+            Valor actual: {{ $value | humanizePercentage }}
+            
+            Verificar:
+            - Conectividad con Supabase Storage
+            - Permisos de bucket
+            - Logs de files.delete
+            
+            Dashboard: Admin → Operación → Projects/Files
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: Failures parciales frecuentes en batch delete
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: FilesDeletePartialFailuresHigh
+        expr: |
+          sum(rate(files_delete_partial_failures_total[10m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          module: files
+          team: platform
+        annotations:
+          summary: "Failures parciales frecuentes en delete batch"
+          description: |
+            Más de 0.5 operaciones/min con al menos 1 failure en el batch.
+            Valor actual: {{ $value | printf "%.2f" }}/min
+            
+            Esto puede indicar:
+            - Archivos ya eliminados (404)
+            - Conflictos de estado (409)
+            - Problemas intermitentes de storage
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert B: Latencia alta en deletes p95 (>5s por 10min)
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: FilesDeleteLatencyP95High
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(files_delete_latency_seconds_bucket{op=~"bulk_delete|cleanup_ghosts"}[5m])) by (le, file_type, op)
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          module: files
+          team: platform
+        annotations:
+          summary: "Latencia alta en eliminación de archivos (p95 > 5s)"
+          description: |
+            El percentil 95 de latencia de delete supera 5 segundos.
+            file_type: {{ $labels.file_type }}
+            op: {{ $labels.op }}
+            p95: {{ $value | printf "%.2f" }}s
+            
+            Verificar:
+            - Carga del storage backend
+            - Tamaño de batches
+            - Conexión a Supabase
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # GROUP: Redis Debounce Health
+  # ═══════════════════════════════════════════════════════════════════════════════
+  - name: doxai_redis_debounce
+    interval: 30s
+    rules:
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert C: Errores de Redis en debounce (rate > 0.1/s por 5min)
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: TouchDebounceRedisErrorsHigh
+        expr: |
+          sum(rate(touch_debounced_redis_error_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          module: projects
+          team: platform
+        annotations:
+          summary: "Errores frecuentes de Redis en touch debounce"
+          description: |
+            Redis está fallando en operaciones de debounce.
+            Tasa: {{ $value | printf "%.2f" }}/s
+            
+            El sistema usa fail-open (permite touch), pero:
+            - Se pierde beneficio del debounce
+            - Mayor carga en DB
+            
+            Verificar conectividad Redis.
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert C (cont): Redis no disponible (degradado prolongado)
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: TouchDebounceRedisUnavailable
+        expr: |
+          sum(rate(touch_debounced_redis_unavailable_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: info
+          module: projects
+          team: platform
+        annotations:
+          summary: "Redis no disponible para touch debounce"
+          description: |
+            El debounce de touch_project está operando sin Redis.
+            Todas las operaciones se ejecutan directamente en DB.
+            
+            Esto es esperado si Redis no está configurado,
+            pero si debería estar disponible, verificar:
+            - REDIS_URL configurado
+            - Conectividad de red
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # GROUP: Admin Ops - Projects/Files (FASE 3.3 → 3.4)
+  # 
+  # Alertas basadas en métricas DB expuestas via DBMetricsCollector:
+  # - doxai_ghost_files_count
+  # - doxai_jobs_failed_24h
+  # - doxai_jobs_critical_last_status{job_id}
+  # - doxai_storage_delta_total
+  # ═══════════════════════════════════════════════════════════════════════════════
+  - name: doxai_admin_ops_projects_files
+    interval: 30s
+    rules:
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: No hay actividad de deletes (posible problema de ingesta)
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: FilesDeleteNoActivity
+        expr: |
+          sum(increase(files_delete_total[1h])) == 0
+          and
+          sum(increase(files_delete_total[24h])) > 10
+        for: 2h
+        labels:
+          severity: info
+          module: files
+          team: platform
+        annotations:
+          summary: "Sin actividad de delete en última hora (posible anomalía)"
+          description: |
+            No se han registrado operaciones de delete en la última hora,
+            pero hubo actividad en las 24h anteriores.
+            
+            Puede ser normal en horarios de baja actividad,
+            pero verificar si el módulo está funcionando correctamente.
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: Ghost files acumulándose (>100 por 10min)
+      # Threshold: 100 es un valor inicial conservador, ajustar según baseline
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: GhostFilesCritical
+        expr: |
+          doxai_ghost_files_count > 100
+        for: 10m
+        labels:
+          severity: warning
+          module: files
+          team: platform
+        annotations:
+          summary: "Archivos fantasma acumulándose (>100)"
+          description: |
+            Hay {{ $value }} ghost files pendientes de limpieza.
+            
+            Estos son registros en BD sin archivo físico en storage.
+            Ejecutar limpieza manual en:
+            Admin → Operación → Projects/Files → Cleanup
+            
+            O verificar job de reconciliación automática.
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: Jobs fallando frecuentemente (>3 en 24h)
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: JobsFailuresHigh
+        expr: |
+          doxai_jobs_failed_24h > 3
+        for: 5m
+        labels:
+          severity: warning
+          module: jobs
+          team: platform
+        annotations:
+          summary: "Jobs críticos fallando (>3 en 24h)"
+          description: |
+            Hay {{ $value }} jobs fallidos en las últimas 24 horas.
+            
+            Verificar en:
+            Admin → Operación → Jobs & Errores
+            
+            Posibles causas:
+            - Errores de conexión a DB
+            - Timeouts en operaciones
+            - Configuración incorrecta
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: Job crítico con último estado fallido
+      # Solo para jobs en CRITICAL_JOBS set
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: CriticalJobLastFailed
+        expr: |
+          doxai_jobs_critical_last_status == 0
+        for: 30m
+        labels:
+          severity: warning
+          module: jobs
+          team: platform
+        annotations:
+          summary: "Job crítico con último estado fallido"
+          description: |
+            El job {{ $labels.job_id }} tiene su última ejecución fallida.
+            
+            Verificar logs y configuración del job.
+            Dashboard: Admin → Operación → Jobs & Errores
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: Inconsistencia storage vs DB (delta alto)
+      # Threshold: 50 registros de diferencia es significativo
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: StorageDeltaHigh
+        expr: |
+          doxai_storage_delta_total > 50
+        for: 30m
+        labels:
+          severity: warning
+          module: storage
+          team: platform
+        annotations:
+          summary: "Inconsistencia storage vs DB (delta > 50)"
+          description: |
+            Hay una diferencia de {{ $value }} registros entre storage y DB.
+            
+            Esto puede indicar:
+            - Archivos huérfanos en storage
+            - Registros en DB sin archivo físico
+            
+            Verificar en:
+            Admin → Operación → Storage
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Alert: DB Metrics Collector no refrescando (stale data)
+      # Si last_refresh es más de 5 minutos viejo, algo anda mal
+      # ─────────────────────────────────────────────────────────────────────────
+      - alert: DBMetricsStale
+        expr: |
+          time() - doxai_db_metrics_last_refresh_timestamp > 300
+        for: 5m
+        labels:
+          severity: warning
+          module: observability
+          team: platform
+        annotations:
+          summary: "Métricas DB no se refrescan (stale > 5min)"
+          description: |
+            El collector de métricas DB no ha refrescado en más de 5 minutos.
+            Último refresh: {{ $value | humanizeDuration }} ago
+            
+            Verificar:
+            - Job db_metrics_refresh en scheduler
+            - Conectividad a DB
+            - Logs de observability.db_metrics
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIN DEL ARCHIVO
+# ═══════════════════════════════════════════════════════════════════════════════

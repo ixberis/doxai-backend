@@ -1,0 +1,350 @@
+{
+  "__doc__": "Dashboard Grafana: DoxAI — DB Metrics (importar en Grafana)",
+  "uid": "doxai-db-metrics",
+  "title": "DoxAI — DB Metrics",
+  "description": "Métricas de base de datos expuestas via DBMetricsCollector",
+  "tags": ["doxai", "db", "exporter"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "__panel_doc__": "Panel 1: Ghost Files Count (Stat + Time Series)",
+      "id": 1,
+      "title": "Ghost Files",
+      "description": "Registros en input_files sin objeto físico en storage",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "doxai_ghost_files_count",
+          "legendFormat": "Ghost Files",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 100 }
+            ]
+          },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 2: Jobs Failed (24h)",
+      "id": 2,
+      "title": "Jobs Fallidos (24h)",
+      "description": "Número de ejecuciones de jobs con status=failed en últimas 24h",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "doxai_jobs_failed_24h",
+          "legendFormat": "Jobs Fallidos",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 3: Critical Jobs Last Status (Table by job_id)",
+      "id": 3,
+      "title": "Critical Jobs — Último Estado",
+      "description": "Estado de última ejecución de jobs críticos (1=success, 0=failed)",
+      "type": "table",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "doxai_jobs_critical_last_status",
+          "legendFormat": "{{job_id}}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true },
+            "indexByName": {},
+            "renameByName": { "job_id": "Job ID", "Value": "Status (1=OK)" }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "❌ Failed", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "✅ OK", "color": "green" } } }
+          ]
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 4: Storage Delta Total",
+      "id": 4,
+      "title": "Storage Delta Total",
+      "description": "Diferencia abs(input_delta) + abs(product_delta) entre storage físico y registros DB",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 5, "w": 8, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "doxai_storage_delta_total",
+          "legendFormat": "Delta Total",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 5: DB Metrics Freshness (seconds since refresh)",
+      "id": 5,
+      "title": "Freshness (tiempo desde refresh)",
+      "description": "Segundos desde el último refresh exitoso del DBMetricsCollector",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 5, "w": 8, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "time() - doxai_db_metrics_last_refresh_timestamp",
+          "legendFormat": "Segundos desde refresh",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 120 },
+              { "color": "red", "value": 300 }
+            ]
+          },
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 6: DB Metrics Refresh Errors (by metric)",
+      "id": 6,
+      "title": "Errores de Refresh (por métrica)",
+      "description": "Incremento de errores en el collector por cada métrica individual",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 5, "w": 8, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(increase(doxai_db_metrics_errors_total[1h])) by (metric)",
+          "legendFormat": "{{metric}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "barAlignment": 0,
+            "fillOpacity": 80
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 7: Ghost Files Time Series (for trend analysis)",
+      "id": 7,
+      "title": "Ghost Files — Tendencia",
+      "description": "Evolución del count de ghost files en el tiempo",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 10, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "doxai_ghost_files_count",
+          "legendFormat": "Ghost Files",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "pointSize": 5
+          },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "__panel_doc__": "Panel 8: Storage Delta Time Series",
+      "id": 8,
+      "title": "Storage Delta — Tendencia",
+      "description": "Evolución del delta total en el tiempo",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 10, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "doxai_storage_delta_total",
+          "legendFormat": "Delta Total",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "blue", "mode": "fixed" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "none"
+        }
+      }
+    }
+  ]
+}

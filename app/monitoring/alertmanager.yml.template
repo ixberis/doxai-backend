@@ -1,0 +1,149 @@
+# ============================================================================
+# File:        backend/app/monitoring/alertmanager.yml
+# Purpose:     Configuración mínima Alertmanager para DoxAI
+# Author:      DoxAI Team
+# Created:     2026-01-23
+# Notes:
+#   - Routing por severidad (warning/info)
+#   - Agrupación por alertname + module para reducir ruido
+#   - Inhibiciones para evitar duplicados
+#   - Placeholders para secrets (NO incluir valores reales)
+# ============================================================================
+
+global:
+  # Tiempo máximo para resolver una alerta si no llega "resolved"
+  resolve_timeout: 5m
+  
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SMTP (descomentar y configurar si usas Email)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # smtp_smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+  # smtp_from: '${SMTP_FROM}'
+  # smtp_auth_username: '${SMTP_USER}'
+  # smtp_auth_password: '${SMTP_PASSWORD}'
+  # smtp_require_tls: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEMPLATES (opcional - para personalizar mensajes)
+# ═══════════════════════════════════════════════════════════════════════════════
+# templates:
+#   - '/etc/alertmanager/templates/*.tmpl'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTE: Árbol de enrutamiento
+# ═══════════════════════════════════════════════════════════════════════════════
+route:
+  # Receiver por defecto (fallback)
+  receiver: 'ops-default'
+  
+  # Agrupación: alertas con mismo alertname+module se agrupan
+  group_by: ['alertname', 'module']
+  
+  # Tiempo de espera antes de enviar grupo inicial
+  group_wait: 30s
+  
+  # Tiempo entre notificaciones de un mismo grupo (si hay nuevas alertas)
+  group_interval: 5m
+  
+  # Tiempo antes de re-notificar una alerta que sigue activa
+  repeat_interval: 4h
+  
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBROUTES: Routing por severidad
+  # ─────────────────────────────────────────────────────────────────────────────
+  routes:
+    # Alertas WARNING → canal ops-warning (más urgente)
+    - match:
+        severity: 'warning'
+      receiver: 'ops-warning'
+      repeat_interval: 4h
+      continue: false
+    
+    # Alertas INFO → canal ops-info (menos urgente, menos frecuente)
+    - match:
+        severity: 'info'
+      receiver: 'ops-info'
+      repeat_interval: 12h
+      continue: false
+    
+    # Team-specific routing (ejemplo)
+    - match:
+        team: 'files'
+      receiver: 'ops-warning'
+      continue: true  # Continúa evaluando otras rutas
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INHIBIT RULES: Suprimir alertas redundantes
+# ═══════════════════════════════════════════════════════════════════════════════
+inhibit_rules:
+  # Si hay WARNING activo, inhibir INFO del mismo alertname/module
+  - source_match:
+      severity: 'warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'module']
+  
+  # Si hay alerta de error de métricas DB, inhibir alertas derivadas
+  - source_match:
+      alertname: 'DBMetricsStale'
+    target_match_re:
+      alertname: '^(GhostFilesCritical|JobsFailuresHigh|StorageDeltaHigh)$'
+    equal: ['module']
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RECEIVERS: Destinos de notificación
+# ═══════════════════════════════════════════════════════════════════════════════
+receivers:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Default (fallback) - debe existir aunque esté vacío
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: 'ops-default'
+    # Configurar al menos un canal aquí como fallback
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WARNING: Alertas urgentes
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: 'ops-warning'
+    # OPCIÓN A: Slack Webhook
+    # slack_configs:
+    #   - api_url: '${SLACK_WEBHOOK_URL_WARNING}'
+    #     channel: '#doxai-alerts-warning'
+    #     username: 'DoxAI Alertmanager'
+    #     icon_emoji: ':warning:'
+    #     send_resolved: true
+    #     title: '{{ .Status | toUpper }}: {{ .CommonAnnotations.summary }}'
+    #     text: >-
+    #       {{ range .Alerts }}
+    #       *Alert:* {{ .Annotations.summary }}
+    #       *Module:* {{ .Labels.module }}
+    #       *Severity:* {{ .Labels.severity }}
+    #       *Details:* {{ .Annotations.description }}
+    #       {{ end }}
+    
+    # OPCIÓN B: Email
+    # email_configs:
+    #   - to: '${OPS_EMAIL_WARNING}'
+    #     send_resolved: true
+    #     headers:
+    #       Subject: '[DoxAI WARNING] {{ .CommonAnnotations.summary }}'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INFO: Alertas informativas
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: 'ops-info'
+    # OPCIÓN A: Slack Webhook (canal diferente, menos ruidoso)
+    # slack_configs:
+    #   - api_url: '${SLACK_WEBHOOK_URL_INFO}'
+    #     channel: '#doxai-alerts-info'
+    #     username: 'DoxAI Alertmanager'
+    #     icon_emoji: ':information_source:'
+    #     send_resolved: true
+    #     title: '{{ .Status | toUpper }}: {{ .CommonAnnotations.summary }}'
+    #     text: '{{ .CommonAnnotations.description }}'
+    
+    # OPCIÓN B: Email (digest menos frecuente)
+    # email_configs:
+    #   - to: '${OPS_EMAIL_INFO}'
+    #     send_resolved: true
+    #     headers:
+    #       Subject: '[DoxAI INFO] {{ .CommonAnnotations.summary }}'

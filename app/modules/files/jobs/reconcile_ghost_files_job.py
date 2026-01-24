@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import SessionLocal
 from app.shared.config import settings
+from app.shared.observability import JobExecutionTracker
 
 _logger = logging.getLogger("files.jobs.reconcile_ghost_files")
 
@@ -226,16 +227,27 @@ async def reconcile_ghost_files_job(
     
     try:
         async with SessionLocal() as db:
-            # 1. Verificar acceso a storage.objects
-            storage_accessible = await _check_storage_objects_access(db, bucket_name)
-            stats["storage_accessible"] = storage_accessible
+            # Track job execution
+            tracker = JobExecutionTracker(
+                db=db,
+                job_id=JOB_ID,
+                job_type="scheduler",
+                module="files",
+            )
+            await tracker.start()
             
-            if not storage_accessible:
-                _logger.warning(
-                    "reconcile_ghost_files_job_skip: storage.objects not accessible"
-                )
-                stats["error"] = "STORAGE_OBJECTS_UNAVAILABLE"
-                return stats
+            try:
+                # 1. Verificar acceso a storage.objects
+                storage_accessible = await _check_storage_objects_access(db, bucket_name)
+                stats["storage_accessible"] = storage_accessible
+                
+                if not storage_accessible:
+                    _logger.warning(
+                        "reconcile_ghost_files_job_skip: storage.objects not accessible"
+                    )
+                    stats["error"] = "STORAGE_OBJECTS_UNAVAILABLE"
+                    await tracker.finish_failed("STORAGE_OBJECTS_UNAVAILABLE", stats)
+                    return stats
             
             # 2. Procesar por batches
             offset = 0
@@ -301,11 +313,23 @@ async def reconcile_ghost_files_job(
                     offset += batch_size
                     continue
             
-            # Commit al final
-            await db.commit()
-            
-            # Limitar project_ids en el log (primeros 10)
-            stats["affected_project_ids"] = list(affected_projects)[:10]
+                # Commit al final
+                await db.commit()
+                
+                # Limitar project_ids en el log (primeros 10)
+                stats["affected_project_ids"] = list(affected_projects)[:10]
+                
+                # Track success
+                await tracker.finish_success({
+                    "total_scanned": stats["total_scanned"],
+                    "ghosts_found": stats["ghosts_found"],
+                    "ghosts_archived": stats["ghosts_archived"],
+                })
+                
+            except Exception as inner_e:
+                # Track failure
+                await tracker.finish_failed(str(inner_e)[:500], stats)
+                raise
             
     except Exception as e:
         _logger.error(

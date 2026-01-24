@@ -430,6 +430,14 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.debug(f"Reconcile ghost files job no disponible: {e}")
 
+            # Job 4: refresco de métricas DB → Prometheus
+            # Usa env vars: DB_METRICS_REFRESH_ENABLED, DB_METRICS_REFRESH_INTERVAL_SECONDS
+            try:
+                from app.shared.scheduler.jobs.db_metrics_refresh_job import register_db_metrics_refresh_job
+                register_db_metrics_refresh_job(scheduler)
+            except Exception as e:
+                logger.debug(f"DB metrics refresh job no disponible: {e}")
+
             scheduler.start()
             logger.info("⏰ Scheduler iniciado con jobs programados")
         except Exception as e:

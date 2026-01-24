@@ -459,6 +459,15 @@ async def archive_product_file_endpoint(
     db: AsyncSession = Depends(get_db),
     storage_client: AsyncStorageClient = Depends(get_storage_client),
 ):
+    import time as _time
+    from app.modules.files.metrics.collectors.delete_collectors import (
+        inc_delete_total,
+        observe_delete_latency,
+        inc_delete_error,
+    )
+    
+    delete_start = _time.perf_counter()
+    
     # Obtener project_id antes de archivar para touch posterior
     project_id_for_touch: UUID | None = None
     try:
@@ -478,6 +487,11 @@ async def archive_product_file_endpoint(
         
         # --- COMMIT: Single commit per request (SSOT pattern) ---
         await db.commit()
+        
+        # --- METRICS: Record successful delete ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="product", op="single_delete")
+        inc_delete_total(file_type="product", op="single_delete", result="success")
         
         # --- TOUCH PROJECT (debounced, best-effort, no additional commit) ---
         # Usa Redis TTL para evitar múltiples touches en delete batch
@@ -501,6 +515,11 @@ async def archive_product_file_endpoint(
                 )
                 
     except FileNotFoundError as exc:
+        # --- METRICS: Record 404 error ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="product", op="single_delete")
+        inc_delete_total(file_type="product", op="single_delete", result="failure")
+        inc_delete_error(file_type="product", status_code="404")
         try:
             await db.rollback()
         except Exception:
@@ -510,6 +529,11 @@ async def archive_product_file_endpoint(
             detail=str(exc),
         ) from exc
     except FileStorageError as exc:
+        # --- METRICS: Record 503 error ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="product", op="single_delete")
+        inc_delete_total(file_type="product", op="single_delete", result="failure")
+        inc_delete_error(file_type="product", status_code="503")
         try:
             await db.rollback()
         except Exception:
