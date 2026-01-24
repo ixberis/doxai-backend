@@ -73,6 +73,9 @@ def _ensure_collectors() -> bool:
     """
     Inicializa los collectors de Prometheus de forma lazy.
     
+    Los counters/histograms aparecerán en /metrics con TYPE/HELP al registrarse.
+    Los valores con labels aparecen cuando hay actividad real (no se pre-crean).
+    
     Returns:
         True si los collectors están disponibles, False si hubo error.
     """
@@ -109,7 +112,9 @@ def _ensure_collectors() -> bool:
             "Delete errors by HTTP status code",
             labelnames=LABELS_ERRORS,
         )
+        
         _collectors_initialized = True
+        _logger.info("files_delete_metrics_initialized")
         return True
     except Exception as e:
         _logger.warning(

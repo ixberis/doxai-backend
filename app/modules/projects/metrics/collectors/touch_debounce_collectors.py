@@ -50,6 +50,9 @@ def _ensure_counters() -> bool:
     """
     Inicializa los counters de Prometheus de forma lazy.
     
+    Los counters aparecerán en /metrics con TYPE/HELP al registrarse.
+    Los valores con labels aparecen cuando hay actividad real (no se pre-crean).
+    
     Returns:
         True si los counters están disponibles, False si hubo error.
     """
@@ -81,7 +84,9 @@ def _ensure_counters() -> bool:
             "Touch project debounced - Redis unavailable",
             labelnames=LABEL_NAMES,
         )
+        
         _counters_initialized = True
+        _logger.info("touch_debounce_metrics_initialized")
         return True
     except Exception as e:
         _logger.warning(

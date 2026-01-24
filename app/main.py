@@ -91,6 +91,11 @@ except Exception as _cfg_err:
 
 from app.observability.prom import setup_observability
 
+# ─────────────────────────────────────────────────────────────────────────────
+# METRICS INITIALIZATION: Moved to lifespan() for controlled startup
+# See lifespan() function below - initialize_all_metrics() runs there
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Warmup/recursos (fallbacks)
 try:
     from app.shared.core.resource_cache import (
@@ -259,6 +264,79 @@ atexit.register(atexit_cleanup)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ────────── STARTUP ──────────
+    logger.info("lifespan_startup: FastAPI lifespan starting")
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # PROMETHEUS METRICS INITIALIZATION (first thing in startup)
+    # Must run before any other startup code to ensure metrics are registered
+    # ─────────────────────────────────────────────────────────────────────────
+    try:
+        from app.observability.metrics_init import initialize_all_metrics
+        from prometheus_client import REGISTRY
+        
+        logger.info("metrics_init: starting Prometheus metrics initialization")
+        
+        init_result = initialize_all_metrics()
+        
+        files_ok = init_result.get("files_delete", False)
+        touch_ok = init_result.get("touch_debounce", False)
+        db_ok = init_result.get("db_metrics", False)
+        success_count = sum(1 for v in init_result.values() if v)
+        total_count = len(init_result)
+        
+        logger.info(
+            "metrics_init_complete: %d/%d collectors (files_delete=%s touch_debounce=%s db_metrics=%s)",
+            success_count,
+            total_count,
+            files_ok,
+            touch_ok,
+            db_ok,
+        )
+        
+        # Diagnostic: verify metrics are in REGISTRY
+        # Try _names_to_collectors first, fallback to iterating samples
+        names_to_collectors = getattr(REGISTRY, "_names_to_collectors", None)
+        
+        if names_to_collectors is not None:
+            # Fast path: use internal dict
+            has_files_delete = "files_delete_total" in names_to_collectors
+            has_files_latency = "files_delete_latency_seconds" in names_to_collectors
+            has_touch = "touch_debounced_allowed_total" in names_to_collectors
+            has_doxai = "doxai_ghost_files_count" in names_to_collectors
+            registered_names_sample = list(names_to_collectors.keys())[:30]
+        else:
+            # Fallback: iterate REGISTRY.collect() and extract exact names
+            all_metric_names = set()
+            for family in REGISTRY.collect():
+                all_metric_names.add(family.name)
+                for sample in family.samples:
+                    all_metric_names.add(sample.name)
+            
+            has_files_delete = "files_delete_total" in all_metric_names
+            has_files_latency = "files_delete_latency_seconds" in all_metric_names
+            has_touch = "touch_debounced_allowed_total" in all_metric_names
+            has_doxai = "doxai_ghost_files_count" in all_metric_names
+            registered_names_sample = list(all_metric_names)[:30]
+        
+        registry_families = len(list(REGISTRY.collect()))
+        
+        logger.info(
+            "metrics_init_registry_check: families=%d has_files_delete_total=%s has_files_delete_latency_seconds=%s has_touch_debounced_allowed_total=%s has_doxai_ghost_files_count=%s",
+            registry_families,
+            has_files_delete,
+            has_files_latency,
+            has_touch,
+            has_doxai,
+        )
+        
+        # If any metric not found, log sample for debugging
+        if not (has_files_delete and has_files_latency and has_touch and has_doxai):
+            logger.warning(
+                "metrics_init_missing_metrics: registered_names_sample=%s",
+                registered_names_sample,
+            )
+    except Exception as e:
+        logger.error("metrics_init_failed: %s", e, exc_info=True)
     
     # Registrar relaciones ORM cross-module (auth <-> payments)
     # Esto debe ocurrir antes de cualquier uso de las relaciones

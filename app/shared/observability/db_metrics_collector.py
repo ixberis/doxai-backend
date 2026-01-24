@@ -136,7 +136,13 @@ class DBMetricsCollector:
         return cls._instance
     
     def _ensure_metrics(self) -> bool:
-        """Initialize Prometheus metrics (lazy)."""
+        """
+        Initialize Prometheus metrics (lazy).
+        
+        Gauges sin labels se inicializan con valor 0 para que aparezcan.
+        Gauges con labels (jobs críticos) se inicializan porque tienen cardinalidad fija.
+        Counters con labels aparecen cuando hay actividad real.
+        """
         if self._initialized:
             return True
         
@@ -158,8 +164,6 @@ class DBMetricsCollector:
                 STORAGE_DELTA_NAME,
                 "Absolute sum of storage vs DB deltas (input + product)",
             )
-            # NOTE: Stores Unix epoch seconds from time.time() for Prometheus
-            # Alert uses: time() - doxai_db_metrics_last_refresh_timestamp > threshold
             self._last_refresh_gauge = get_or_create_gauge(
                 DB_METRICS_LAST_REFRESH_NAME,
                 "Unix epoch seconds of last successful DB metrics refresh (time.time())",
@@ -170,7 +174,18 @@ class DBMetricsCollector:
                 labelnames=("metric",),
             )
             
+            # Gauges sin labels: inicializar con 0 para que aparezcan en /metrics
+            self._ghost_files_gauge.set(0)
+            self._jobs_failed_gauge.set(0)
+            self._storage_delta_gauge.set(0)
+            self._last_refresh_gauge.set(0)
+            
+            # Gauge con labels: solo jobs críticos (cardinalidad fija = 3)
+            for job_id in CRITICAL_JOBS:
+                self._jobs_critical_gauge.labels(job_id=job_id).set(-1)
+            
             self._initialized = True
+            _logger.info("db_metrics_collector_initialized")
             return True
         except Exception as e:
             _logger.warning(f"db_metrics_init_error: {e}")
