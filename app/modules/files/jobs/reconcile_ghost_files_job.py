@@ -248,13 +248,12 @@ async def reconcile_ghost_files_job(
                     stats["error"] = "STORAGE_OBJECTS_UNAVAILABLE"
                     await tracker.finish_failed("STORAGE_OBJECTS_UNAVAILABLE", stats)
                     return stats
-            
-            # 2. Procesar por batches
-            offset = 0
-            affected_projects: Set[str] = set()
-            
-            while True:
-                try:
+                
+                # 2. Procesar por batches
+                offset = 0
+                affected_projects: Set[str] = set()
+                
+                while True:
                     # Obtener batch de archivos activos
                     batch = await _get_active_input_files_batch(db, batch_size, offset)
                     
@@ -272,9 +271,18 @@ async def reconcile_ghost_files_job(
                         continue
                     
                     # Verificar existencia en storage
-                    existing_paths = await _check_paths_exist_in_storage(
-                        db, bucket_name, paths
-                    )
+                    try:
+                        existing_paths = await _check_paths_exist_in_storage(
+                            db, bucket_name, paths
+                        )
+                    except Exception as storage_err:
+                        _logger.error(
+                            "reconcile_ghost_files_batch_storage_error: batch=%d error=%s",
+                            stats["batches_processed"],
+                            str(storage_err)[:200]
+                        )
+                        offset += batch_size
+                        continue
                     
                     # Identificar fantasmas
                     ghost_files = [
@@ -302,18 +310,8 @@ async def reconcile_ghost_files_job(
                         )
                     
                     offset += batch_size
-                    
-                except Exception as batch_err:
-                    # Log error pero continuar con siguiente batch
-                    _logger.error(
-                        "reconcile_ghost_files_batch_error: batch=%d error=%s",
-                        stats["batches_processed"] + 1,
-                        str(batch_err)[:200]
-                    )
-                    offset += batch_size
-                    continue
-            
-                # Commit al final
+                
+                # Commit al final de todos los batches
                 await db.commit()
                 
                 # Limitar project_ids en el log (primeros 10)
@@ -328,6 +326,11 @@ async def reconcile_ghost_files_job(
                 
             except Exception as inner_e:
                 # Track failure
+                _logger.error(
+                    "reconcile_ghost_files_job_inner_error: %s",
+                    str(inner_e)[:200],
+                    exc_info=True
+                )
                 await tracker.finish_failed(str(inner_e)[:500], stats)
                 raise
             
