@@ -117,16 +117,12 @@ class SchedulerService:
             kwargs=kwargs
         )
         
-        # Diagnostic log with job details
+        # Diagnostic log with safe attribute access
         logger.info(
-            "scheduler_job_added: job_id=%s next_run_time=%s trigger=%s "
-            "coalesce=%s max_instances=%s misfire_grace_time=%s",
+            "scheduler_job_added: job_id=%s next_run_time=%s trigger=%s",
             job.id,
             job.next_run_time.isoformat() if job.next_run_time else "None",
             str(job.trigger),
-            job.coalesce,
-            job.max_instances,
-            job.misfire_grace_time,
         )
         return job_id
     
