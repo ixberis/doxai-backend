@@ -510,11 +510,19 @@ async def lifespan(app: FastAPI):
 
             # Job 4: refresco de métricas DB → Prometheus
             # Usa env vars: DB_METRICS_REFRESH_ENABLED, DB_METRICS_REFRESH_INTERVAL_SECONDS
+            _db_refresh_enabled = os.getenv("DB_METRICS_REFRESH_ENABLED", "1")
+            _db_refresh_interval = os.getenv("DB_METRICS_REFRESH_INTERVAL_SECONDS", "60")
+            logger.info(
+                "db_metrics_refresh_register_attempt: enabled=%s interval=%s",
+                _db_refresh_enabled,
+                _db_refresh_interval,
+            )
             try:
                 from app.shared.scheduler.jobs.db_metrics_refresh_job import register_db_metrics_refresh_job
                 register_db_metrics_refresh_job(scheduler)
+                logger.info("db_metrics_refresh_job_registered: success=true")
             except Exception as e:
-                logger.debug(f"DB metrics refresh job no disponible: {e}")
+                logger.warning("db_metrics_refresh_job_failed: error=%s", e, exc_info=True)
 
             scheduler.start()
             logger.info("⏰ Scheduler iniciado con jobs programados")

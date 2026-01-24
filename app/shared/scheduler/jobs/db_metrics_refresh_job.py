@@ -29,6 +29,7 @@ async def _refresh_db_metrics_task():
     compartir conexiones con otras partes del sistema.
     La sesión se cierra correctamente al finalizar.
     """
+    import time
     from app.shared.database import async_engine
     from app.shared.observability import get_db_metrics_collector
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,13 +42,18 @@ async def _refresh_db_metrics_task():
         db = AsyncSession(bind=async_engine, expire_on_commit=False)
         
         result = await collector.refresh(db)
-        _logger.debug(
-            "db_metrics_refresh_complete ghost=%d jobs_failed=%d",
+        
+        # Log INFO for visibility in production
+        last_refresh_ts = result.get("last_refresh_timestamp", 0)
+        _logger.info(
+            "db_metrics_refreshed: ghost_files=%d jobs_failed_24h=%d storage_delta=%.2f last_refresh_ts=%d",
             result.get("ghost_files_count", -1),
             result.get("jobs_failed_24h", -1),
+            result.get("storage_delta", 0.0),
+            last_refresh_ts,
         )
     except Exception as e:
-        _logger.warning(f"db_metrics_refresh_error: {e}")
+        _logger.warning("db_metrics_refresh_error: %s", e, exc_info=True)
     finally:
         # Always close the session to release the connection
         if db is not None:
@@ -63,15 +69,17 @@ def register_db_metrics_refresh_job(scheduler: "SchedulerService") -> None:
     """
     import os
     
-    # Allow disabling via env var
-    enabled = os.getenv("DB_METRICS_REFRESH_ENABLED", "1").lower() in ("1", "true", "yes")
+    # Read env vars
+    enabled_raw = os.getenv("DB_METRICS_REFRESH_ENABLED", "1")
+    enabled = enabled_raw.lower() in ("1", "true", "yes")
+    interval_seconds = int(os.getenv("DB_METRICS_REFRESH_INTERVAL_SECONDS", "60"))
     
     if not enabled:
-        _logger.info("db_metrics_refresh_job disabled via DB_METRICS_REFRESH_ENABLED=0")
+        _logger.info(
+            "db_metrics_refresh_job_disabled: DB_METRICS_REFRESH_ENABLED=%s",
+            enabled_raw,
+        )
         return
-    
-    # Interval in seconds (default 60)
-    interval_seconds = int(os.getenv("DB_METRICS_REFRESH_INTERVAL_SECONDS", "60"))
     
     scheduler.add_interval_job(
         func=_refresh_db_metrics_task,
@@ -80,7 +88,7 @@ def register_db_metrics_refresh_job(scheduler: "SchedulerService") -> None:
     )
     
     _logger.info(
-        "db_metrics_refresh_job registered: interval=%ds",
+        "db_metrics_refresh_job_registered: job_id=db_metrics_refresh interval_seconds=%d",
         interval_seconds,
     )
 
