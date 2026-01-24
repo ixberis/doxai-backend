@@ -442,13 +442,13 @@ async def get_projects_files_business_summary(
         ..., 
         alias="from",
         description="Start date (YYYY-MM-DD)",
-        regex=r"^\d{4}-\d{2}-\d{2}$",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
     ),
     to_date: str = Query(
         ...,
         alias="to", 
         description="End date (YYYY-MM-DD)",
-        regex=r"^\d{4}-\d{2}-\d{2}$",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
     ),
     db: AsyncSession = Depends(get_db),
 ):

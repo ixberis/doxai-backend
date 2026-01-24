@@ -68,14 +68,14 @@ async def warmup_redis_async() -> RedisWarmupResult:
         
         if result.success:
             logger.info(
-                "redis_warmup_success ping_ok=%s scripts_loaded=%d duration_ms=%.2f",
+                "🟢 Redis warmup completado: ping_ok=%s scripts_loaded=%d duration_ms=%.2f",
                 result.ping_ok,
                 result.scripts_loaded,
                 result.duration_ms,
             )
         else:
             logger.warning(
-                "redis_warmup_failed error=%s duration_ms=%.2f",
+                "🔴 Redis warmup fallido: error=%s duration_ms=%.2f",
                 result.error,
                 result.duration_ms,
             )
