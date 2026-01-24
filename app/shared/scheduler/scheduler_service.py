@@ -80,6 +80,7 @@ class SchedulerService:
         hours: int = 0,
         minutes: int = 0,
         seconds: int = 0,
+        run_immediately: bool = True,
         **kwargs
     ) -> str:
         """
@@ -91,6 +92,7 @@ class SchedulerService:
             hours: Intervalo en horas
             minutes: Intervalo en minutos
             seconds: Intervalo en segundos
+            run_immediately: Si True, ejecuta inmediatamente al registrar
             **kwargs: Argumentos adicionales para func
         
         Returns:
@@ -102,17 +104,29 @@ class SchedulerService:
             seconds=seconds
         )
         
-        self._scheduler.add_job(
+        # Force immediate first run if requested
+        next_run = datetime.utcnow() if run_immediately else None
+        
+        job = self._scheduler.add_job(
             func=func,
             trigger=trigger,
             id=job_id,
             name=job_id,
             replace_existing=True,
+            next_run_time=next_run,
             kwargs=kwargs
         )
         
+        # Diagnostic log with job details
         logger.info(
-            f"Job '{job_id}' agregado: cada {hours}h {minutes}m {seconds}s"
+            "scheduler_job_added: job_id=%s next_run_time=%s trigger=%s "
+            "coalesce=%s max_instances=%s misfire_grace_time=%s",
+            job.id,
+            job.next_run_time.isoformat() if job.next_run_time else "None",
+            str(job.trigger),
+            job.coalesce,
+            job.max_instances,
+            job.misfire_grace_time,
         )
         return job_id
     

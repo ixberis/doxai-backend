@@ -34,6 +34,10 @@ async def _refresh_db_metrics_task():
     from app.shared.observability import get_db_metrics_collector
     from sqlalchemy.ext.asyncio import AsyncSession
     
+    # Log run start for visibility
+    run_start_ts = time.time()
+    _logger.info("db_metrics_refresh_run_start: ts=%.0f", run_start_ts)
+    
     db: AsyncSession | None = None
     try:
         collector = get_db_metrics_collector()
@@ -45,12 +49,15 @@ async def _refresh_db_metrics_task():
         
         # Log INFO for visibility in production
         last_refresh_ts = result.get("last_refresh_timestamp", 0)
+        run_duration_ms = int((time.time() - run_start_ts) * 1000)
         _logger.info(
-            "db_metrics_refreshed: ghost_files=%d jobs_failed_24h=%d storage_delta=%.2f last_refresh_ts=%d",
+            "db_metrics_refreshed: ghost_files=%d jobs_failed_24h=%d storage_delta=%.2f "
+            "last_refresh_ts=%d duration_ms=%d",
             result.get("ghost_files_count", -1),
             result.get("jobs_failed_24h", -1),
             result.get("storage_delta", 0.0),
             last_refresh_ts,
+            run_duration_ms,
         )
     except Exception as e:
         _logger.warning("db_metrics_refresh_error: %s", e, exc_info=True)
