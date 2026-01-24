@@ -97,14 +97,11 @@ class JobExecutionTracker:
             return None
         
         try:
+            # asyncpg requires positional params, not named binds
             q = text("""
-                SELECT kpis.fn_job_execution_start(:job_id, :job_type, :module) AS execution_id
+                SELECT kpis.fn_job_execution_start($1, $2, $3) AS execution_id
             """)
-            res = await self.db.execute(q, {
-                "job_id": self.job_id,
-                "job_type": self.job_type,
-                "module": self.module,
-            })
+            res = await self.db.execute(q, (self.job_id, self.job_type, self.module))
             self.execution_id = res.scalar()
             
             logger.info(
@@ -147,22 +144,27 @@ class JobExecutionTracker:
         
         try:
             import json
+            
+            # Validate result_summary is dict or None
+            if result_summary is not None and not isinstance(result_summary, dict):
+                logger.warning(
+                    f"[job_tracker] result_summary is not dict, forcing None: {type(result_summary)}"
+                )
+                result_summary = None
+            
             result_json = json.dumps(result_summary) if result_summary else None
             
+            # asyncpg requires positional params ($1, $2, ...), not named binds
+            # The function signature is: fn_job_execution_finish(uuid, text, jsonb, text)
             q = text("""
-                SELECT kpis.fn_job_execution_finish(
-                    :execution_id,
-                    :status,
-                    :result_summary::jsonb,
-                    :error_message
-                ) AS result
+                SELECT kpis.fn_job_execution_finish($1, $2, $3::jsonb, $4) AS result
             """)
-            await self.db.execute(q, {
-                "execution_id": self.execution_id,
-                "status": status,
-                "result_summary": result_json,
-                "error_message": error_message,
-            })
+            await self.db.execute(q, (
+                self.execution_id,
+                status,
+                result_json,
+                error_message,
+            ))
             
             logger.info(
                 f"[job_tracker] Finished {self.job_id} ({status}) "
