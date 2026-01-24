@@ -296,10 +296,11 @@ class DBMetricsCollector:
             self._errors_counter.labels(metric="storage_delta").inc()
             results["storage_delta_total"] = self._cached_values.get("storage_delta", -1)
         
-        # Update last refresh timestamp
-        self._last_refresh = time.time()
-        self._last_refresh_gauge.set(self._last_refresh)
-        results["last_refresh"] = self._last_refresh
+        # Update last refresh timestamp (epoch seconds)
+        ts = int(time.time())
+        self._last_refresh = float(ts)
+        self._last_refresh_gauge.set(ts)
+        results["last_refresh_timestamp"] = ts
         
         _logger.info(
             "db_metrics_refreshed ghost=%d jobs_failed=%d storage_delta=%d",
@@ -317,7 +318,7 @@ class DBMetricsCollector:
             "jobs_failed": self._cached_values.get("jobs_failed"),
             "jobs_critical": self._cached_values.get("jobs_critical"),
             "storage_delta": self._cached_values.get("storage_delta"),
-            "last_refresh": self._last_refresh,
+            "last_refresh_timestamp": int(self._last_refresh) if self._last_refresh else 0,
             "is_stale": self.is_stale(),
         }
 
