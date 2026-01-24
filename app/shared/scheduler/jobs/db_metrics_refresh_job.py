@@ -30,7 +30,7 @@ async def _refresh_db_metrics_task():
     La sesión se cierra correctamente al finalizar.
     """
     import time
-    from app.shared.database import async_engine
+    from app.shared.database import engine
     from app.shared.observability import get_db_metrics_collector
     from sqlalchemy.ext.asyncio import AsyncSession
     
@@ -43,7 +43,7 @@ async def _refresh_db_metrics_task():
         collector = get_db_metrics_collector()
         
         # Create isolated session (not shared with request context)
-        db = AsyncSession(bind=async_engine, expire_on_commit=False)
+        db = AsyncSession(bind=engine, expire_on_commit=False)
         
         result = await collector.refresh(db)
         
