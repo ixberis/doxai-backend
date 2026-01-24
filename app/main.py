@@ -518,14 +518,23 @@ async def lifespan(app: FastAPI):
                 _db_refresh_interval,
             )
             try:
-                from app.shared.scheduler.jobs.db_metrics_refresh_job import register_db_metrics_refresh_job
+                from app.shared.scheduler.jobs.db_metrics_refresh_job import (
+                    register_db_metrics_refresh_job,
+                    bootstrap_db_metrics_refresh,
+                )
                 register_db_metrics_refresh_job(scheduler)
                 logger.info("db_metrics_refresh_job_registered: success=true")
             except Exception as e:
                 logger.warning("db_metrics_refresh_job_failed: error=%s", e, exc_info=True)
+                bootstrap_db_metrics_refresh = None  # type: ignore
 
             scheduler.start()
             logger.info("⏰ Scheduler iniciado con jobs programados")
+            
+            # Bootstrap: ejecutar refresh inmediato después de que el scheduler arranca
+            if bootstrap_db_metrics_refresh is not None:
+                import asyncio
+                asyncio.create_task(bootstrap_db_metrics_refresh())
         except Exception as e:
             logger.warning(f"⚠️ No se pudo iniciar scheduler: {e}")
     else:

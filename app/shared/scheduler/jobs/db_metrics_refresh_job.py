@@ -100,4 +100,19 @@ def register_db_metrics_refresh_job(scheduler: "SchedulerService") -> None:
     )
 
 
-__all__ = ["register_db_metrics_refresh_job"]
+async def bootstrap_db_metrics_refresh() -> None:
+    """
+    Ejecuta un refresh inmediato de métricas DB al startup.
+    
+    Esto garantiza que /metrics tenga datos desde el primer scrape,
+    sin esperar el primer tick del intervalo del scheduler.
+    """
+    _logger.info("db_metrics_refresh_bootstrap_start")
+    try:
+        await _refresh_db_metrics_task()
+        _logger.info("db_metrics_refresh_bootstrap_complete")
+    except Exception as e:
+        _logger.warning("db_metrics_refresh_bootstrap_error: %s", e, exc_info=True)
+
+
+__all__ = ["register_db_metrics_refresh_job", "bootstrap_db_metrics_refresh"]
