@@ -156,24 +156,42 @@ class ReconcileResponse(BaseModel):
 # Filtros: solo registros activos y no archivados
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Count eligible records (dry_run) - INPUT FILES
-COUNT_ELIGIBLE_INPUT_SQL = """
+# Count eligible records (dry_run) - INPUT FILES - ALL SCOPE (no project filter)
+COUNT_ELIGIBLE_INPUT_ALL_SQL = """
 SELECT COUNT(*) AS cnt
 FROM public.input_files
 WHERE storage_state = 'missing'
   AND input_file_is_active = true
   AND input_file_is_archived = false
-  AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
 """
 
-# Count eligible records (dry_run) - PRODUCT FILES
-COUNT_ELIGIBLE_PRODUCT_SQL = """
+# Count eligible records (dry_run) - INPUT FILES - PROJECT SCOPE (with project filter)
+COUNT_ELIGIBLE_INPUT_PROJECT_SQL = """
+SELECT COUNT(*) AS cnt
+FROM public.input_files
+WHERE storage_state = 'missing'
+  AND input_file_is_active = true
+  AND input_file_is_archived = false
+  AND project_id = CAST(:project_id AS uuid)
+"""
+
+# Count eligible records (dry_run) - PRODUCT FILES - ALL SCOPE (no project filter)
+COUNT_ELIGIBLE_PRODUCT_ALL_SQL = """
 SELECT COUNT(*) AS cnt
 FROM public.product_files
 WHERE storage_state = 'missing'
   AND product_file_is_active = true
   AND product_file_is_archived = false
-  AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
+"""
+
+# Count eligible records (dry_run) - PRODUCT FILES - PROJECT SCOPE (with project filter)
+COUNT_ELIGIBLE_PRODUCT_PROJECT_SQL = """
+SELECT COUNT(*) AS cnt
+FROM public.product_files
+WHERE storage_state = 'missing'
+  AND product_file_is_active = true
+  AND product_file_is_archived = false
+  AND project_id = CAST(:project_id AS uuid)
 """
 
 # Breakdown by project (dry_run + scope='all')
@@ -202,16 +220,15 @@ ORDER BY (SUM(cnt)) DESC
 LIMIT 100
 """
 
-# Invalidate input files (execute mode)
+# Invalidate input files (execute mode) - ALL SCOPE
 # Uses CTE with FOR UPDATE SKIP LOCKED for safe concurrent access
-INVALIDATE_INPUT_SQL = """
+INVALIDATE_INPUT_ALL_SQL = """
 WITH elig AS (
     SELECT input_file_id
     FROM public.input_files
     WHERE storage_state = 'missing'
       AND input_file_is_active = true
       AND input_file_is_archived = false
-      AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
     ORDER BY created_at ASC, input_file_id ASC
     LIMIT :limit
     FOR UPDATE SKIP LOCKED
@@ -226,15 +243,60 @@ WHERE input_file_id IN (SELECT input_file_id FROM elig)
 RETURNING input_file_id
 """
 
-# Invalidate product files (execute mode)
-INVALIDATE_PRODUCT_SQL = """
+# Invalidate input files (execute mode) - PROJECT SCOPE
+INVALIDATE_INPUT_PROJECT_SQL = """
+WITH elig AS (
+    SELECT input_file_id
+    FROM public.input_files
+    WHERE storage_state = 'missing'
+      AND input_file_is_active = true
+      AND input_file_is_archived = false
+      AND project_id = CAST(:project_id AS uuid)
+    ORDER BY created_at ASC, input_file_id ASC
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE public.input_files
+SET 
+    storage_state = 'invalidated',
+    invalidated_at = :now,
+    invalidation_reason = 'reconcile_admin',
+    updated_at = :now
+WHERE input_file_id IN (SELECT input_file_id FROM elig)
+RETURNING input_file_id
+"""
+
+# Invalidate product files (execute mode) - ALL SCOPE
+INVALIDATE_PRODUCT_ALL_SQL = """
 WITH elig AS (
     SELECT product_file_id
     FROM public.product_files
     WHERE storage_state = 'missing'
       AND product_file_is_active = true
       AND product_file_is_archived = false
-      AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
+    ORDER BY created_at ASC, product_file_id ASC
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE public.product_files
+SET 
+    storage_state = 'invalidated',
+    invalidated_at = :now,
+    invalidation_reason = 'reconcile_admin',
+    updated_at = :now
+WHERE product_file_id IN (SELECT product_file_id FROM elig)
+RETURNING product_file_id
+"""
+
+# Invalidate product files (execute mode) - PROJECT SCOPE
+INVALIDATE_PRODUCT_PROJECT_SQL = """
+WITH elig AS (
+    SELECT product_file_id
+    FROM public.product_files
+    WHERE storage_state = 'missing'
+      AND product_file_is_active = true
+      AND product_file_is_archived = false
+      AND project_id = CAST(:project_id AS uuid)
     ORDER BY created_at ASC, product_file_id ASC
     LIMIT :limit
     FOR UPDATE SKIP LOCKED
@@ -306,19 +368,26 @@ class ReconciliationService:
     ) -> ReconcileResponse:
         """Preview mode: count eligible records without modifying."""
         
-        # Count input files
-        res_input = await self.db.execute(
-            text(COUNT_ELIGIBLE_INPUT_SQL),
-            {"project_id": project_id}
-        )
-        eligible_input = int(res_input.scalar() or 0)
-        
-        # Count product files
-        res_product = await self.db.execute(
-            text(COUNT_ELIGIBLE_PRODUCT_SQL),
-            {"project_id": project_id}
-        )
-        eligible_product = int(res_product.scalar() or 0)
+        # Select SQL variant based on request.scope
+        if request.scope == "all":
+            # ALL scope: no params
+            res_input = await self.db.execute(text(COUNT_ELIGIBLE_INPUT_ALL_SQL))
+            eligible_input = int(res_input.scalar() or 0)
+            
+            res_product = await self.db.execute(text(COUNT_ELIGIBLE_PRODUCT_ALL_SQL))
+            eligible_product = int(res_product.scalar() or 0)
+        else:
+            # PROJECT scope: project_id param required
+            params = {"project_id": request.project_id}
+            res_input = await self.db.execute(
+                text(COUNT_ELIGIBLE_INPUT_PROJECT_SQL), params
+            )
+            eligible_input = int(res_input.scalar() or 0)
+            
+            res_product = await self.db.execute(
+                text(COUNT_ELIGIBLE_PRODUCT_PROJECT_SQL), params
+            )
+            eligible_product = int(res_product.scalar() or 0)
         
         logger.debug(
             "reconcile_eligible",
@@ -370,34 +439,49 @@ class ReconciliationService:
     ) -> ReconcileResponse:
         """Execute mode: invalidate missing records."""
         
-        params = {
-            "project_id": project_id,
-            "limit": request.limit,
-            "now": now,
-        }
-        
-        # First get eligible counts (before mutation)
-        res_input_count = await self.db.execute(
-            text(COUNT_ELIGIBLE_INPUT_SQL),
-            {"project_id": project_id}
-        )
-        eligible_input = int(res_input_count.scalar() or 0)
-        
-        res_product_count = await self.db.execute(
-            text(COUNT_ELIGIBLE_PRODUCT_SQL),
-            {"project_id": project_id}
-        )
-        eligible_product = int(res_product_count.scalar() or 0)
-        
-        # Invalidate input files
-        res_input = await self.db.execute(text(INVALIDATE_INPUT_SQL), params)
-        invalidated_input_ids = res_input.fetchall()
-        invalidated_input = len(invalidated_input_ids)
-        
-        # Invalidate product files
-        res_product = await self.db.execute(text(INVALIDATE_PRODUCT_SQL), params)
-        invalidated_product_ids = res_product.fetchall()
-        invalidated_product = len(invalidated_product_ids)
+        # Select SQL variant based on request.scope
+        if request.scope == "all":
+            # ALL scope: no project_id param
+            base_params = {"limit": request.limit, "now": now}
+            
+            # Get eligible counts (before mutation)
+            res_input_count = await self.db.execute(text(COUNT_ELIGIBLE_INPUT_ALL_SQL))
+            eligible_input = int(res_input_count.scalar() or 0)
+            
+            res_product_count = await self.db.execute(text(COUNT_ELIGIBLE_PRODUCT_ALL_SQL))
+            eligible_product = int(res_product_count.scalar() or 0)
+            
+            # Invalidate files
+            res_input = await self.db.execute(text(INVALIDATE_INPUT_ALL_SQL), base_params)
+            invalidated_input_ids = res_input.fetchall()
+            invalidated_input = len(invalidated_input_ids)
+            
+            res_product = await self.db.execute(text(INVALIDATE_PRODUCT_ALL_SQL), base_params)
+            invalidated_product_ids = res_product.fetchall()
+            invalidated_product = len(invalidated_product_ids)
+        else:
+            # PROJECT scope: project_id param required
+            params = {"project_id": request.project_id, "limit": request.limit, "now": now}
+            
+            # Get eligible counts (before mutation)
+            res_input_count = await self.db.execute(
+                text(COUNT_ELIGIBLE_INPUT_PROJECT_SQL), {"project_id": request.project_id}
+            )
+            eligible_input = int(res_input_count.scalar() or 0)
+            
+            res_product_count = await self.db.execute(
+                text(COUNT_ELIGIBLE_PRODUCT_PROJECT_SQL), {"project_id": request.project_id}
+            )
+            eligible_product = int(res_product_count.scalar() or 0)
+            
+            # Invalidate files
+            res_input = await self.db.execute(text(INVALIDATE_INPUT_PROJECT_SQL), params)
+            invalidated_input_ids = res_input.fetchall()
+            invalidated_input = len(invalidated_input_ids)
+            
+            res_product = await self.db.execute(text(INVALIDATE_PRODUCT_PROJECT_SQL), params)
+            invalidated_product_ids = res_product.fetchall()
+            invalidated_product = len(invalidated_product_ids)
         
         # Commit transaction
         await self.db.commit()
