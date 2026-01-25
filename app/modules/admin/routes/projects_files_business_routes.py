@@ -13,7 +13,7 @@ Author: DoxAI
 Created: 2026-01-23
 """
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -166,16 +166,21 @@ class ProjectsFilesBusinessAggregator:
         from datetime import timedelta
         to_date_exclusive = to_date + timedelta(days=1)
         
+        # Keep string versions for response
         from_str = from_date.isoformat()
         to_str = to_date.isoformat()
-        to_exclusive_str = to_date_exclusive.isoformat()
         
-        # Execute all queries
-        kpis = await self._get_kpis(from_str, to_exclusive_str)
-        project_series = await self._get_project_activity_series(from_str, to_exclusive_str, all_days)
-        file_series = await self._get_file_activity_series(from_str, to_exclusive_str, all_days)
-        users_series = await self._get_active_users_series(from_str, to_exclusive_str, all_days)
-        credits = await self._get_credits_consumed_files(from_str, to_exclusive_str)
+        # asyncpg requires datetime objects, not strings
+        # Convert date to datetime at 00:00:00 UTC (timezone-aware) for timestamptz queries
+        from_dt = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc)
+        to_exclusive_dt = datetime.combine(to_date_exclusive, datetime.min.time(), tzinfo=timezone.utc)
+        
+        # Execute all queries with datetime objects
+        kpis = await self._get_kpis(from_dt, to_exclusive_dt, from_date, to_date_exclusive)
+        project_series = await self._get_project_activity_series(from_dt, to_exclusive_dt, from_date, to_date_exclusive, all_days)
+        file_series = await self._get_file_activity_series(from_dt, to_exclusive_dt, all_days)
+        users_series = await self._get_active_users_series(from_dt, to_exclusive_dt, all_days)
+        credits = await self._get_credits_consumed_files(from_dt, to_exclusive_dt)
         
         return ProjectsFilesBusinessSummary(
             projects_created=kpis["projects_created"],
@@ -231,57 +236,71 @@ class ProjectsFilesBusinessAggregator:
                 "Run database/files/02_tables/05_product_file_activity.sql"
             )
     
-    async def _get_kpis(self, from_str: str, to_str: str) -> dict:
-        """Get aggregate KPIs for the period."""
-        # Projects created
+    async def _get_kpis(
+        self, 
+        from_dt: datetime, 
+        to_dt: datetime,
+        from_date: date,
+        to_date_exclusive: date,
+    ) -> dict:
+        """
+        Get aggregate KPIs for the period.
+        
+        Args:
+            from_dt: Start datetime for timestamptz queries
+            to_dt: Exclusive end datetime for timestamptz queries
+            from_date: Start date for date queries
+            to_date_exclusive: Exclusive end date for date queries
+        """
+        # Projects created - use datetime for timestamptz column
         q1 = text("""
             SELECT COUNT(*) as cnt
             FROM public.projects
-            WHERE created_at >= CAST(:from_date AS timestamptz)
-              AND created_at < CAST(:to_date AS timestamptz)
+            WHERE created_at >= :from_date
+              AND created_at < :to_date
         """)
-        res1 = await self.db.execute(q1, {"from_date": from_str, "to_date": to_str})
+        res1 = await self.db.execute(q1, {"from_date": from_dt, "to_date": to_dt})
         projects_created = int(res1.scalar() or 0)
         
-        # Projects ready (from view - already validated)
+        # Projects ready (from view) - use date for date column
         q2 = text("""
             SELECT COALESCE(SUM(ready_count), 0) as cnt
             FROM kpis.mv_projects_ready_lead_time_daily
-            WHERE day >= CAST(:from_date AS date)
-              AND day < CAST(:to_date AS date)
+            WHERE day >= :from_date
+              AND day < :to_date
         """)
-        res2 = await self.db.execute(q2, {"from_date": from_str, "to_date": to_str})
+        res2 = await self.db.execute(q2, {"from_date": from_date, "to_date": to_date_exclusive})
         projects_ready = int(res2.scalar() or 0)
         
-        # Files uploaded
+        # Files uploaded - use datetime for timestamptz column
         q3 = text("""
             SELECT COUNT(*) as cnt
             FROM public.input_files
-            WHERE input_file_uploaded_at >= CAST(:from_date AS timestamptz)
-              AND input_file_uploaded_at < CAST(:to_date AS timestamptz)
+            WHERE input_file_uploaded_at >= :from_date
+              AND input_file_uploaded_at < :to_date
         """)
-        res3 = await self.db.execute(q3, {"from_date": from_str, "to_date": to_str})
+        res3 = await self.db.execute(q3, {"from_date": from_dt, "to_date": to_dt})
         files_uploaded = int(res3.scalar() or 0)
         
-        # Files generated (product_file_activity - already validated)
+        # Files generated - use datetime for timestamptz column
         q4 = text("""
             SELECT COUNT(*) as cnt
             FROM public.product_file_activity
             WHERE event_type = 'generated'
-              AND event_at >= CAST(:from_date AS timestamptz)
-              AND event_at < CAST(:to_date AS timestamptz)
+              AND event_at >= :from_date
+              AND event_at < :to_date
         """)
-        res4 = await self.db.execute(q4, {"from_date": from_str, "to_date": to_str})
+        res4 = await self.db.execute(q4, {"from_date": from_dt, "to_date": to_dt})
         files_generated = int(res4.scalar() or 0)
         
-        # Active users (distinct auth_user_id - already validated)
+        # Active users - use datetime for timestamptz column
         q5 = text("""
             SELECT COUNT(DISTINCT auth_user_id) as cnt
             FROM public.product_file_activity
-            WHERE event_at >= CAST(:from_date AS timestamptz)
-              AND event_at < CAST(:to_date AS timestamptz)
+            WHERE event_at >= :from_date
+              AND event_at < :to_date
         """)
-        res5 = await self.db.execute(q5, {"from_date": from_str, "to_date": to_str})
+        res5 = await self.db.execute(q5, {"from_date": from_dt, "to_date": to_dt})
         active_users = int(res5.scalar() or 0)
         
         return {
@@ -293,28 +312,33 @@ class ProjectsFilesBusinessAggregator:
         }
     
     async def _get_project_activity_series(
-        self, from_str: str, to_str: str, all_days: List[str]
+        self, 
+        from_dt: datetime, 
+        to_dt: datetime, 
+        from_date: date,
+        to_date_exclusive: date,
+        all_days: List[str],
     ) -> List[DailyProjectActivity]:
         """Get daily project activity series with complete date range."""
-        # Projects created per day
+        # Projects created per day - use datetime for timestamptz column
         q_created = text("""
             SELECT DATE(created_at) as day, COUNT(*) as cnt
             FROM public.projects
-            WHERE created_at >= CAST(:from_date AS timestamptz)
-              AND created_at < CAST(:to_date AS timestamptz)
+            WHERE created_at >= :from_date
+              AND created_at < :to_date
             GROUP BY DATE(created_at)
         """)
-        res_created = await self.db.execute(q_created, {"from_date": from_str, "to_date": to_str})
+        res_created = await self.db.execute(q_created, {"from_date": from_dt, "to_date": to_dt})
         created_map = {str(row.day): int(row.cnt) for row in res_created.fetchall()}
         
-        # Projects ready per day (from view - already validated)
+        # Projects ready per day (from view) - use date for date column
         q_ready = text("""
             SELECT day, ready_count
             FROM kpis.mv_projects_ready_lead_time_daily
-            WHERE day >= CAST(:from_date AS date)
-              AND day < CAST(:to_date AS date)
+            WHERE day >= :from_date
+              AND day < :to_date
         """)
-        res_ready = await self.db.execute(q_ready, {"from_date": from_str, "to_date": to_str})
+        res_ready = await self.db.execute(q_ready, {"from_date": from_date, "to_date": to_date_exclusive})
         ready_map = {str(row.day): int(row.ready_count or 0) for row in res_ready.fetchall()}
         
         # Build complete series with all days (fill zeros for missing days)
@@ -328,30 +352,33 @@ class ProjectsFilesBusinessAggregator:
         ]
     
     async def _get_file_activity_series(
-        self, from_str: str, to_str: str, all_days: List[str]
+        self, 
+        from_dt: datetime, 
+        to_dt: datetime, 
+        all_days: List[str],
     ) -> List[DailyFileActivity]:
         """Get daily file activity series with complete date range."""
-        # Files uploaded per day
+        # Files uploaded per day - use datetime for timestamptz column
         q_uploaded = text("""
             SELECT DATE(input_file_uploaded_at) as day, COUNT(*) as cnt
             FROM public.input_files
-            WHERE input_file_uploaded_at >= CAST(:from_date AS timestamptz)
-              AND input_file_uploaded_at < CAST(:to_date AS timestamptz)
+            WHERE input_file_uploaded_at >= :from_date
+              AND input_file_uploaded_at < :to_date
             GROUP BY DATE(input_file_uploaded_at)
         """)
-        res_uploaded = await self.db.execute(q_uploaded, {"from_date": from_str, "to_date": to_str})
+        res_uploaded = await self.db.execute(q_uploaded, {"from_date": from_dt, "to_date": to_dt})
         uploaded_map = {str(row.day): int(row.cnt) for row in res_uploaded.fetchall()}
         
-        # Files generated per day (already validated)
+        # Files generated per day - use datetime for timestamptz column
         q_generated = text("""
             SELECT DATE(event_at) as day, COUNT(*) as cnt
             FROM public.product_file_activity
             WHERE event_type = 'generated'
-              AND event_at >= CAST(:from_date AS timestamptz)
-              AND event_at < CAST(:to_date AS timestamptz)
+              AND event_at >= :from_date
+              AND event_at < :to_date
             GROUP BY DATE(event_at)
         """)
-        res_generated = await self.db.execute(q_generated, {"from_date": from_str, "to_date": to_str})
+        res_generated = await self.db.execute(q_generated, {"from_date": from_dt, "to_date": to_dt})
         generated_map = {str(row.day): int(row.cnt) for row in res_generated.fetchall()}
         
         # Build complete series with all days (fill zeros for missing days)
@@ -365,17 +392,21 @@ class ProjectsFilesBusinessAggregator:
         ]
     
     async def _get_active_users_series(
-        self, from_str: str, to_str: str, all_days: List[str]
+        self, 
+        from_dt: datetime, 
+        to_dt: datetime, 
+        all_days: List[str],
     ) -> List[DailyActiveUsers]:
         """Get daily active users series with complete date range."""
+        # Use datetime for timestamptz column
         q = text("""
             SELECT DATE(event_at) as day, COUNT(DISTINCT auth_user_id) as cnt
             FROM public.product_file_activity
-            WHERE event_at >= CAST(:from_date AS timestamptz)
-              AND event_at < CAST(:to_date AS timestamptz)
+            WHERE event_at >= :from_date
+              AND event_at < :to_date
             GROUP BY DATE(event_at)
         """)
-        res = await self.db.execute(q, {"from_date": from_str, "to_date": to_str})
+        res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
         users_map = {str(row.day): int(row.cnt) for row in res.fetchall()}
         
         # Build complete series with all days (fill zeros for missing days)
@@ -385,7 +416,9 @@ class ProjectsFilesBusinessAggregator:
         ]
     
     async def _get_credits_consumed_files(
-        self, from_str: str, to_str: str
+        self, 
+        from_dt: datetime, 
+        to_dt: datetime,
     ) -> Optional[int]:
         """
         Get credits consumed by Files module.
@@ -394,15 +427,16 @@ class ProjectsFilesBusinessAggregator:
         """
         try:
             # Check if module column exists and has 'files' values
+            # Use datetime for timestamptz column
             q = text("""
                 SELECT COALESCE(SUM(ABS(credits_delta)), 0) as total
                 FROM public.credit_transactions
                 WHERE module = 'files'
                   AND tx_type = 'debit'
-                  AND created_at >= CAST(:from_date AS timestamptz)
-                  AND created_at < CAST(:to_date AS timestamptz)
+                  AND created_at >= :from_date
+                  AND created_at < :to_date
             """)
-            res = await self.db.execute(q, {"from_date": from_str, "to_date": to_str})
+            res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
             total = int(res.scalar() or 0)
             
             # If 0, check if any 'files' module entries exist at all
