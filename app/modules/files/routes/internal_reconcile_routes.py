@@ -163,7 +163,7 @@ FROM public.input_files
 WHERE storage_state = 'missing'
   AND input_file_is_active = true
   AND input_file_is_archived = false
-  AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+  AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
 """
 
 # Count eligible records (dry_run) - PRODUCT FILES
@@ -173,7 +173,7 @@ FROM public.product_files
 WHERE storage_state = 'missing'
   AND product_file_is_active = true
   AND product_file_is_archived = false
-  AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+  AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
 """
 
 # Breakdown by project (dry_run + scope='all')
@@ -211,7 +211,7 @@ WITH elig AS (
     WHERE storage_state = 'missing'
       AND input_file_is_active = true
       AND input_file_is_archived = false
-      AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+      AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
     ORDER BY created_at ASC, input_file_id ASC
     LIMIT :limit
     FOR UPDATE SKIP LOCKED
@@ -234,7 +234,7 @@ WITH elig AS (
     WHERE storage_state = 'missing'
       AND product_file_is_active = true
       AND product_file_is_archived = false
-      AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+      AND (:project_id IS NULL OR project_id = CAST(:project_id AS uuid))
     ORDER BY created_at ASC, product_file_id ASC
     LIMIT :limit
     FOR UPDATE SKIP LOCKED
