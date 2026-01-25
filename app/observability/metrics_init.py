@@ -4,18 +4,15 @@ backend/app/observability/metrics_init.py
 
 Inicialización de todos los collectors Prometheus al startup.
 
-Este módulo fuerza la inicialización lazy de todos los collectors para que
-sus métricas aparezcan en /metrics desde el inicio, incluso si no han sido
-invocados todavía.
+Este módulo fuerza el registro de los collectors (Counter, Histogram, Gauge)
+en el REGISTRY de Prometheus para que sus familias (# HELP, # TYPE) aparezcan
+en /metrics desde el inicio.
 
-Problema resuelto:
-- Los collectors usan `_ensure_*()` lazy que solo registra métricas cuando
-  se llama `inc_*()` o `observe_*()` por primera vez.
-- Prometheus scrape puede no ver métricas hasta que haya actividad real.
-- Este módulo fuerza la inicialización temprana.
+Las series con labels aparecerán cuando haya actividad real (no se pre-crean).
 
 Autor: DoxAI
 Fecha: 2026-01-24
+Updated: 2026-01-25 - Robust error logging with exc_info, registry verification
 """
 from __future__ import annotations
 
@@ -24,16 +21,67 @@ import logging
 _logger = logging.getLogger("observability.metrics_init")
 
 
+def get_metrics_registry():
+    """
+    Obtiene el registry canónico usado por /metrics.
+    
+    SSOT: Importa desde app.observability.prom para usar exactamente
+    el mismo registry que el endpoint /metrics.
+    
+    Returns:
+        El registry que usa /metrics (multiprocess-aware).
+    """
+    from app.observability.prom import _get_metrics_registry
+    return _get_metrics_registry()
+
+
+def _get_registered_family_names() -> set:
+    """
+    Obtiene los nombres de familias registradas usando API pública.
+    
+    Usa REGISTRY.collect() (API pública) en lugar de _names_to_collectors.
+    
+    Returns:
+        Set con nombres de familias de métricas.
+    """
+    try:
+        registry = get_metrics_registry()
+        return {metric.name for metric in registry.collect()}
+    except Exception as e:
+        _logger.error("metrics_get_family_names_error: %s", str(e), exc_info=True)
+        return set()
+
+
+def _verify_registry() -> dict:
+    """
+    Verifica qué métricas están registradas en el REGISTRY de Prometheus.
+    
+    Usa el registry canónico (mismo que /metrics) y API pública.
+    
+    Returns:
+        dict con flags indicando presencia de cada familia de métricas.
+    """
+    try:
+        family_names = _get_registered_family_names()
+        
+        return {
+            "has_files_delete_total": "files_delete_total" in family_names,
+            "has_files_delete_latency": "files_delete_latency_seconds" in family_names,
+            "has_touch_debounced_allowed_total": "touch_debounced_allowed_total" in family_names,
+            "has_touch_debounced_skipped_total": "touch_debounced_skipped_total" in family_names,
+            "has_doxai_ghost_files_count": "doxai_ghost_files_count" in family_names,
+        }
+    except Exception as e:
+        _logger.error("metrics_registry_verify_error: %s", str(e), exc_info=True)
+        return {}
+
+
 def initialize_all_metrics() -> dict:
     """
     Inicializa todos los collectors Prometheus de forma temprana.
     
-    Esto registra todas las métricas en el REGISTRY de Prometheus incluso
-    antes de que haya actividad real, permitiendo que /metrics las liste
-    desde el primer scrape.
-    
-    IMPORTANTE: Los collectors ahora inicializan cada label combination con
-    valor 0, lo que hace que las métricas aparezcan inmediatamente en /metrics.
+    Registra las familias de métricas (Counter, Histogram, Gauge) en el REGISTRY.
+    Las series con labels aparecen cuando hay actividad real.
     
     Returns:
         dict con el estado de inicialización de cada collector.
@@ -52,12 +100,26 @@ def initialize_all_metrics() -> dict:
             _ensure_collectors as ensure_delete_collectors,
         )
         results["files_delete"] = ensure_delete_collectors()
+        
         if results["files_delete"]:
-            _logger.info("metrics_init: files_delete collectors initialized ✓")
+            _logger.info("metrics_init: files_delete collectors registered ✓")
         else:
-            _logger.warning("metrics_init: files_delete collectors returned False")
+            _logger.error(
+                "metrics_init: files_delete collectors returned False",
+                exc_info=False,
+            )
+    except ImportError as ie:
+        _logger.error(
+            "metrics_init: files_delete IMPORT FAILED: %s",
+            str(ie),
+            exc_info=True,
+        )
     except Exception as e:
-        _logger.warning(f"metrics_init: files_delete failed: {e}")
+        _logger.error(
+            "metrics_init: files_delete INIT FAILED: %s",
+            str(e),
+            exc_info=True,
+        )
     
     # ─────────────────────────────────────────────────────────────────────────
     # 2. Touch Debounce Collectors
@@ -67,12 +129,26 @@ def initialize_all_metrics() -> dict:
             _ensure_counters as ensure_touch_counters,
         )
         results["touch_debounce"] = ensure_touch_counters()
+        
         if results["touch_debounce"]:
-            _logger.info("metrics_init: touch_debounce collectors initialized ✓")
+            _logger.info("metrics_init: touch_debounce collectors registered ✓")
         else:
-            _logger.warning("metrics_init: touch_debounce collectors returned False")
+            _logger.error(
+                "metrics_init: touch_debounce collectors returned False",
+                exc_info=False,
+            )
+    except ImportError as ie:
+        _logger.error(
+            "metrics_init: touch_debounce IMPORT FAILED: %s",
+            str(ie),
+            exc_info=True,
+        )
     except Exception as e:
-        _logger.warning(f"metrics_init: touch_debounce failed: {e}")
+        _logger.error(
+            "metrics_init: touch_debounce INIT FAILED: %s",
+            str(e),
+            exc_info=True,
+        )
     
     # ─────────────────────────────────────────────────────────────────────────
     # 3. DB Metrics Collector (gauges for ghost_files, storage_delta, etc.)
@@ -83,23 +159,51 @@ def initialize_all_metrics() -> dict:
         )
         collector = get_db_metrics_collector()
         results["db_metrics"] = collector._ensure_metrics()
+        
         if results["db_metrics"]:
-            _logger.info("metrics_init: db_metrics collector initialized ✓")
+            _logger.info("metrics_init: db_metrics collector registered ✓")
         else:
-            _logger.warning("metrics_init: db_metrics collector returned False")
+            _logger.error(
+                "metrics_init: db_metrics collector returned False",
+                exc_info=False,
+            )
+    except ImportError as ie:
+        _logger.error(
+            "metrics_init: db_metrics IMPORT FAILED: %s",
+            str(ie),
+            exc_info=True,
+        )
     except Exception as e:
-        _logger.warning(f"metrics_init: db_metrics failed: {e}")
+        _logger.error(
+            "metrics_init: db_metrics INIT FAILED: %s",
+            str(e),
+            exc_info=True,
+        )
     
+    # ─────────────────────────────────────────────────────────────────────────
     # Summary log
-    success_count = sum(1 for v in results.values() if v)
-    total_count = len(results)
+    # ─────────────────────────────────────────────────────────────────────────
     _logger.info(
-        "metrics_init_complete: %d/%d collectors initialized",
-        success_count,
-        total_count,
+        "metrics_init_summary: files_delete=%s touch_debounce=%s db_metrics=%s",
+        results["files_delete"],
+        results["touch_debounce"],
+        results["db_metrics"],
+    )
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # Registry verification (post-init check)
+    # ─────────────────────────────────────────────────────────────────────────
+    registry_check = _verify_registry()
+    _logger.info(
+        "metrics_registry_check: has_files_delete_total=%s has_touch_debounced_allowed_total=%s "
+        "has_files_delete_latency=%s has_doxai_ghost_files_count=%s",
+        registry_check.get("has_files_delete_total", False),
+        registry_check.get("has_touch_debounced_allowed_total", False),
+        registry_check.get("has_files_delete_latency", False),
+        registry_check.get("has_doxai_ghost_files_count", False),
     )
     
     return results
 
 
-__all__ = ["initialize_all_metrics"]
+__all__ = ["initialize_all_metrics", "_verify_registry", "get_metrics_registry", "_get_registered_family_names"]

@@ -4,14 +4,17 @@ backend/app/modules/projects/metrics/collectors/touch_debounce_collectors.py
 
 Prometheus counters para observabilidad del touch_project_debounced.
 
-Métricas expuestas:
+Métricas expuestas (familias registradas en REGISTRY):
 - touch_debounced_allowed_total{reason} - Touch ejecutado
 - touch_debounced_skipped_total{reason} - Touch omitido por debounce
 - touch_debounced_redis_error_total{reason} - Error de Redis (fail-open)
 - touch_debounced_redis_unavailable_total{reason} - Redis no disponible
 
+Las series con labels aparecen cuando hay actividad real.
+
 Autor: DoxAI
 Fecha: 2026-01-23
+Updated: 2026-01-25 - exc_info=True for all errors
 """
 from __future__ import annotations
 
@@ -37,24 +40,24 @@ LABEL_NAMES = ("reason",)
 
 
 # ---------------------------------------------------------------------------
-# Lazy initialization (evita errores si Prometheus no está configurado)
+# Lazy initialization
 # ---------------------------------------------------------------------------
 _counters_initialized = False
-_allowed_counter = None
-_skipped_counter = None
-_redis_error_counter = None
-_redis_unavailable_counter = None
+_allowed_counter: Optional[object] = None
+_skipped_counter: Optional[object] = None
+_redis_error_counter: Optional[object] = None
+_redis_unavailable_counter: Optional[object] = None
 
 
 def _ensure_counters() -> bool:
     """
-    Inicializa los counters de Prometheus de forma lazy.
+    Registra los counters en el REGISTRY de Prometheus.
     
-    Los counters aparecerán en /metrics con TYPE/HELP al registrarse.
-    Los valores con labels aparecen cuando hay actividad real (no se pre-crean).
+    Después de esta llamada, /metrics mostrará # HELP y # TYPE para cada familia.
+    Las series con labels aparecen cuando hay actividad real.
     
     Returns:
-        True si los counters están disponibles, False si hubo error.
+        True si los counters están registrados, False si hubo error.
     """
     global _counters_initialized
     global _allowed_counter, _skipped_counter
@@ -86,12 +89,15 @@ def _ensure_counters() -> bool:
         )
         
         _counters_initialized = True
-        _logger.info("touch_debounce_metrics_initialized")
+        _logger.info("touch_debounce_metrics_registered: metrics=[%s, %s, %s, %s]",
+                     TOUCH_ALLOWED_COUNTER_NAME, TOUCH_SKIPPED_COUNTER_NAME,
+                     TOUCH_REDIS_ERROR_COUNTER_NAME, TOUCH_REDIS_UNAVAILABLE_COUNTER_NAME)
         return True
     except Exception as e:
-        _logger.warning(
-            "touch_debounce_metrics_init_error: %s - metrics disabled",
+        _logger.error(
+            "touch_debounce_metrics_register_error: %s",
             str(e),
+            exc_info=True,
         )
         return False
 
@@ -105,7 +111,7 @@ def inc_touch_allowed(reason: str = "unspecified") -> None:
         if _ensure_counters() and _allowed_counter:
             _allowed_counter.labels(reason=reason).inc()
     except Exception:
-        pass  # Never break caller flow
+        pass
 
 
 def inc_touch_skipped(reason: str = "unspecified") -> None:
@@ -144,6 +150,5 @@ __all__ = [
     "TOUCH_SKIPPED_COUNTER_NAME",
     "TOUCH_REDIS_ERROR_COUNTER_NAME",
     "TOUCH_REDIS_UNAVAILABLE_COUNTER_NAME",
+    "_ensure_counters",
 ]
-
-# Fin del archivo

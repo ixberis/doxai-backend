@@ -326,7 +326,7 @@ class ProjectsFilesOperationalAggregator:
 
 router = APIRouter(
     prefix="/_internal/admin/projects-files",
-    tags=["admin-projects-files"],
+    tags=["admin-projects-files-operational"],
     dependencies=[Depends(require_admin_strict)],
 )
 

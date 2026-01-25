@@ -513,7 +513,7 @@ class ProjectsFilesBusinessAggregator:
 
 router = APIRouter(
     prefix="/_internal/admin/projects-files",
-    tags=["admin-projects-files"],
+    tags=["admin-projects-files-business"],
     dependencies=[Depends(require_admin_strict)],
 )
 
