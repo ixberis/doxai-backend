@@ -120,6 +120,10 @@ def _generate_date_range(from_date: date, to_date: date) -> List[str]:
     return dates
 
 
+# Module-level flag to avoid log spam (once per process)
+_module_column_logged: bool = False
+
+
 class ProjectsFilesBusinessAggregator:
     """
     Aggregator for Projects/Files Business metrics.
@@ -137,7 +141,8 @@ class ProjectsFilesBusinessAggregator:
     
     def __init__(self, db: AsyncSession):
         self.db = db
-    
+        self._module_column_exists: Optional[bool] = None  # Cached per aggregator instance
+
     async def get_summary(
         self, 
         from_date: date, 
@@ -415,6 +420,41 @@ class ProjectsFilesBusinessAggregator:
             for day in all_days
         ]
     
+    async def _check_module_column_exists(self) -> bool:
+        """
+        Check if 'module' column exists in credit_transactions table.
+        
+        Uses information_schema for reliable schema introspection.
+        Result is cached per-request to avoid repeated queries.
+        Logs INFO once per process (not per request) to avoid log spam.
+        """
+        global _module_column_logged
+        
+        if self._module_column_exists is not None:
+            return self._module_column_exists
+        
+        q = text("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'credit_transactions'
+                  AND column_name = 'module'
+            ) AS exists
+        """)
+        res = await self.db.execute(q)
+        exists = bool(res.scalar())
+        self._module_column_exists = exists
+        
+        # Log once per process, not per request
+        if not exists and not _module_column_logged:
+            logger.info(
+                "[credits_consumed_files] column 'module' not found in credit_transactions. "
+                "Run migration 18_credit_transactions_add_module.sql to enable this metric."
+            )
+            _module_column_logged = True
+        
+        return exists
+    
     async def _get_credits_consumed_files(
         self, 
         from_dt: datetime, 
@@ -423,10 +463,18 @@ class ProjectsFilesBusinessAggregator:
         """
         Get credits consumed by Files module.
         
-        Returns None if module field is not populated (pending migration).
+        Returns None if:
+        - 'module' column doesn't exist (migration pending)
+        - No 'files' module entries exist yet (backend not populating)
+        
+        SSOT: Only queries when module column exists. Does NOT infer 'files' 
+        from other fields.
         """
+        # Check schema first - avoids UndefinedColumnError
+        if not await self._check_module_column_exists():
+            return None
+        
         try:
-            # Check if module column exists and has 'files' values
             # Use datetime for timestamptz column
             q = text("""
                 SELECT COALESCE(SUM(ABS(credits_delta)), 0) as total
@@ -440,7 +488,7 @@ class ProjectsFilesBusinessAggregator:
             total = int(res.scalar() or 0)
             
             # If 0, check if any 'files' module entries exist at all
-            # If not, return None to indicate "pending implementation"
+            # If not, return None to indicate "pending backend implementation"
             if total == 0:
                 q_check = text("""
                     SELECT COUNT(*) FROM public.credit_transactions
@@ -454,8 +502,8 @@ class ProjectsFilesBusinessAggregator:
             
             return total
         except Exception as e:
-            # Module column might not exist yet
-            logger.warning(f"credits_consumed_files not available: {e}")
+            # Unexpected error - log as warning
+            logger.warning(f"[credits_consumed_files] query failed: {e}")
             return None
 
 

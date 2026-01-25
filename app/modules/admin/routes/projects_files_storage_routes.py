@@ -414,8 +414,8 @@ async def get_storage_metrics(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 capture_router = APIRouter(
-    prefix="/_internal/admin/storage",
-    tags=["admin-storage-cron"],
+    prefix="/_internal/cron/storage",
+    tags=["cron-storage"],
 )
 
 

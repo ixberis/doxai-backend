@@ -354,8 +354,8 @@ async def get_jobs_metrics(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 prune_router = APIRouter(
-    prefix="/_internal/admin/jobs",
-    tags=["admin-jobs-cron"],
+    prefix="/_internal/cron/jobs",
+    tags=["cron-jobs"],
 )
 
 
