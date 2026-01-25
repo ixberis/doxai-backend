@@ -2,330 +2,505 @@
 """
 backend/app/modules/files/routes/internal_reconcile_routes.py
 
-Endpoint interno para reconciliación de archivos fantasma (DB≠Storage).
+Internal endpoint for BD ↔ Storage reconciliation (RFC-DoxAI-STO-001).
 
-POST /_internal/files/reconcile-all
-- Ejecuta reconciliación para TODOS los proyectos
-- Requiere InternalServiceAuth (APP_SERVICE_TOKEN)
-- NO es accesible con JWT de usuario
+Endpoint:
+- POST /_internal/files/reconcile-storage
 
-POST /_internal/files/{project_id}/reconcile-storage
-- Ejecuta reconciliación para un proyecto específico
-- Requiere InternalServiceAuth (APP_SERVICE_TOKEN)
+Purpose:
+- Detect records with storage_state='missing' (BD sin objeto físico)
+- Optionally invalidate them (storage_state='invalidated')
+- Never touches storage, never deletes DB records
 
-Autor: DoxAI Team
-Fecha: 2026-01-22
+Auth: require_internal_service_token (APP_SERVICE_TOKEN)
+NOT admin JWT - this is an operational/internal endpoint.
+
+NOTE: Requires DB reinstallation with storage_state column for E2E tests.
+
+Author: DoxAI
+Created: 2026-01-25
 """
-
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy import text, bindparam
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.database.database import get_db
-from app.shared.config import settings
-from app.shared.internal_auth import InternalServiceAuth
-
-router = APIRouter(prefix="/_internal/files", tags=["internal:files"])
-
-_logger = logging.getLogger("files.internal.reconcile")
+from app.shared.internal_auth import require_internal_service_token
 
 
-class ReconcileResult(BaseModel):
-    """Resultado de reconciliación de storage."""
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REQUEST / RESPONSE SCHEMAS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ReconcileRequest(BaseModel):
+    """Request payload for reconciliation endpoint."""
     
-    project_id: Optional[UUID] = Field(None, description="ID del proyecto (si aplica)")
-    ghost_files_found: int = Field(..., description="Archivos fantasma detectados")
-    ghost_files_archived: int = Field(..., description="Archivos fantasma archivados")
-    ghost_file_ids: List[UUID] = Field(default_factory=list, description="IDs de archivos fantasma")
-    storage_check_available: bool = Field(
-        default=True, 
-        description="True si storage.objects fue accesible"
+    dry_run: bool = Field(
+        default=True,
+        description="If true, only count eligible records without modifying. Default true."
     )
-
-
-class ReconcileAllResult(BaseModel):
-    """Resultado de reconciliación global."""
+    scope: Literal["all", "project"] = Field(
+        default="all",
+        description="'all' = all projects, 'project' = single project"
+    )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="Required when scope='project'. UUID of target project."
+    )
+    limit: int = Field(
+        default=5000,
+        ge=1,
+        le=10000,
+        description="Max records to process per table. Default 5000, max 10000."
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Must be true when dry_run=false to confirm execution intent."
+    )
     
-    total_scanned: int = Field(..., description="Total de archivos escaneados")
-    ghost_files_found: int = Field(..., description="Archivos fantasma detectados")
-    ghost_files_archived: int = Field(..., description="Archivos fantasma archivados")
-    affected_project_ids: List[str] = Field(default_factory=list, description="Primeros 10 project_ids afectados")
-    storage_check_available: bool = Field(default=True)
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id_format(cls, v: Optional[str]) -> Optional[str]:
+        """Validate project_id is valid UUID format if provided."""
+        if v is not None:
+            try:
+                UUID(v)
+            except ValueError:
+                raise ValueError("project_id must be a valid UUID")
+        return v
+    
+    def model_post_init(self, __context) -> None:
+        """Cross-field validation after init."""
+        # scope=project requires project_id
+        if self.scope == "project" and not self.project_id:
+            raise ValueError("project_id is required when scope='project'")
+        
+        # dry_run=false requires confirm=true
+        if not self.dry_run and not self.confirm:
+            raise ValueError("confirm=true is required when dry_run=false")
 
 
-async def _check_storage_objects_access(db: AsyncSession, bucket: str) -> bool:
-    """Verifica acceso a storage.objects."""
-    try:
-        result = await db.execute(
-            text("SELECT 1 FROM storage.objects WHERE bucket_id = :bucket LIMIT 1"),
-            {"bucket": bucket}
-        )
-        result.fetchone()
-        return True
-    except Exception as e:
-        _logger.warning(
-            "storage_objects_access_check_failed: bucket=%s error=%s",
-            bucket, str(e)[:200]
-        )
-        return False
+class ProjectBreakdown(BaseModel):
+    """Breakdown of eligible/invalidated records by project."""
+    project_id: str
+    input_files: int = 0
+    product_files: int = 0
 
 
-@router.post(
-    "/reconcile-all",
-    summary="[INTERNAL] Reconciliar todos los archivos fantasma",
-    response_model=ReconcileAllResult,
-    status_code=status.HTTP_200_OK,
+class ReconcileResponse(BaseModel):
+    """Response payload for reconciliation endpoint."""
+    
+    mode: Literal["dry_run", "execute"] = Field(
+        ...,
+        description="'dry_run' = preview only, 'execute' = changes applied"
+    )
+    
+    # Eligible counts (before action)
+    eligible_input_files: int = Field(
+        default=0,
+        description="Input files with storage_state='missing'"
+    )
+    eligible_product_files: int = Field(
+        default=0,
+        description="Product files with storage_state='missing'"
+    )
+    
+    # Invalidated counts (after action, only in execute mode)
+    invalidated_input_files: int = Field(
+        default=0,
+        description="Input files actually invalidated (execute mode only)"
+    )
+    invalidated_product_files: int = Field(
+        default=0,
+        description="Product files actually invalidated (execute mode only)"
+    )
+    
+    # Metadata
+    limit_per_table: int = Field(
+        ...,
+        description="Limit applied per table"
+    )
+    truncated: bool = Field(
+        default=False,
+        description="True if more records exist beyond limit"
+    )
+    scope: str = Field(..., description="Scope used: 'all' or 'project'")
+    project_id: Optional[str] = Field(
+        default=None,
+        description="Project ID if scope='project'"
+    )
+    
+    # Breakdown by project (only in dry_run mode with scope='all')
+    by_project: list[ProjectBreakdown] = Field(
+        default_factory=list,
+        description="Breakdown by project (dry_run + scope='all' only)"
+    )
+    
+    # Timestamps
+    executed_at: str = Field(..., description="ISO timestamp of execution")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SQL QUERIES (Postgres-correct CTEs)
+# Filtros: solo registros activos y no archivados
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Count eligible records (dry_run) - INPUT FILES
+COUNT_ELIGIBLE_INPUT_SQL = """
+SELECT COUNT(*) AS cnt
+FROM public.input_files
+WHERE storage_state = 'missing'
+  AND input_file_is_active = true
+  AND input_file_is_archived = false
+  AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+"""
+
+# Count eligible records (dry_run) - PRODUCT FILES
+COUNT_ELIGIBLE_PRODUCT_SQL = """
+SELECT COUNT(*) AS cnt
+FROM public.product_files
+WHERE storage_state = 'missing'
+  AND product_file_is_active = true
+  AND product_file_is_archived = false
+  AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+"""
+
+# Breakdown by project (dry_run + scope='all')
+BREAKDOWN_BY_PROJECT_SQL = """
+SELECT 
+    project_id::text,
+    SUM(CASE WHEN table_name = 'input_files' THEN cnt ELSE 0 END)::int AS input_files,
+    SUM(CASE WHEN table_name = 'product_files' THEN cnt ELSE 0 END)::int AS product_files
+FROM (
+    SELECT project_id, 'input_files' AS table_name, COUNT(*) AS cnt
+    FROM public.input_files
+    WHERE storage_state = 'missing'
+      AND input_file_is_active = true
+      AND input_file_is_archived = false
+    GROUP BY project_id
+    UNION ALL
+    SELECT project_id, 'product_files' AS table_name, COUNT(*) AS cnt
+    FROM public.product_files
+    WHERE storage_state = 'missing'
+      AND product_file_is_active = true
+      AND product_file_is_archived = false
+    GROUP BY project_id
+) sub
+GROUP BY project_id
+ORDER BY (SUM(cnt)) DESC
+LIMIT 100
+"""
+
+# Invalidate input files (execute mode)
+# Uses CTE with FOR UPDATE SKIP LOCKED for safe concurrent access
+INVALIDATE_INPUT_SQL = """
+WITH elig AS (
+    SELECT input_file_id
+    FROM public.input_files
+    WHERE storage_state = 'missing'
+      AND input_file_is_active = true
+      AND input_file_is_archived = false
+      AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+    ORDER BY created_at ASC, input_file_id ASC
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
 )
-async def reconcile_all_storage(
-    _auth: InternalServiceAuth,
-    db: AsyncSession = Depends(get_db),
-    batch_size: int = 500,
-) -> ReconcileAllResult:
+UPDATE public.input_files
+SET 
+    storage_state = 'invalidated',
+    invalidated_at = :now,
+    invalidation_reason = 'reconcile_admin',
+    updated_at = :now
+WHERE input_file_id IN (SELECT input_file_id FROM elig)
+RETURNING input_file_id
+"""
+
+# Invalidate product files (execute mode)
+INVALIDATE_PRODUCT_SQL = """
+WITH elig AS (
+    SELECT product_file_id
+    FROM public.product_files
+    WHERE storage_state = 'missing'
+      AND product_file_is_active = true
+      AND product_file_is_archived = false
+      AND (:project_id::uuid IS NULL OR project_id = :project_id::uuid)
+    ORDER BY created_at ASC, product_file_id ASC
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE public.product_files
+SET 
+    storage_state = 'invalidated',
+    invalidated_at = :now,
+    invalidation_reason = 'reconcile_admin',
+    updated_at = :now
+WHERE product_file_id IN (SELECT product_file_id FROM elig)
+RETURNING product_file_id
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RECONCILIATION SERVICE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ReconciliationService:
     """
-    Reconcilia TODOS los archivos fantasma de todos los proyectos.
+    Service for BD ↔ Storage reconciliation.
     
-    **REQUIERE**: Authorization: Bearer <APP_SERVICE_TOKEN>
-    
-    Este endpoint es llamado por el job automático o manualmente
-    por administradores con acceso al service token.
+    Invariants:
+    - Never changes invalidated → present/missing (within this endpoint)
+    - Only transitions missing → invalidated
+    - Idempotent (running twice yields same result)
+    - Never touches storage
+    - Never deletes DB records
+    - Only processes active, non-archived files
     """
-    bucket_name = getattr(settings, 'supabase_bucket_name', 'users-files')
     
-    # Verificar acceso a storage
-    storage_accessible = await _check_storage_objects_access(db, bucket_name)
-    if not storage_accessible:
-        _logger.error("reconcile_all_storage_unavailable: bucket=%s", bucket_name)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error_code": "STORAGE_OBJECTS_UNAVAILABLE",
-                "message": "No se puede acceder a storage.objects",
-            }
-        )
+    def __init__(self, db: AsyncSession):
+        self.db = db
     
-    # Obtener todos los archivos activos
-    active_files_query = await db.execute(
-        text("""
-            SELECT input_file_id, input_file_storage_path, project_id
-            FROM public.input_files
-            WHERE input_file_is_active = true
-            AND input_file_is_archived = false
-            AND input_file_storage_path IS NOT NULL
-        """)
-    )
-    active_files = active_files_query.fetchall()
-    
-    if not active_files:
-        return ReconcileAllResult(
-            total_scanned=0,
-            ghost_files_found=0,
-            ghost_files_archived=0,
-            affected_project_ids=[],
-            storage_check_available=True,
-        )
-    
-    # Verificar existencia en storage (por batches)
-    all_paths = [row[1] for row in active_files if row[1]]
-    existing_paths = set()
-    
-    for i in range(0, len(all_paths), batch_size):
-        batch_paths = all_paths[i:i + batch_size]
-        if not batch_paths:
-            continue
+    async def reconcile(self, request: ReconcileRequest) -> ReconcileResponse:
+        """
+        Execute reconciliation based on request parameters.
+        
+        Args:
+            request: Validated ReconcileRequest
             
-        sql = text("""
-            SELECT name FROM storage.objects 
-            WHERE bucket_id = :bucket AND name IN :paths
-        """).bindparams(
-            bindparam("bucket"),
-            bindparam("paths", expanding=True)
+        Returns:
+            ReconcileResponse with counts and metadata
+        """
+        now = datetime.now(timezone.utc)
+        project_id_param = request.project_id if request.scope == "project" else None
+        
+        logger.info(
+            "reconcile_start",
+            extra={
+                "dry_run": request.dry_run,
+                "scope": request.scope,
+                "project_id": project_id_param,
+                "limit": request.limit,
+            }
         )
-        result = await db.execute(sql, {"bucket": bucket_name, "paths": batch_paths})
-        existing_paths.update(row[0] for row in result.fetchall())
+        
+        if request.dry_run:
+            return await self._dry_run(request, now, project_id_param)
+        else:
+            return await self._execute(request, now, project_id_param)
     
-    # Identificar fantasmas
-    ghost_files = [
-        (row[0], row[2])  # (input_file_id, project_id)
-        for row in active_files
-        if row[1] not in existing_paths
-    ]
-    
-    if not ghost_files:
-        return ReconcileAllResult(
-            total_scanned=len(active_files),
-            ghost_files_found=0,
-            ghost_files_archived=0,
-            affected_project_ids=[],
-            storage_check_available=True,
+    async def _dry_run(
+        self,
+        request: ReconcileRequest,
+        now: datetime,
+        project_id: Optional[str],
+    ) -> ReconcileResponse:
+        """Preview mode: count eligible records without modifying."""
+        
+        # Count input files
+        res_input = await self.db.execute(
+            text(COUNT_ELIGIBLE_INPUT_SQL),
+            {"project_id": project_id}
+        )
+        eligible_input = int(res_input.scalar() or 0)
+        
+        # Count product files
+        res_product = await self.db.execute(
+            text(COUNT_ELIGIBLE_PRODUCT_SQL),
+            {"project_id": project_id}
+        )
+        eligible_product = int(res_product.scalar() or 0)
+        
+        logger.debug(
+            "reconcile_eligible",
+            extra={
+                "eligible_input_files": eligible_input,
+                "eligible_product_files": eligible_product,
+            }
+        )
+        
+        # Get breakdown by project (only for scope='all')
+        by_project: list[ProjectBreakdown] = []
+        if request.scope == "all" and (eligible_input > 0 or eligible_product > 0):
+            res_breakdown = await self.db.execute(text(BREAKDOWN_BY_PROJECT_SQL))
+            rows = res_breakdown.fetchall()
+            by_project = [
+                ProjectBreakdown(
+                    project_id=str(row.project_id),
+                    input_files=int(row.input_files or 0),
+                    product_files=int(row.product_files or 0),
+                )
+                for row in rows
+            ]
+        
+        # Check if truncated
+        truncated = (
+            eligible_input > request.limit or 
+            eligible_product > request.limit
+        )
+        
+        return ReconcileResponse(
+            mode="dry_run",
+            eligible_input_files=eligible_input,
+            eligible_product_files=eligible_product,
+            invalidated_input_files=0,
+            invalidated_product_files=0,
+            limit_per_table=request.limit,
+            truncated=truncated,
+            scope=request.scope,
+            project_id=project_id,
+            by_project=by_project,
+            executed_at=now.isoformat(),
         )
     
-    ghost_file_ids = [gf[0] for gf in ghost_files]
-    affected_project_ids = list(set(str(gf[1])[:8] for gf in ghost_files))[:10]
-    
-    # Archivar fantasmas
-    archive_sql = text("""
-        UPDATE public.input_files
-        SET input_file_is_active = false,
-            input_file_is_archived = true,
-            updated_at = now()
-        WHERE input_file_id IN :ids
-    """).bindparams(
-        bindparam("ids", expanding=True)
-    )
-    await db.execute(archive_sql, {"ids": ghost_file_ids})
-    await db.commit()
-    
-    _logger.info(
-        "reconcile_all_done: scanned=%d ghosts=%d archived=%d projects=%s",
-        len(active_files),
-        len(ghost_files),
-        len(ghost_file_ids),
-        affected_project_ids,
-    )
-    
-    return ReconcileAllResult(
-        total_scanned=len(active_files),
-        ghost_files_found=len(ghost_files),
-        ghost_files_archived=len(ghost_file_ids),
-        affected_project_ids=affected_project_ids,
-        storage_check_available=True,
-    )
+    async def _execute(
+        self,
+        request: ReconcileRequest,
+        now: datetime,
+        project_id: Optional[str],
+    ) -> ReconcileResponse:
+        """Execute mode: invalidate missing records."""
+        
+        params = {
+            "project_id": project_id,
+            "limit": request.limit,
+            "now": now,
+        }
+        
+        # First get eligible counts (before mutation)
+        res_input_count = await self.db.execute(
+            text(COUNT_ELIGIBLE_INPUT_SQL),
+            {"project_id": project_id}
+        )
+        eligible_input = int(res_input_count.scalar() or 0)
+        
+        res_product_count = await self.db.execute(
+            text(COUNT_ELIGIBLE_PRODUCT_SQL),
+            {"project_id": project_id}
+        )
+        eligible_product = int(res_product_count.scalar() or 0)
+        
+        # Invalidate input files
+        res_input = await self.db.execute(text(INVALIDATE_INPUT_SQL), params)
+        invalidated_input_ids = res_input.fetchall()
+        invalidated_input = len(invalidated_input_ids)
+        
+        # Invalidate product files
+        res_product = await self.db.execute(text(INVALIDATE_PRODUCT_SQL), params)
+        invalidated_product_ids = res_product.fetchall()
+        invalidated_product = len(invalidated_product_ids)
+        
+        # Commit transaction
+        await self.db.commit()
+        
+        logger.info(
+            "reconcile_execute",
+            extra={
+                "eligible_input_files": eligible_input,
+                "eligible_product_files": eligible_product,
+                "invalidated_input_files": invalidated_input,
+                "invalidated_product_files": invalidated_product,
+                "scope": request.scope,
+                "project_id": project_id,
+            }
+        )
+        
+        # Check if truncated
+        truncated = (
+            eligible_input > request.limit or 
+            eligible_product > request.limit
+        )
+        
+        return ReconcileResponse(
+            mode="execute",
+            eligible_input_files=eligible_input,
+            eligible_product_files=eligible_product,
+            invalidated_input_files=invalidated_input,
+            invalidated_product_files=invalidated_product,
+            limit_per_table=request.limit,
+            truncated=truncated,
+            scope=request.scope,
+            project_id=project_id,
+            by_project=[],  # Not provided in execute mode
+            executed_at=now.isoformat(),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTER
+# Auth: require_internal_service_token (APP_SERVICE_TOKEN)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+router = APIRouter(
+    prefix="/_internal/files",
+    tags=["internal-files-reconcile"],
+    dependencies=[Depends(require_internal_service_token)],
+)
 
 
 @router.post(
-    "/{project_id}/reconcile-storage",
-    summary="[INTERNAL] Reconciliar archivos fantasma de un proyecto",
-    response_model=ReconcileResult,
-    status_code=status.HTTP_200_OK,
+    "/reconcile-storage",
+    response_model=ReconcileResponse,
+    summary="Reconcile BD ↔ Storage (RFC-DoxAI-STO-001)",
+    description="""
+    Detect and optionally invalidate records with storage_state='missing'.
+    
+    **Auth:** Internal service token (APP_SERVICE_TOKEN via X-Service-Token header)
+    
+    **Modes:**
+    - `dry_run=true` (default): Preview eligible records without changes
+    - `dry_run=false, confirm=true`: Execute invalidation
+    
+    **Scopes:**
+    - `scope='all'`: Process all projects
+    - `scope='project'`: Process single project (requires project_id)
+    
+    **Behavior:**
+    - Only processes active, non-archived files
+    - Only transitions `missing` → `invalidated`
+    - Never changes `invalidated` → `present`/`missing`
+    - Never touches storage
+    - Never deletes DB records
+    - Idempotent (running twice yields same result)
+    
+    **Limits:**
+    - `limit` applies per table (input_files, product_files)
+    - Max 10,000 records per table per execution
+    """,
 )
-async def reconcile_project_storage(
-    project_id: UUID,
-    _auth: InternalServiceAuth,
+async def reconcile_storage(
+    request: ReconcileRequest,
     db: AsyncSession = Depends(get_db),
-) -> ReconcileResult:
+) -> ReconcileResponse:
     """
-    Reconcilia archivos fantasma de un proyecto específico.
+    Reconcile BD ↔ Storage state.
     
-    **REQUIERE**: Authorization: Bearer <APP_SERVICE_TOKEN>
-    
-    Solo para uso interno (service token), no por usuarios.
+    Protected by require_internal_service_token (APP_SERVICE_TOKEN).
     """
-    bucket_name = getattr(settings, 'supabase_bucket_name', 'users-files')
+    try:
+        service = ReconciliationService(db)
+        response = await service.reconcile(request)
+        return response
     
-    # Verificar que el proyecto existe
-    project_check = await db.execute(
-        text("SELECT id FROM public.projects WHERE id = CAST(:project_id AS uuid)"),
-        {"project_id": str(project_id)}
-    )
-    if not project_check.fetchone():
+    except Exception as e:
+        logger.exception(
+            "reconcile_error",
+            extra={"error": str(e)},
+        )
+        await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Proyecto no encontrado"
+            status_code=500,
+            detail=f"Reconciliation failed: {str(e)}",
         )
-    
-    # Verificar acceso a storage
-    storage_accessible = await _check_storage_objects_access(db, bucket_name)
-    if not storage_accessible:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error_code": "STORAGE_OBJECTS_UNAVAILABLE",
-                "message": "No se puede acceder a storage.objects",
-            }
-        )
-    
-    # Obtener archivos activos del proyecto
-    active_files_query = await db.execute(
-        text("""
-            SELECT input_file_id, input_file_storage_path
-            FROM public.input_files
-            WHERE project_id = CAST(:project_id AS uuid)
-            AND input_file_is_active = true
-            AND input_file_is_archived = false
-        """),
-        {"project_id": str(project_id)}
-    )
-    active_files = active_files_query.fetchall()
-    
-    if not active_files:
-        return ReconcileResult(
-            project_id=project_id,
-            ghost_files_found=0,
-            ghost_files_archived=0,
-            ghost_file_ids=[],
-            storage_check_available=True,
-        )
-    
-    # Verificar existencia en storage
-    all_paths = [row[1] for row in active_files if row[1]]
-    
-    if not all_paths:
-        return ReconcileResult(
-            project_id=project_id,
-            ghost_files_found=0,
-            ghost_files_archived=0,
-            ghost_file_ids=[],
-            storage_check_available=True,
-        )
-    
-    sql = text("""
-        SELECT name FROM storage.objects 
-        WHERE bucket_id = :bucket AND name IN :paths
-    """).bindparams(
-        bindparam("bucket"),
-        bindparam("paths", expanding=True)
-    )
-    result = await db.execute(sql, {"bucket": bucket_name, "paths": all_paths})
-    existing_paths = {row[0] for row in result.fetchall()}
-    
-    # Identificar y archivar fantasmas
-    ghost_files = [
-        row[0] for row in active_files if row[1] not in existing_paths
-    ]
-    
-    if not ghost_files:
-        return ReconcileResult(
-            project_id=project_id,
-            ghost_files_found=0,
-            ghost_files_archived=0,
-            ghost_file_ids=[],
-            storage_check_available=True,
-        )
-    
-    archive_sql = text("""
-        UPDATE public.input_files
-        SET input_file_is_active = false,
-            input_file_is_archived = true,
-            updated_at = now()
-        WHERE input_file_id IN :ids
-    """).bindparams(
-        bindparam("ids", expanding=True)
-    )
-    await db.execute(archive_sql, {"ids": ghost_files})
-    await db.commit()
-    
-    _logger.info(
-        "reconcile_project_done: project=%s ghosts=%d",
-        str(project_id)[:8],
-        len(ghost_files),
-    )
-    
-    return ReconcileResult(
-        project_id=project_id,
-        ghost_files_found=len(ghost_files),
-        ghost_files_archived=len(ghost_files),
-        ghost_file_ids=ghost_files,
-        storage_check_available=True,
-    )
 
-
-__all__ = ["router"]
 
 # Fin del archivo

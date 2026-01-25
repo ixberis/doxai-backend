@@ -52,6 +52,7 @@ def get_admin_routers():
         jobs_router,
         jobs_prune_router,
         cleanup_router,
+        # NOTE: reconcile_router moved to files module (/_internal/files/reconcile-storage)
     ]
     
     # Add billing admin routers if available
