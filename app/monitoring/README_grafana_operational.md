@@ -88,8 +88,8 @@ time() - doxai_db_metrics_last_refresh_timestamp OR vector(0)
 
 | Target | Expr |
 |--------|------|
-| A (p50) | `(histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op="bulk_delete"}[5m])) by (le))) or label_replace(vector(0), "quantile", "0.50", "", "")` |
-| B (p95) | `(histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op="bulk_delete"}[5m])) by (le))) or label_replace(vector(0), "quantile", "0.95", "", "")` |
+| A (p50) | `(histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op="single_delete"}[5m])) by (le))) or label_replace(vector(0), "quantile", "0.50", "", "")` |
+| B (p95) | `(histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op="single_delete"}[5m])) by (le))) or label_replace(vector(0), "quantile", "0.95", "", "")` |
 
 ### Panel 7 — Redis Debounce Health (timeseries, ops/hr)
 

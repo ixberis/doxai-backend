@@ -247,12 +247,12 @@
       },
       "targets": [
         {
-          "expr": "(histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op=\"bulk_delete\"}[5m])) by (le))) or label_replace(vector(0), \"quantile\", \"0.50\", \"\", \"\")",
+          "expr": "(histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op=\"single_delete\"}[5m])) by (le))) or label_replace(vector(0), \"quantile\", \"0.50\", \"\", \"\")",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "(histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op=\"bulk_delete\"}[5m])) by (le))) or label_replace(vector(0), \"quantile\", \"0.95\", \"\", \"\")",
+          "expr": "(histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op=\"single_delete\"}[5m])) by (le))) or label_replace(vector(0), \"quantile\", \"0.95\", \"\", \"\")",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -363,6 +363,6 @@
   "timezone": "",
   "title": "DoxAI - Admin Operational Dashboard",
   "uid": "adpk75m",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }
