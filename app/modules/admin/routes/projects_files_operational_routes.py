@@ -47,9 +47,22 @@ class StorageSnapshot(BaseModel):
 
 
 class GhostFilesMetrics(BaseModel):
-    """Ghost files metrics from input_files."""
+    """Ghost files metrics from input_files (legacy: storage_exists)."""
     count: int = Field(0, description="Active files with storage_exists=false")
     status: str = Field("healthy", description="healthy | warning | critical")
+
+
+class ReconciliationMetrics(BaseModel):
+    """
+    SSOT reconciliation metrics based on storage_state.
+    
+    - missing_active: Files marked as 'missing' that are still active (need attention)
+    - invalidated: Files already processed by reconciliation job
+    """
+    input_missing_active: int = Field(0, description="input_files with storage_state='missing' AND active")
+    product_missing_active: int = Field(0, description="product_files with storage_state='missing' AND active")
+    input_invalidated: int = Field(0, description="input_files with storage_state='invalidated'")
+    product_invalidated: int = Field(0, description="product_files with storage_state='invalidated'")
 
 
 class RedisDebounceHint(BaseModel):
@@ -133,7 +146,11 @@ class ProjectsFilesOperationalSummary(BaseModel):
     # ─────────────────────────────────────────────────────────────
     ghost_files: GhostFilesMetrics = Field(
         default_factory=GhostFilesMetrics,
-        description="Ghost files metrics from DB"
+        description="Legacy ghost files metrics from DB (storage_exists=false)"
+    )
+    reconciliation: ReconciliationMetrics = Field(
+        default_factory=ReconciliationMetrics,
+        description="SSOT reconciliation metrics (storage_state)"
     )
     storage: StorageSnapshot = Field(
         default_factory=StorageSnapshot,
@@ -197,10 +214,12 @@ class ProjectsFilesOperationalAggregator:
             SSOTMissingError: If required views are not installed
         """
         ghost_files = await self._get_ghost_files_metrics()
+        reconciliation = await self._get_reconciliation_metrics()
         storage = await self._get_storage_snapshot()
         
         return ProjectsFilesOperationalSummary(
             ghost_files=ghost_files,
+            reconciliation=reconciliation,
             storage=storage,
             deletes_hint=DeletesMetricsHint(),
             redis_debounce_hint=RedisDebounceHint(),
@@ -232,8 +251,8 @@ class ProjectsFilesOperationalAggregator:
         if not has_column:
             logger.error("SSOT missing: input_files.storage_exists column not installed")
             raise SSOTMissingError(
-                "input_files.storage_exists column not installed. "
-                "Run database/files/02_tables/ migration to add ghost file tracking."
+                "storage_exists column not installed. "
+                "Reinstall DB using canonical SQL (database/files/_index_files.sql)."
             )
         
         q = text("""
@@ -254,6 +273,89 @@ class ProjectsFilesOperationalAggregator:
             status = "critical"
         
         return GhostFilesMetrics(count=count, status=status)
+    
+    async def _get_reconciliation_metrics(self) -> ReconciliationMetrics:
+        """
+        Get SSOT reconciliation metrics based on storage_state.
+        
+        Raises:
+            SSOTMissingError: If storage_state column is missing (fail-fast)
+        """
+        # Check if storage_state column exists in BOTH tables - single optimized query
+        q_check = text("""
+            SELECT 
+                EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'input_files'
+                      AND column_name = 'storage_state'
+                ) AS has_input,
+                EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'product_files'
+                      AND column_name = 'storage_state'
+                ) AS has_product
+        """)
+        res_check = await self.db.execute(q_check)
+        row = res_check.fetchone()
+        has_input_column = row.has_input if row else False
+        has_product_column = row.has_product if row else False
+        
+        if not has_input_column or not has_product_column:
+            missing_tables = []
+            if not has_input_column:
+                missing_tables.append("input_files")
+            if not has_product_column:
+                missing_tables.append("product_files")
+            logger.error(f"SSOT missing: storage_state column not installed in {missing_tables}")
+            raise SSOTMissingError(
+                "storage_state column not installed. "
+                "Reinstall DB using canonical SQL (database/files/_index_files.sql)."
+            )
+        
+        # Query: input missing activos
+        q_input_missing = text("""
+            SELECT COUNT(*)::int FROM public.input_files 
+            WHERE storage_state='missing' 
+              AND input_file_is_active=true 
+              AND input_file_is_archived=false
+        """)
+        res_input_missing = await self.db.execute(q_input_missing)
+        input_missing_active = int(res_input_missing.scalar() or 0)
+        
+        # Query: product missing activos
+        q_product_missing = text("""
+            SELECT COUNT(*)::int FROM public.product_files 
+            WHERE storage_state='missing' 
+              AND product_file_is_active=true 
+              AND product_file_is_archived=false
+        """)
+        res_product_missing = await self.db.execute(q_product_missing)
+        product_missing_active = int(res_product_missing.scalar() or 0)
+        
+        # Query: input invalidated
+        q_input_invalidated = text("""
+            SELECT COUNT(*)::int FROM public.input_files 
+            WHERE storage_state='invalidated'
+        """)
+        res_input_invalidated = await self.db.execute(q_input_invalidated)
+        input_invalidated = int(res_input_invalidated.scalar() or 0)
+        
+        # Query: product invalidated
+        q_product_invalidated = text("""
+            SELECT COUNT(*)::int FROM public.product_files 
+            WHERE storage_state='invalidated'
+        """)
+        res_product_invalidated = await self.db.execute(q_product_invalidated)
+        product_invalidated = int(res_product_invalidated.scalar() or 0)
+        
+        return ReconciliationMetrics(
+            input_missing_active=input_missing_active,
+            product_missing_active=product_missing_active,
+            input_invalidated=input_invalidated,
+            product_invalidated=product_invalidated,
+        )
     
     async def _get_storage_snapshot(self) -> StorageSnapshot:
         """
@@ -285,7 +387,7 @@ class ProjectsFilesOperationalAggregator:
             logger.error("SSOT missing: v_kpis_storage_snapshot view/matview not installed")
             raise SSOTMissingError(
                 "v_kpis_storage_snapshot view not installed. "
-                "Run database/storage/08_metrics/01_kpis_storage_snapshot.sql"
+                "Reinstall DB using canonical SQL (database/storage/_index_storage.sql)."
             )
         
         q = text("""
@@ -359,6 +461,10 @@ async def get_projects_files_operational_summary(
         logger.info(
             f"[projects_files_operational] "
             f"ghost_files={summary.ghost_files.count} "
+            f"reconciliation(missing_input={summary.reconciliation.input_missing_active}, "
+            f"missing_product={summary.reconciliation.product_missing_active}, "
+            f"invalidated_input={summary.reconciliation.input_invalidated}, "
+            f"invalidated_product={summary.reconciliation.product_invalidated}) "
             f"storage_bytes={summary.storage.total_bytes} "
             f"legacy_status={summary.storage.legacy_status}"
         )
