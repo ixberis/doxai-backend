@@ -18,7 +18,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "ops/s",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -34,7 +34,7 @@
           },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -48,7 +48,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum(rate(files_delete_total[5m])) by (file_type, op, result)",
+          "expr": "sum(rate(files_delete_total[5m])) by (file_type, op, result) OR on() vector(0)",
           "legendFormat": "{{file_type}} / {{op}} / {{result}}",
           "refId": "A"
         }
@@ -92,12 +92,12 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(files_delete_batch_size_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(files_delete_batch_size_bucket[5m])) by (le)) OR on() vector(0)",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(files_delete_batch_size_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(files_delete_batch_size_bucket[5m])) by (le)) OR on() vector(0)",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -141,12 +141,12 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket[5m])) by (le, file_type))",
+          "expr": "histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket[5m])) by (le, file_type)) OR on() vector(0)",
           "legendFormat": "p50 {{file_type}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket[5m])) by (le, file_type))",
+          "expr": "histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket[5m])) by (le, file_type)) OR on() vector(0)",
           "legendFormat": "p95 {{file_type}}",
           "refId": "B"
         }
@@ -160,7 +160,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "ops/s",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "bars",
@@ -176,7 +176,7 @@
           },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -190,12 +190,12 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum(rate(files_delete_partial_failures_total[5m])) by (file_type, op)",
+          "expr": "sum(rate(files_delete_partial_failures_total[5m])) by (file_type, op) OR on() vector(0)",
           "legendFormat": "partial {{file_type}}/{{op}}",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(files_delete_errors_total[5m])) by (file_type, status_code)",
+          "expr": "sum(rate(files_delete_errors_total[5m])) by (file_type, status_code) OR on() vector(0)",
           "legendFormat": "error {{file_type}} ({{status_code}})",
           "refId": "B"
         }
@@ -209,7 +209,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "ops/s",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -225,7 +225,7 @@
           },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -239,12 +239,12 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum(rate(touch_debounced_allowed_total[5m])) by (reason)",
+          "expr": "sum(rate(touch_debounced_allowed_total[5m])) by (reason) OR on() vector(0)",
           "legendFormat": "allowed ({{reason}})",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(touch_debounced_skipped_total[5m])) by (reason)",
+          "expr": "sum(rate(touch_debounced_skipped_total[5m])) by (reason) OR on() vector(0)",
           "legendFormat": "skipped ({{reason}})",
           "refId": "B"
         }
@@ -258,7 +258,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "ops/s",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "bars",
@@ -274,7 +274,7 @@
           },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -288,12 +288,12 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum(rate(touch_debounced_redis_error_total[5m])) by (reason)",
+          "expr": "sum(rate(touch_debounced_redis_error_total[5m])) by (reason) OR on() vector(0)",
           "legendFormat": "redis_error ({{reason}})",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(touch_debounced_redis_unavailable_total[5m])) by (reason)",
+          "expr": "sum(rate(touch_debounced_redis_unavailable_total[5m])) by (reason) OR on() vector(0)",
           "legendFormat": "redis_unavailable ({{reason}})",
           "refId": "B"
         }
@@ -326,6 +326,6 @@
   "timezone": "",
   "title": "DoxAI - Files Delete & Redis Debounce",
   "uid": "doxai-files-delete-v1",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
