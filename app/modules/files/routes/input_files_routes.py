@@ -707,17 +707,9 @@ async def delete_input_file(
                 hard_delete=hard,
             )
         
-        # --- COMMIT: Single commit per request (SSOT pattern) ---
-        db = facade._db
-        await db.commit()
-        
-        # --- METRICS: Record successful delete ---
-        delete_latency = _time.perf_counter() - delete_start
-        observe_delete_latency(delete_latency, file_type="input", op="single_delete")
-        inc_delete_total(file_type="input", op="single_delete", result="success")
-        
-        # --- TOUCH PROJECT (debounced, best-effort, no additional commit) ---
+        # --- TOUCH PROJECT (ANTES del commit para persistir en la misma transacción) ---
         # Usa Redis TTL para evitar múltiples touches en delete batch
+        db = facade._db
         if project_id_for_touch:
             import logging
             _delete_logger = logging.getLogger("files.delete")
@@ -729,14 +721,26 @@ async def delete_input_file(
                     reason="input_file_deleted",
                     # window_seconds usa DEFAULT_WINDOW_SECONDS (configurable via env var)
                 )
-                # Log ya se hace dentro de touch_project_debounced
+                _delete_logger.info(
+                    "touch_project_debounced_result: project_id=%s reason=input_file_deleted touched=%s",
+                    str(project_id_for_touch)[:8],
+                    touched,
+                )
             except Exception as touch_e:
                 _delete_logger.warning(
                     "touch_project_debounced_error: project_id=%s reason=input_file_deleted error=%s",
                     str(project_id_for_touch)[:8],
                     str(touch_e),
                 )
-                
+        
+        # --- COMMIT: Single commit per request (SSOT pattern) ---
+        # Incluye tanto el delete como el touch del proyecto
+        await db.commit()
+        
+        # --- METRICS: Record successful delete (después del commit) ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="input", op="single_delete")
+        inc_delete_total(file_type="input", op="single_delete", result="success")
     except FileNotFoundError as exc:
         status_code = 404
         result = "not_found"

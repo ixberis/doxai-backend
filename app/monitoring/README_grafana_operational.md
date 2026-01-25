@@ -37,14 +37,22 @@ VITE_GRAFANA_DASHBOARD_UID_PROJECTS_FILES_OPS=adpk75m
 
 ---
 
-## Fallback "No data" → 0
+## Fallback "No data" → 0 con label_replace
 
 Los paneles usan métricas Prometheus que **no precrean labels** (decisión de cardinalidad).
 Cuando no hay actividad, estas métricas no existen y Grafana muestra "No data".
 
-### Solución: `OR vector(0)`
+### Solución: `label_replace(vector(0), ...)`
 
-Todas las queries usan `OR vector(0)` (sin `on()`) para devolver 0 cuando no hay series.
+Para paneles 5/6/7 (timeseries), usamos `label_replace` para crear series con labels estables.
+Esto garantiza que Grafana muestre líneas en 0 aunque no existan series reales.
+
+**Sintaxis:**
+```promql
+(query_principal) or label_replace(vector(0), "label_name", "label_value", "", "")
+```
+
+Para paneles 2/3/4 (stat/gauge), `OR vector(0)` simple es suficiente.
 
 ---
 
@@ -72,25 +80,25 @@ time() - doxai_db_metrics_last_refresh_timestamp OR vector(0)
 
 | Target | Expr |
 |--------|------|
-| A (success) | `sum(rate(files_delete_total{result="success"}[5m])) * 3600 OR vector(0)` |
-| B (partial) | `sum(rate(files_delete_total{result="partial"}[5m])) * 3600 OR vector(0)` |
-| C (failure) | `sum(rate(files_delete_total{result="failure"}[5m])) * 3600 OR vector(0)` |
+| A (success) | `(sum(rate(files_delete_total{result="success"}[5m])) * 3600) or label_replace(vector(0), "result", "success", "", "")` |
+| B (partial) | `(sum(rate(files_delete_total{result="partial"}[5m])) * 3600) or label_replace(vector(0), "result", "partial", "", "")` |
+| C (failure) | `(sum(rate(files_delete_total{result="failure"}[5m])) * 3600) or label_replace(vector(0), "result", "failure", "", "")` |
 
 ### Panel 6 — Latencia de Deletes (timeseries, segundos)
 
 | Target | Expr |
 |--------|------|
-| A (p50) | `histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op="bulk_delete"}[5m])) by (le)) OR vector(0)` |
-| B (p95) | `histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op="bulk_delete"}[5m])) by (le)) OR vector(0)` |
+| A (p50) | `(histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op="bulk_delete"}[5m])) by (le))) or label_replace(vector(0), "quantile", "0.50", "", "")` |
+| B (p95) | `(histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op="bulk_delete"}[5m])) by (le))) or label_replace(vector(0), "quantile", "0.95", "", "")` |
 
 ### Panel 7 — Redis Debounce Health (timeseries, ops/hr)
 
 | Target | Expr |
 |--------|------|
-| A (allowed) | `sum(rate(touch_debounced_allowed_total[5m])) * 3600 OR vector(0)` |
-| B (skipped) | `sum(rate(touch_debounced_skipped_total[5m])) * 3600 OR vector(0)` |
-| C (redis_error) | `sum(rate(touch_debounced_redis_error_total[5m])) * 3600 OR vector(0)` |
-| D (redis_unavailable) | `sum(rate(touch_debounced_redis_unavailable_total[5m])) * 3600 OR vector(0)` |
+| A (allowed) | `(sum(rate(touch_debounced_allowed_total[5m])) * 3600) or label_replace(vector(0), "metric", "allowed", "", "")` |
+| B (skipped) | `(sum(rate(touch_debounced_skipped_total[5m])) * 3600) or label_replace(vector(0), "metric", "skipped", "", "")` |
+| C (redis_error) | `(sum(rate(touch_debounced_redis_error_total[5m])) * 3600) or label_replace(vector(0), "metric", "redis_error", "", "")` |
+| D (redis_unavailable) | `(sum(rate(touch_debounced_redis_unavailable_total[5m])) * 3600) or label_replace(vector(0), "metric", "redis_unavailable", "", "")` |
 
 ---
 

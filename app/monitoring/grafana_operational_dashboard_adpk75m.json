@@ -1,5 +1,5 @@
 {
-  "__doc__": "SSOT Dashboard for Admin Operational embed (UID: adpk75m). Panels use 'OR vector(0)' fallback to show 0 instead of 'No data' when no series exist. Updated 2026-01-25.",
+  "__doc__": "SSOT Dashboard for Admin Operational embed (UID: adpk75m). Panels 5/6/7 use 'label_replace(vector(0),...)' fallback to create labeled 0-series when no activity exists, ensuring visible lines instead of 'No data'. Updated 2026-01-25.",
   "annotations": {
     "list": []
   },
@@ -182,17 +182,17 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(files_delete_total{result=\"success\"}[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(files_delete_total{result=\"success\"}[5m])) * 3600) or label_replace(vector(0), \"result\", \"success\", \"\", \"\")",
           "legendFormat": "success",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(files_delete_total{result=\"partial\"}[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(files_delete_total{result=\"partial\"}[5m])) * 3600) or label_replace(vector(0), \"result\", \"partial\", \"\", \"\")",
           "legendFormat": "partial",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(files_delete_total{result=\"failure\"}[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(files_delete_total{result=\"failure\"}[5m])) * 3600) or label_replace(vector(0), \"result\", \"failure\", \"\", \"\")",
           "legendFormat": "failure",
           "refId": "C"
         }
@@ -247,12 +247,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op=\"bulk_delete\"}[5m])) by (le)) OR vector(0)",
+          "expr": "(histogram_quantile(0.50, sum(rate(files_delete_latency_seconds_bucket{op=\"bulk_delete\"}[5m])) by (le))) or label_replace(vector(0), \"quantile\", \"0.50\", \"\", \"\")",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op=\"bulk_delete\"}[5m])) by (le)) OR vector(0)",
+          "expr": "(histogram_quantile(0.95, sum(rate(files_delete_latency_seconds_bucket{op=\"bulk_delete\"}[5m])) by (le))) or label_replace(vector(0), \"quantile\", \"0.95\", \"\", \"\")",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -315,22 +315,22 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(touch_debounced_allowed_total[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(touch_debounced_allowed_total[5m])) * 3600) or label_replace(vector(0), \"metric\", \"allowed\", \"\", \"\")",
           "legendFormat": "allowed",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(touch_debounced_skipped_total[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(touch_debounced_skipped_total[5m])) * 3600) or label_replace(vector(0), \"metric\", \"skipped\", \"\", \"\")",
           "legendFormat": "skipped",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(touch_debounced_redis_error_total[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(touch_debounced_redis_error_total[5m])) * 3600) or label_replace(vector(0), \"metric\", \"redis_error\", \"\", \"\")",
           "legendFormat": "redis_error",
           "refId": "C"
         },
         {
-          "expr": "sum(rate(touch_debounced_redis_unavailable_total[5m])) * 3600 OR vector(0)",
+          "expr": "(sum(rate(touch_debounced_redis_unavailable_total[5m])) * 3600) or label_replace(vector(0), \"metric\", \"redis_unavailable\", \"\", \"\")",
           "legendFormat": "redis_unavailable",
           "refId": "D"
         }

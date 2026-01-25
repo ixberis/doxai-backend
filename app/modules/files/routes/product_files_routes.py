@@ -485,15 +485,7 @@ async def archive_product_file_endpoint(
             hard_delete=hard,
         )
         
-        # --- COMMIT: Single commit per request (SSOT pattern) ---
-        await db.commit()
-        
-        # --- METRICS: Record successful delete ---
-        delete_latency = _time.perf_counter() - delete_start
-        observe_delete_latency(delete_latency, file_type="product", op="single_delete")
-        inc_delete_total(file_type="product", op="single_delete", result="success")
-        
-        # --- TOUCH PROJECT (debounced, best-effort, no additional commit) ---
+        # --- TOUCH PROJECT (ANTES del commit para persistir en la misma transacción) ---
         # Usa Redis TTL para evitar múltiples touches en delete batch
         if project_id_for_touch:
             import logging
@@ -506,13 +498,26 @@ async def archive_product_file_endpoint(
                     reason="product_file_deleted",
                     # window_seconds usa DEFAULT_WINDOW_SECONDS (configurable via env var)
                 )
-                # Log ya se hace dentro de touch_project_debounced
+                _pf_logger.info(
+                    "touch_project_debounced_result: project_id=%s reason=product_file_deleted touched=%s",
+                    str(project_id_for_touch)[:8],
+                    touched,
+                )
             except Exception as touch_e:
                 _pf_logger.warning(
                     "touch_project_debounced_error: project_id=%s reason=product_file_deleted error=%s",
                     str(project_id_for_touch)[:8],
                     str(touch_e),
                 )
+        
+        # --- COMMIT: Single commit per request (SSOT pattern) ---
+        # Incluye tanto el delete como el touch del proyecto
+        await db.commit()
+        
+        # --- METRICS: Record successful delete ---
+        delete_latency = _time.perf_counter() - delete_start
+        observe_delete_latency(delete_latency, file_type="product", op="single_delete")
+        inc_delete_total(file_type="product", op="single_delete", result="success")
                 
     except FileNotFoundError as exc:
         # --- METRICS: Record 404 error ---

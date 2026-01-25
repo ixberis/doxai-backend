@@ -56,7 +56,11 @@ def _verify_registry() -> dict:
     """
     Verifica qué métricas están registradas en el REGISTRY de Prometheus.
     
-    Usa el registry canónico (mismo que /metrics) y API pública.
+    IMPORTANTE: prometheus_client almacena Counters sin sufijo "_total" 
+    en el registry interno. Por ejemplo, "files_delete_total" se registra
+    como "files_delete". El sufijo se añade solo al exportar con generate_latest().
+    
+    Por tanto, esta función verifica los nombres BASE de las familias.
     
     Returns:
         dict con flags indicando presencia de cada familia de métricas.
@@ -64,11 +68,12 @@ def _verify_registry() -> dict:
     try:
         family_names = _get_registered_family_names()
         
+        # Use base names (no _total suffix for Counters)
         return {
-            "has_files_delete_total": "files_delete_total" in family_names,
-            "has_files_delete_latency": "files_delete_latency_seconds" in family_names,
-            "has_touch_debounced_allowed_total": "touch_debounced_allowed_total" in family_names,
-            "has_touch_debounced_skipped_total": "touch_debounced_skipped_total" in family_names,
+            "has_files_delete": "files_delete" in family_names,
+            "has_files_delete_latency_seconds": "files_delete_latency_seconds" in family_names,
+            "has_touch_debounced_allowed": "touch_debounced_allowed" in family_names,
+            "has_touch_debounced_skipped": "touch_debounced_skipped" in family_names,
             "has_doxai_ghost_files_count": "doxai_ghost_files_count" in family_names,
         }
     except Exception as e:
@@ -192,14 +197,15 @@ def initialize_all_metrics() -> dict:
     
     # ─────────────────────────────────────────────────────────────────────────
     # Registry verification (post-init check)
+    # Uses base names (no _total suffix for Counters in registry)
     # ─────────────────────────────────────────────────────────────────────────
     registry_check = _verify_registry()
     _logger.info(
-        "metrics_registry_check: has_files_delete_total=%s has_touch_debounced_allowed_total=%s "
-        "has_files_delete_latency=%s has_doxai_ghost_files_count=%s",
-        registry_check.get("has_files_delete_total", False),
-        registry_check.get("has_touch_debounced_allowed_total", False),
-        registry_check.get("has_files_delete_latency", False),
+        "metrics_registry_check: has_files_delete=%s has_touch_debounced_allowed=%s "
+        "has_files_delete_latency_seconds=%s has_doxai_ghost_files_count=%s",
+        registry_check.get("has_files_delete", False),
+        registry_check.get("has_touch_debounced_allowed", False),
+        registry_check.get("has_files_delete_latency_seconds", False),
         registry_check.get("has_doxai_ghost_files_count", False),
     )
     
