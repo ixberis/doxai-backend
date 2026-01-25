@@ -26,11 +26,14 @@ VITE_GRAFANA_DASHBOARD_UID_PROJECTS_FILES_OPS=adpk75m
 | ID | Título | Métrica Principal | Tipo |
 |----|--------|-------------------|------|
 | 2 | Ghost Files | `doxai_ghost_files_count` | stat |
-| 3 | Storage Delta (últimas 24h) | `doxai_storage_delta_bytes` | stat |
+| 3 | Storage Delta (últimas 24h) | `doxai_storage_delta_total` | stat |
 | 4 | Freshness (tiempo desde refresh) | `doxai_db_metrics_last_refresh_timestamp` | stat |
 | 5 | Tendencia de Deletes (ops/hr) | `files_delete_total` | timeseries |
 | 6 | Latencia de Deletes (p50/p95) | `files_delete_latency_seconds_bucket` | timeseries |
 | 7 | Redis Debounce Health | `touch_debounced_*` | timeseries |
+
+> **IMPORTANTE:** La métrica correcta es `doxai_storage_delta_total` (gauge, suma absoluta de deltas). 
+> NO usar `doxai_storage_delta_bytes` (no existe).
 
 ---
 
