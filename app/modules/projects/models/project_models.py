@@ -116,11 +116,9 @@ class Project(Base):
     )
 
     # Relationships
-    files = relationship(
-        "ProjectFile",
-        back_populates="project",
-        cascade="all, delete-orphan",
-    )
+    # NOTA: La relación a archivos se gestiona en el módulo Files 2.0 (SSOT).
+    # NO hay tabla project_files en la BD 2.0 - archivos se relacionan vía files_base.
+    # Eliminar cualquier relationship a ProjectFile evita UndefinedTableError en ORM.
 
     # Composite indexes and constraints for common queries
     __table_args__ = (

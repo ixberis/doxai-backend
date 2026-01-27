@@ -18,6 +18,7 @@ Actualizado: 2026-01-16 - Async-only, tx unificado en commit_or_raise
 
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -358,8 +359,16 @@ async def hard_delete_closed_project(
             }
         )
         
-        # Hard delete (CASCADE borra logs con FK)
-        await db.delete(project)
+        # Hard delete via SQL DELETE (evita cargar relaciones ORM inexistentes)
+        # Los logs se borran por FK ON DELETE CASCADE (DB-level)
+        result = await db.execute(
+            sa.delete(Project).where(Project.id == project_id)
+        )
+        
+        # Verificar que se borró exactamente 1 fila
+        if result.rowcount != 1:
+            raise ProjectNotFound(project_id)
+        
         return True
     
     return await commit_or_raise(db, _work)
