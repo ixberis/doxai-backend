@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import select, union_all, literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.files.enums import FileCategory
+from app.modules.files.enums import FileCategory, FileStorageState
 from app.modules.files.models.input_file_models import InputFile
 from app.modules.files.models.product_file_models import ProductFile
 
@@ -73,6 +73,7 @@ class ProjectFilesQueryService:
             ).where(
                 InputFile.project_id == project_id,
                 InputFile.input_file_is_active == True,
+                InputFile.storage_state == FileStorageState.present,  # Excluir eliminados lógicamente
             )
 
             if not include_archived:
@@ -100,6 +101,7 @@ class ProjectFilesQueryService:
             ).where(
                 ProductFile.project_id == project_id,
                 ProductFile.product_file_is_active == True,
+                ProductFile.storage_state == FileStorageState.present,  # Excluir eliminados lógicamente
             )
 
             if not include_archived:

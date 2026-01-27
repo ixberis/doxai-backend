@@ -29,6 +29,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from app.shared.observability.timed_route import TimedAPIRoute
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/projects/{project_id}/file-activity",
     tags=["projects:file-activity"],
+    route_class=TimedAPIRoute,
 )
 
 

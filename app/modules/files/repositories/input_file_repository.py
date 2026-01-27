@@ -67,17 +67,36 @@ async def list_by_project(
     project_id: UUID,
     *,
     include_archived: bool = False,
+    include_inactive: bool = False,
 ) -> Sequence[InputFile]:
     """Lista InputFiles de un proyecto.
 
-    Para tests y uso v2, devolvemos todos los archivos del proyecto
-    independientemente de flags de archivado/activo.
+    Por defecto, excluye archivos:
+    - Archivados (input_file_is_archived=True)
+    - Inactivos (input_file_is_active=False)
+    - Eliminados lógicamente (storage_state != 'present')
+    
+    Args:
+        include_archived: Si True, incluye archivados
+        include_inactive: Si True, incluye inactivos/eliminados lógicamente
     """
     stmt = (
         select(InputFile)
         .where(InputFile.project_id == project_id)
-        .order_by(InputFile.input_file_uploaded_at.desc())
     )
+    
+    # Filtrar archivos activos a menos que se pida incluir inactivos
+    if not include_inactive:
+        stmt = stmt.where(
+            InputFile.input_file_is_active == True,
+            InputFile.storage_state == FileStorageState.present,
+        )
+    
+    # Filtrar archivados a menos que se pida incluirlos
+    if not include_archived:
+        stmt = stmt.where(InputFile.input_file_is_archived == False)
+    
+    stmt = stmt.order_by(InputFile.input_file_uploaded_at.desc())
     result = await session.execute(stmt)
     return result.scalars().all()
 

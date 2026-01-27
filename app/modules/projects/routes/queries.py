@@ -22,6 +22,7 @@ import logging
 from uuid import UUID
 from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from app.shared.observability.timed_route import TimedAPIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
@@ -47,7 +48,7 @@ from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 
-router = APIRouter(tags=["projects:queries"])
+router = APIRouter(tags=["projects:queries"], route_class=TimedAPIRoute)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -794,6 +795,7 @@ async def get_input_files_counts(
     auth_user_id = ctx.auth_user_id
     
     # Query agregada: una sola query para todos los proyectos
+    # Excluye archivos archivados e inactivos/eliminados lógicamente
     sql = text("""
         SELECT 
             p.id AS project_id,
@@ -802,6 +804,8 @@ async def get_input_files_counts(
         LEFT JOIN public.input_files f
             ON f.project_id = p.id
             AND f.input_file_is_archived = false
+            AND f.input_file_is_active = true
+            AND f.storage_state = 'present'
         WHERE p.auth_user_id = CAST(:auth_user_id AS uuid)
             AND p.id = ANY(CAST(:project_ids AS uuid[]))
         GROUP BY p.id
