@@ -121,25 +121,30 @@ class ProjectsCommandService:
         *,
         auth_user_id: UUID,
         user_email: Optional[str],
+        closed_reason: str = "user_closed_from_dashboard",
     ):
         """
-        Cierra un proyecto (entrega completada).
+        Cierra un proyecto (inicia ciclo de retención).
         
-        Workflow:
-        1. Valida que el proyecto esté en state='ready' (entregado)
-        2. Cambia status a 'closed' 
-        3. Registra en project_action_logs
+        Opción B: Permite cerrar desde casi cualquier project_state.
+        
+        Estados permitidos:
+        - created, uploading, ready, error, archived → OK
+        - processing → RECHAZADO (400)
         
         BD 2.0 SSOT: usa auth_user_id para ownership.
-        Prerequisite: ready_at debe estar seteado (proyecto debe estar ready).
+        
+        Args:
+            closed_reason: Razón del cierre para auditoría.
         
         Raises:
-            HTTPException 400: si el proyecto no está en state='ready'
+            ProjectCloseNotAllowed: si el proyecto está en processing.
         """
         return await self.facade.close_project(
             project_id,
             user_id=auth_user_id,
             user_email=user_email or "",
+            closed_reason=closed_reason,
         )
 
     async def delete(self, project_id: UUID, *, auth_user_id: UUID, user_email: Optional[str]) -> bool:

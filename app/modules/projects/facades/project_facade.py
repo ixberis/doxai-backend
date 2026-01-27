@@ -195,18 +195,21 @@ class ProjectFacade:
         *,
         user_id: UUID,
         user_email: str,
-        enforce_owner: bool = True
+        enforce_owner: bool = True,
+        closed_reason: str = "user_closed_from_dashboard",
     ) -> Project:
         """
-        Cierra un proyecto (entrega completada, inicia ciclo de retención).
+        Cierra un proyecto (inicia ciclo de retención).
         
-        Prerequisitos:
-        - project_state debe ser 'ready' (indica entrega completada)
-        - ready_at debe estar seteado
+        Opción B: Permite cerrar desde casi cualquier project_state
+        excepto 'processing'.
         
         Efectos:
         - status cambia a 'closed'
         - Se registra en project_action_logs con action_details='project_closed'
+        
+        Args:
+            closed_reason: Razón del cierre para auditoría.
         """
         return await projects.close_project(
             db=self.db,
@@ -215,6 +218,7 @@ class ProjectFacade:
             user_id=user_id,
             user_email=user_email or "",
             enforce_owner=enforce_owner,
+            closed_reason=closed_reason,
         )
 
 
