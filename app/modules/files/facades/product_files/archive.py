@@ -74,15 +74,16 @@ async def archive_product_file(
         raise FileNotFoundError("No se encontró el archivo producto solicitado")
 
     # --- IDEMPOTENCIA: si ya está invalidado, retornar early ---
-    already_invalidated = (
-        obj.storage_state != FileStorageState.present
-        or not obj.product_file_is_active
-    )
+    from app.modules.files.utils.enum_helpers import safe_enum_value
+    
+    state_str = safe_enum_value(obj.storage_state)
+    already_invalidated = (state_str != FileStorageState.present.value) or (not obj.product_file_is_active)
+    
     if already_invalidated:
         _logger.info(
             "delete_idempotent_already_missing: product_file_id=%s storage_state=%s is_active=%s",
             str(product_file_id)[:8],
-            obj.storage_state.value if obj.storage_state else "null",
+            state_str,
             obj.product_file_is_active,
         )
         return  # Éxito idempotente, nada que hacer

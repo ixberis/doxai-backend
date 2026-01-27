@@ -400,16 +400,17 @@ class InputFilesFacade:
             raise FileNotFoundError("No se encontró un archivo insumo para ese file_id")
 
         # --- IDEMPOTENCIA: si ya está invalidado, retornar early ---
-        already_invalidated = (
-            input_file.storage_state != FileStorageState.present
-            or not input_file.input_file_is_active
-        )
+        from app.modules.files.utils.enum_helpers import safe_enum_value
+        
+        state_str = safe_enum_value(input_file.storage_state)
+        already_invalidated = (state_str != FileStorageState.present.value) or (not input_file.input_file_is_active)
+        
         if already_invalidated:
             _logger.info(
                 "delete_idempotent_already_missing: file_id=%s input_file_id=%s storage_state=%s is_active=%s",
                 str(file_id)[:8],
                 str(input_file.input_file_id)[:8],
-                input_file.storage_state.value if input_file.storage_state else "null",
+                state_str,
                 input_file.input_file_is_active,
             )
             return  # Éxito idempotente, nada que hacer
