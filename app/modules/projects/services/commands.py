@@ -5,13 +5,13 @@ backend/app/modules/projects/services/commands.py
 Capa de aplicación (comandos/mutaciones) del módulo Projects.
 Orquesta ProjectFacade y NO reimplementa reglas de dominio.
 
-BD 2.0 SSOT (2026-01-10):
+BD 2.0 SSOT (2026-01-27):
 - auth_user_id (UUID): SSOT de ownership para todos los comandos
-- user_email: Mantener para auditoría en operaciones de archivos
-  (la tabla project_files SÍ tiene user_email para logging)
+- Eliminados métodos de files legacy (Files 2.0 es el SSOT de archivos)
+- NO existe tabla project_files en BD 2.0
 
 Autor: Ixchel Beristain
-Actualizado: 2026-01-16 - Async-aware para AsyncSession
+Actualizado: 2026-01-27 - Eliminar métodos de files legacy
 """
 from __future__ import annotations
 from uuid import UUID
@@ -27,7 +27,9 @@ class ProjectsCommandService:
     """
     Comandos: crear, actualizar, cambiar status/state, archivar, eliminar.
     
-    BD 2.0 SSOT: Todos los comandos usan auth_user_id (UUID) para ownership.
+    BD 2.0 SSOT: 
+    - Todos los comandos usan auth_user_id (UUID) para ownership.
+    - Para operaciones de archivos, usar el módulo Files 2.0.
     """
 
     def __init__(self, db: Union[Session, AsyncSession]):
@@ -183,61 +185,6 @@ class ProjectsCommandService:
             user_id=auth_user_id,
         )
 
-    # ---- Operaciones de archivos ----
-    # Nota: ProjectFile SÍ tiene user_email para auditoría (diferente de Project)
-    def add_file(
-        self,
-        *,
-        project_id: UUID,
-        auth_user_id: UUID,
-        user_email: str,
-        path: str,
-        filename: str,
-        mime_type: Optional[str] = None,
-        size_bytes: Optional[int] = None,
-        checksum: Optional[str] = None,
-    ):
-        """Agrega un archivo al proyecto. user_email se almacena para auditoría."""
-        from app.modules.projects.facades import ProjectFileFacade
-        file_facade = ProjectFileFacade(self.db)
-        return file_facade.add_file(
-            project_id=project_id,
-            user_id=auth_user_id,
-            user_email=user_email,
-            path=path,
-            filename=filename,
-            mime_type=mime_type,
-            size_bytes=size_bytes,
-            checksum=checksum,
-        )
 
-    def validate_file(self, *, file_id: UUID, auth_user_id: UUID, user_email: str):
-        """Marca un archivo como validado."""
-        from app.modules.projects.facades import ProjectFileFacade
-        file_facade = ProjectFileFacade(self.db)
-        return file_facade.mark_validated(
-            file_id=file_id,
-            user_id=auth_user_id,
-            user_email=user_email,
-        )
-
-    def move_file(self, *, file_id: UUID, auth_user_id: UUID, user_email: str, new_path: str):
-        """Mueve un archivo a una nueva ruta."""
-        from app.modules.projects.facades import ProjectFileFacade
-        file_facade = ProjectFileFacade(self.db)
-        return file_facade.move_file(
-            file_id=file_id,
-            user_id=auth_user_id,
-            user_email=user_email,
-            new_path=new_path,
-        )
-
-    def delete_file(self, *, file_id: UUID, auth_user_id: UUID, user_email: str) -> bool:
-        """Elimina un archivo del proyecto."""
-        from app.modules.projects.facades import ProjectFileFacade
-        file_facade = ProjectFileFacade(self.db)
-        return file_facade.delete_file(
-            file_id=file_id,
-            user_id=auth_user_id,
-            user_email=user_email,
-        )
+__all__ = ["ProjectsCommandService"]
+# Fin del archivo backend/app/modules/projects/services/commands.py

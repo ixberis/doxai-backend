@@ -6,27 +6,22 @@ backend/app/modules/projects/schemas/project_file_event_log_schemas.py
 Schemas Pydantic para la bitácora de eventos sobre archivos de proyecto.
 Alineados con ProjectFileEventLog y ProjectFileEvent.
 
-Ajuste 10/11/2025:
-- Cambia created_at -> event_created_at para alinear con el modelo/índices.
-- Agrega metadatos de cursor en las respuestas (next_after_created_at, next_after_id).
-- Incorpora variantes 'Lite' para listados de alto volumen (payload reducido).
-- Validador de event_details acepta dict o string sin reprocesar innecesariamente.
-
-Ajuste 21/11/2025 (Projects v2):
-- event_created_at mapea al atributo ORM created_at mediante alias="created_at".
-- Cursores after_id / next_after_id ahora son UUID (id del log), no int.
+BD 2.0 SSOT (2026-01-27):
+- file_id referencia files_base (Files 2.0), NO project_files
+- event_metadata (JSONB) en lugar de columnas snapshot legacy
+- Eliminadas columnas: project_file_id, user_id, user_email, snapshots
 
 Autor: DoxAI
-Fecha: 2025-11-10 / Actualizado 2025-11-21
+Fecha: 2025-11-10
+Actualizado: 2026-01-27 - BD 2.0 SSOT
 """
 
-from typing import Optional, List, Union, Any, Dict
+from typing import Optional, List, Any, Dict
 from uuid import UUID
 from datetime import datetime
-from decimal import Decimal
 import json
 
-from pydantic import Field, EmailStr, field_validator, ConfigDict
+from pydantic import Field, field_validator, ConfigDict
 
 from app.shared.utils.base_models import UTF8SafeModel
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
@@ -38,67 +33,40 @@ class ProjectFileEventLogRead(UTF8SafeModel):
     """
     Response 'completo' de un log de evento de archivo de proyecto.
 
-    Mapea 1:1 con el modelo ProjectFileEventLog, incluyendo todos
-    los campos snapshot del archivo al momento del evento.
+    BD 2.0 SSOT:
+    - file_id referencia files_base (Files 2.0)
+    - event_metadata almacena datos adicionales en JSONB
     """
     project_file_event_log_id: UUID = Field(..., alias="id", description="ID único del log de evento")
     project_id: UUID = Field(..., description="ID del proyecto")
-    project_file_id: Optional[UUID] = Field(
-        None,
-        description="ID del archivo (NULL si fue eliminado con ON DELETE SET NULL)"
-    )
-    project_file_id_snapshot: Optional[UUID] = Field(
-        None,
-        description="Snapshot del ID del archivo para preservar historia"
-    )
-    user_id: Optional[UUID] = Field(
-        None,
-        description="ID del usuario que generó el evento (None para sistema)"
-    )
-    user_email: Optional[EmailStr] = Field(
-        None,
-        description="Email del usuario (None para sistema)"
-    )
+    file_id: UUID = Field(..., description="ID del archivo (files_base.file_id)")
     event_type: ProjectFileEvent = Field(..., description="Tipo de evento")
-    event_details: Optional[Union[str, Dict[str, Any]]] = Field(
-        None,
-        description="Detalles adicionales del evento (JSON o texto)"
+    event_metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Metadata del evento en formato JSONB"
     )
-
-    # Snapshots de metadatos del archivo
-    project_file_name_snapshot: str = Field(..., description="Nombre del archivo al momento del evento")
-    project_file_path_snapshot: str = Field(..., description="Ruta del archivo al momento del evento")
-    project_file_size_kb_snapshot: Optional[Decimal] = Field(
-        None,
-        description="Tamaño del archivo en KB al momento del evento"
-    )
-    project_file_checksum_snapshot: Optional[str] = Field(
-        None,
-        description="Checksum del archivo al momento del evento"
-    )
-
-    # Alineado con el modelo: atributo ORM 'created_at', expuesto como 'event_created_at'
     event_created_at: datetime = Field(
         ...,
         alias="created_at",
         description="Timestamp del evento",
     )
 
-    @field_validator("event_details", mode="before")
+    @field_validator("event_metadata", mode="before")
     @classmethod
-    def parse_event_details(cls, v: Optional[Union[str, Dict[str, Any]]]) -> Optional[Union[str, Dict[str, Any]]]:
+    def parse_event_metadata(cls, v: Optional[Any]) -> Dict[str, Any]:
         """
-        Intenta parsear JSON string a dict. Si ya es dict o None, lo regresa tal cual.
-        Mantiene string si no es JSON parseable.
+        Asegura que event_metadata sea un dict.
         """
-        if v is None or isinstance(v, dict):
+        if v is None:
+            return {}
+        if isinstance(v, dict):
             return v
-        if not isinstance(v, str):
-            return v
-        try:
-            return json.loads(v)
-        except (json.JSONDecodeError, ValueError):
-            return v
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                return {"raw": v}
+        return {}
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -107,42 +75,22 @@ class ProjectFileEventLogRead(UTF8SafeModel):
             "example": {
                 "project_file_event_log_id": "789e0123-b45c-67d8-e901-234567890abc",
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
-                "project_file_id": "456e7890-a12b-34c5-d678-901234567890",
-                "project_file_id_snapshot": "456e7890-a12b-34c5-d678-901234567890",
-                "user_id": "987fcdeb-51a2-43d7-b8f9-123456789abc",
-                "user_email": "user@example.com",
+                "file_id": "456e7890-a12b-34c5-d678-901234567890",
                 "event_type": "uploaded",
-                "event_details": {"checksum": "abc123"},
-                "project_file_name_snapshot": "documento.pdf",
-                "project_file_path_snapshot": "/projects/123/documento.pdf",
-                "project_file_size_kb_snapshot": "1024.50",
-                "project_file_checksum_snapshot": "abc123",
+                "event_metadata": {"filename": "documento.pdf", "size_bytes": 1048576},
                 "event_created_at": "2025-10-18T10:00:00Z"
             }
         }
     )
 
 
-# Variante 'lite' para listados: payload reducido (sin snapshots pesados)
+# Variante 'lite' para listados: payload reducido
 class ProjectFileEventLogLite(UTF8SafeModel):
     project_file_event_log_id: UUID = Field(..., alias="id")
     project_id: UUID
-    project_file_id: Optional[UUID] = None
+    file_id: UUID
     event_type: ProjectFileEvent
-    event_details: Optional[Union[str, Dict[str, Any]]] = None
     event_created_at: datetime = Field(..., alias="created_at")
-
-    @field_validator("event_details", mode="before")
-    @classmethod
-    def parse_event_details_lite(cls, v: Optional[Union[str, Dict[str, Any]]]) -> Optional[Union[str, Dict[str, Any]]]:
-        if v is None or isinstance(v, dict):
-            return v
-        if not isinstance(v, str):
-            return v
-        try:
-            return json.loads(v)
-        except (json.JSONDecodeError, ValueError):
-            return v
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -151,9 +99,8 @@ class ProjectFileEventLogLite(UTF8SafeModel):
             "example": {
                 "project_file_event_log_id": "789e0123-b45c-67d8-e901-234567890abc",
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
-                "project_file_id": "456e7890-a12b-34c5-d678-901234567890",
+                "file_id": "456e7890-a12b-34c5-d678-901234567890",
                 "event_type": "uploaded",
-                "event_details": {"stage": "ocr"},
                 "event_created_at": "2025-10-18T10:00:00Z"
             }
         }
@@ -166,12 +113,12 @@ class ProjectFileEventLogQuery(UTF8SafeModel):
     """
     Filtros para consulta de logs de eventos de archivos.
 
-    Alineado con ProjectQueryFacade.list_file_events() y list_file_events_seek().
+    BD 2.0: file_id referencia files_base.
     """
     project_id: UUID = Field(..., description="ID del proyecto")
     file_id: Optional[UUID] = Field(
         None,
-        description="Filtrar por ID de archivo específico"
+        description="Filtrar por ID de archivo específico (files_base.file_id)"
     )
     event_type: Optional[ProjectFileEvent] = Field(
         None,
@@ -263,5 +210,6 @@ class ProjectFileEventLogListLiteResponse(UTF8SafeModel):
             }
         }
     )
+
 
 # Fin del archivo backend/app/modules/projects/schemas/project_file_event_log_schemas.py

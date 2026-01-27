@@ -7,13 +7,18 @@ Modelo SQLAlchemy para auditoría de eventos sobre archivos de proyecto.
 Registra el historial de eventos (upload, validate, move, delete) para
 auditar actividad y disparar actualizaciones del tablero cliente.
 
+BD 2.0 SSOT:
+- file_id referencia files_base(file_id), NO project_files (eliminado).
+- FK se crea condicionalmente en 04_foreign_keys_projects.sql si files_base existe.
+
 Autor: Ixchel Beristáin
 Fecha: 2025-10-24
+Actualizado: 2026-01-27 - Eliminar FK a project_files legacy (BD 2.0 SSOT)
 """
 
 from uuid import uuid4
-from sqlalchemy import Column, String, Text, Numeric, DateTime, ForeignKey, Index, Integer
-from sqlalchemy.dialects.postgresql import UUID, CITEXT
+from sqlalchemy import Column, Text, DateTime, ForeignKey, Index
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 
 from app.shared.database import Base
@@ -28,7 +33,10 @@ class ProjectFileEventLog(Base):
     Modelo de auditoría de eventos sobre archivos de proyecto.
 
     Registra eventos como uploaded, validated, moved, deleted sobre archivos
-    de proyecto, con snapshot de metadatos para trazabilidad histórica.
+    de proyecto. BD 2.0 SSOT: file_id referencia files_base, no project_files.
+    
+    Los metadatos del evento se almacenan en event_metadata (JSONB) para
+    flexibilidad y compatibilidad con el esquema SQL canónico.
     """
 
     __tablename__ = "project_file_event_logs"
@@ -36,30 +44,22 @@ class ProjectFileEventLog(Base):
     # Primary Key
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
 
+    # Relación al proyecto (CASCADE en DB)
     project_id = Column(
         UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    project_file_id = Column(
+    
+    # BD 2.0 SSOT: file_id referencia files_base (Files 2.0)
+    # La FK se crea en SQL canónico si files_base existe
+    # NO hay FK ORM aquí para evitar errores de mappers
+    file_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_files.id", ondelete="SET NULL"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
-
-    # Snapshot del UUID del archivo (preserva información histórica sin FK)
-    project_file_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
-
-    # User who performed the action (nullable to support system-triggered events)
-    # user_id es int (FK a app_users.user_id que es INTEGER/BIGINT)
-    user_id = Column(
-        Integer,
-        ForeignKey("app_users.user_id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    user_email = Column(CITEXT, nullable=True)
 
     # Event Details
     event_type = Column(
@@ -67,13 +67,13 @@ class ProjectFileEventLog(Base):
         nullable=False,
         index=True,
     )
-    event_details = Column(Text, nullable=True)
-
-    # File Metadata Snapshot (denormalized for historical traceability)
-    project_file_name_snapshot = Column(CITEXT, nullable=False)
-    project_file_path_snapshot = Column(Text, nullable=False)
-    project_file_size_kb_snapshot = Column(Numeric(12, 2), nullable=True)
-    project_file_checksum_snapshot = Column(String(128), nullable=True)
+    
+    # BD 2.0 SSOT: event_metadata (JSONB) en lugar de columnas snapshot legacy
+    event_metadata = Column(
+        JSONB,
+        nullable=False,
+        server_default="{}",
+    )
 
     # Timestamp
     created_at = Column(
@@ -92,24 +92,19 @@ class ProjectFileEventLog(Base):
         ),
         Index(
             "idx_project_file_event_logs_file_event",
-            "project_file_id",
+            "file_id",
             "event_type",
-        ),
-        Index(
-            "idx_project_file_event_logs_file_created",
-            "project_file_id",
-            "created_at",
         ),
     )
 
     def __repr__(self):
         return (
             f"<ProjectFileEventLog(id={self.id}, "
-            f"project_file_id={self.project_file_id}, "
+            f"file_id={self.file_id}, "
             f"event='{self.event_type}', "
             f"created_at={self.created_at})>"
         )
 
 
 __all__ = ["ProjectFileEventLog"]
-# Fin del archivo backend\app\modules\projects\models\project_file_event_log_models.py
+# Fin del archivo backend/app/modules/projects/models/project_file_event_log_models.py

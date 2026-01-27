@@ -72,10 +72,12 @@ async def list_file_events(
     """
     Lista eventos de archivos de un proyecto.
     
+    BD 2.0 SSOT: file_id referencia files_base (Files 2.0).
+    
     Args:
         db: Sesión AsyncSession SQLAlchemy
         project_id: ID del proyecto
-        file_id: Filtro opcional por archivo específico
+        file_id: Filtro opcional por archivo específico (files_base.file_id)
         event_type: Filtro opcional por tipo de evento
         limit: Número máximo de resultados (default: 100, max: MAX_LIMIT)
         offset: Desplazamiento para paginación (default: 0)
@@ -91,7 +93,7 @@ async def list_file_events(
     )
     
     if file_id is not None:
-        query = query.where(ProjectFileEventLog.project_file_id == file_id)
+        query = query.where(ProjectFileEventLog.file_id == file_id)
     
     if event_type is not None:
         query = query.where(ProjectFileEventLog.event_type == event_type)

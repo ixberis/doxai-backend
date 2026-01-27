@@ -4,14 +4,11 @@
 Servicios in-memory para pruebas de rutas del módulo Projects.
 No tocan DB ni facades. Devuelven datos deterministas a partir de los IDs.
 
-Actualizado: 2026-01-10
-- BD 2.0 SSOT: Migrado de user_id (int) a auth_user_id (UUID)
+BD 2.0 SSOT (2026-01-27):
+- Migrado de user_id (int) a auth_user_id (UUID)
+- file_id referencia files_base (Files 2.0)
+- event_metadata (JSONB) en lugar de columnas snapshot legacy
 - Convertido a async para compatibilidad con rutas async
-- Añadido list_active_projects y list_closed_projects
-- Añadido DummyFacade con list_file_events_seek para cursor pagination
-- Corregido retorno de list_projects_by_user y list_ready_projects
-- Corregido event_type para usar solo valores válidos del enum
-- Normalización de datetimes a UTC-aware para evitar comparaciones naive/aware
 
 Autor: Ixchel Beristain
 """
@@ -20,7 +17,6 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Tuple, Dict, Any, Optional, Sequence
 from uuid import UUID
 from types import SimpleNamespace
-from decimal import Decimal
 
 from app.modules.projects.enums import ProjectState, ProjectStatus
 from app.modules.projects.enums.project_file_event_enum import ProjectFileEvent
@@ -70,66 +66,38 @@ class DummyFacade:
         """
         Crea 3 eventos ordenables para probar cursor seek.
         
-        Nota: auth_user_id y user_email son Optional[UUID] y Optional[EmailStr] en el schema
-        (ProjectFileEventLogRead líneas 54-60), por lo que None es válido para eventos
-        generados por el sistema.
-        
-        IMPORTANTE: Todos los campos requeridos por ProjectFileEventLogRead deben estar
-        presentes, incluyendo project_file_name_snapshot y project_file_path_snapshot.
+        BD 2.0 SSOT:
+        - file_id referencia files_base (Files 2.0)
+        - event_metadata (JSONB) en lugar de columnas snapshot legacy
         """
         now = datetime.now(timezone.utc)
         base_project_id = UUID("00000000-0000-0000-0000-000000000001")
         base_file_id = UUID("11111111-1111-1111-1111-111111111111")
 
-        # Usar solo event_types válidos del enum: uploaded, validated, moved, deleted
-        # Incluir TODOS los campos requeridos por ProjectFileEventLogRead schema
+        # BD 2.0: usar file_id y event_metadata
         self._events = [
             {
                 "id": UUID("33333333-3333-3333-3333-333333333331"),
                 "project_id": base_project_id,
-                "project_file_id": base_file_id,
-                "project_file_id_snapshot": base_file_id,
+                "file_id": base_file_id,
                 "event_type": ProjectFileEvent.UPLOADED.value,
-                "event_details": "File uploaded",
-                "user_id": None,  # Optional en schema
-                "user_email": None,  # Optional en schema
-                # Campos requeridos por ProjectFileEventLogRead
-                "project_file_name_snapshot": "document_v1.pdf",
-                "project_file_path_snapshot": "/projects/001/documents/document_v1.pdf",
-                "project_file_size_kb_snapshot": Decimal("1024.50"),
-                "project_file_checksum_snapshot": "abc123def456",
+                "event_metadata": {"filename": "document_v1.pdf", "size_bytes": 1048576},
                 "created_at": now - timedelta(hours=3),
             },
             {
                 "id": UUID("33333333-3333-3333-3333-333333333332"),
                 "project_id": base_project_id,
-                "project_file_id": base_file_id,
-                "project_file_id_snapshot": base_file_id,
+                "file_id": base_file_id,
                 "event_type": ProjectFileEvent.VALIDATED.value,
-                "event_details": "File validated",
-                "user_id": self.default_auth_user_id,
-                "user_email": "test@example.com",
-                # Campos requeridos por ProjectFileEventLogRead
-                "project_file_name_snapshot": "document_v1.pdf",
-                "project_file_path_snapshot": "/projects/001/documents/document_v1.pdf",
-                "project_file_size_kb_snapshot": Decimal("1024.50"),
-                "project_file_checksum_snapshot": "abc123def456",
+                "event_metadata": {"validated_by": str(self.default_auth_user_id)},
                 "created_at": now - timedelta(hours=2),
             },
             {
                 "id": UUID("33333333-3333-3333-3333-333333333333"),
                 "project_id": base_project_id,
-                "project_file_id": base_file_id,
-                "project_file_id_snapshot": base_file_id,
+                "file_id": base_file_id,
                 "event_type": ProjectFileEvent.MOVED.value,
-                "event_details": {"old_path": "/a", "new_path": "/b"},
-                "user_id": self.default_auth_user_id,
-                "user_email": "test@example.com",
-                # Campos requeridos por ProjectFileEventLogRead
-                "project_file_name_snapshot": "document_v1.pdf",
-                "project_file_path_snapshot": "/projects/001/documents/document_v1.pdf",
-                "project_file_size_kb_snapshot": Decimal("1024.50"),
-                "project_file_checksum_snapshot": "abc123def456",
+                "event_metadata": {"old_path": "/a", "new_path": "/b"},
                 "created_at": now - timedelta(hours=1),
             },
         ]

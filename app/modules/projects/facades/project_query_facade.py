@@ -2,17 +2,18 @@
 """
 backend/app/modules/projects/facades/project_query_facade.py
 
-Facade público para consultas y listados de proyectos, archivos y auditoría.
+Facade público para consultas y listados de proyectos y auditoría.
 Ahora async para compatibilidad con AsyncSession.
 
-BD 2.0 SSOT (2026-01-10):
+BD 2.0 SSOT (2026-01-27):
 - Todas las funciones de ownership usan auth_user_id (UUID)
 - NO existe columna user_email en projects
 - Eliminados métodos legacy que usaban user_email
+- Eliminados métodos de files legacy (Files 2.0 es el SSOT)
 
 Autor: Ixchel Beristain
 Fecha: 2025-10-26 (async 2025-12-27)
-Actualizado: 2026-01-10 - BD 2.0 SSOT: eliminar user_email, solo auth_user_id
+Actualizado: 2026-01-27 - Eliminar ProjectFile legacy
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import queries
 
 from app.modules.projects.models.project_models import Project
-from app.modules.projects.models.project_file_models import ProjectFile
 from app.modules.projects.models.project_action_log_models import ProjectActionLog
 from app.modules.projects.models.project_file_event_log_models import ProjectFileEventLog
 from app.modules.projects.enums.project_state_enum import ProjectState
@@ -43,6 +43,7 @@ class ProjectQueryFacade:
     BD 2.0 SSOT:
     - Todas las funciones de ownership requieren auth_user_id (UUID)
     - NO hay soporte para user_email (columna no existe en BD 2.0)
+    - NO hay métodos de files legacy (Files 2.0 es el SSOT)
     """
 
     MAX_LIMIT = queries.projects.MAX_LIMIT
@@ -56,13 +57,6 @@ class ProjectQueryFacade:
     def _strip_project_row(self, row: Any) -> Any:
         """
         Normaliza filas devueltas por queries.* cuando vienen como tuplas/listas.
-
-        Casos comunes que rompían Pydantic en routes:
-        - (Project, extra)  -> Project
-        - ({...project...}, {...extra...}) -> {...project...}
-        - SQLAlchemy Row con _mapping que incluye Project u otro payload adicional
-
-        Regresa el "project payload" (primer componente) si detecta composición.
         """
         # Caso: tuple/list (project, extra)
         if isinstance(row, (list, tuple)) and len(row) >= 1:
@@ -250,29 +244,6 @@ class ProjectQueryFacade:
             state=state,
             status=status,
         )
-
-    # ===== CONSULTAS DE ARCHIVOS =====
-
-    async def list_files(
-        self,
-        project_id: UUID,
-        limit: int = 100,
-        offset: int = 0,
-        include_total: bool = False,
-    ) -> List[ProjectFile] | Tuple[List[ProjectFile], int]:
-        return await queries.list_files(
-            db=self.db,
-            project_id=project_id,
-            limit=limit,
-            offset=offset,
-            include_total=include_total,
-        )
-
-    async def get_file_by_id(self, file_id: UUID) -> Optional[ProjectFile]:
-        return await queries.get_file_by_id(self.db, file_id)
-
-    async def count_files_by_project(self, project_id: UUID) -> int:
-        return await queries.count_files_by_project(self.db, project_id)
 
     # ===== CONSULTAS DE AUDITORÍA =====
 

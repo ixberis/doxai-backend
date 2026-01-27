@@ -7,12 +7,15 @@ Repositorios del módulo Projects.
 
 Agrupan acceso a base de datos para:
 - Project              (proyectos)
-- ProjectFile          (archivos asociados a proyectos)
 - ProjectActionLog     (bitácora de acciones sobre proyectos)
 - ProjectFileEventLog  (bitácora de eventos sobre archivos de proyecto)
 
+NOTA BD 2.0: ProjectFile (tabla project_files) fue eliminado.
+             Files 2.0 es el SSOT de archivos.
+
 Autor: Ixchel Beristáin
 Fecha: 2025-11-21
+Actualizado: 2026-01-27 - Eliminar project_file_repository legacy
 """
 
 from .project_repository import (
@@ -21,12 +24,6 @@ from .project_repository import (
     list_projects_by_user,
     save_project,
     delete_project,
-)
-from .project_file_repository import (
-    get_project_file_by_id,
-    list_project_files,
-    save_project_file,
-    delete_project_file,
 )
 from .project_action_log_repository import (
     list_project_actions,
@@ -43,11 +40,6 @@ __all__ = [
     "list_projects_by_user",
     "save_project",
     "delete_project",
-    # Project files
-    "get_project_file_by_id",
-    "list_project_files",
-    "save_project_file",
-    "delete_project_file",
     # Action logs (NOTA: log_project_action eliminado - usar AuditLogger)
     "list_project_actions",
     # File event logs

@@ -7,25 +7,20 @@ Router principal del módulo Projects.
 Compone subrouters de:
 - projects_crud (CRUD)
 - projects_lifecycle (status/state/archive)
-- files (operaciones de archivos)
 - queries (consultas/auditoría)
 - metrics (Prometheus y snapshots)
 
-Ajuste 10/11/2025:
-- Refactor menor de ensamblado: orden y coherencia con FastAPI v2.
-- Define response_model_exclude_none=True por defecto.
-- Verifica presencia de router de métricas antes de incluirlo.
-- Mejora legibilidad y consistencia de imports.
+BD 2.0 SSOT (2026-01-27):
+- Eliminado files_router (Files 2.0 es el SSOT de archivos)
 
 Autor: Ixchel Beristain
-Fecha de actualización: 10/11/2025
+Fecha de actualización: 2026-01-27
 """
 from fastapi import APIRouter
 
 # Subrouters principales
 from .projects_crud import router as projects_crud_router
 from .projects_lifecycle import router as projects_lifecycle_router
-from .files import router as files_router
 from .queries import router as queries_router
 
 # Subrouter de métricas (ensamblador dedicado)
@@ -41,8 +36,10 @@ def get_projects_router() -> APIRouter:
       1. Consultas y auditoría (incluye /ready)
       2. CRUD principal (/{project_id})
       3. Ciclo de vida (state/status/archive)
-      4. Archivos asociados al proyecto (/files/*)
-      5. Métricas y Prometheus (/projects/metrics/*)
+      4. Métricas y Prometheus (/projects/metrics/*)
+
+    BD 2.0 SSOT: Files 2.0 es el SSOT de archivos.
+    Las operaciones de archivos se realizan a través de /api/files/*.
 
     Nota:
       Se activa `response_model_exclude_none=True` globalmente
@@ -66,10 +63,7 @@ def get_projects_router() -> APIRouter:
     # 3. Ciclo de vida: status/state/archive
     router.include_router(projects_lifecycle_router)
 
-    # 4. Archivos asociados al proyecto
-    router.include_router(files_router)
-
-    # 5. Métricas (Prometheus y snapshots)
+    # 4. Métricas (Prometheus y snapshots)
     try:
         metrics_router = get_projects_metrics_router()
         if metrics_router:
@@ -82,5 +76,4 @@ def get_projects_router() -> APIRouter:
 
 
 # Fin del archivo backend/app/modules/projects/routes/__init__.py
-
 

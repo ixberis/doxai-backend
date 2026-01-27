@@ -119,29 +119,6 @@ class ProjectsQueryService:
             include_total=include_total,
         )
 
-    # ---- Archivos ----
-    async def list_files(
-        self,
-        project_id: UUID,
-        *,
-        auth_user_id: UUID = None,  # Para validación futura si se requiere
-        limit: int = 100,
-        offset: int = 0,
-        include_total: bool = False,
-    ):
-        return await self.facade.list_files(
-            project_id,
-            limit=limit,
-            offset=offset,
-            include_total=include_total,
-        )
-
-    async def get_file_by_id(self, file_id: UUID):
-        return await self.facade.get_file_by_id(file_id)
-
-    async def count_files_by_project(self, project_id: UUID) -> int:
-        return await self.facade.count_files_by_project(project_id)
-
     # ---- Auditoría ----
     async def list_actions(
         self,
