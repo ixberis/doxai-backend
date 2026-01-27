@@ -31,6 +31,7 @@ from .product_version_enum import ProductVersion, as_pg_enum as product_version_
 from .storage_backend_enum import StorageBackend, as_pg_enum as storage_backend_as_pg_enum
 from .checksum_algo_enum import ChecksumAlgo, as_pg_enum as checksum_algo_as_pg_enum
 from .input_processing_status_enum import InputProcessingStatus, input_processing_status_as_pg_enum
+from .file_storage_state_enum import FileStorageState, as_pg_enum as file_storage_state_as_pg_enum
 
 # -- Aliases de nombres de enums (legacy) --
 ProductFileGenerationMethod = GenerationMethod
@@ -142,13 +143,14 @@ __all__ = [
     "FileCategory", "FileCategoryType", "FileType", "FileLanguage", "Language", "FileRole", "InputFileClass",
     "IngestSource", "ProductFileEvent", "GenerationMethod", "ProductFileGenerationMethod",
     "ProductFileType", "ProductVersion", "StorageBackend", "ChecksumAlgo",
-    "InputProcessingStatus",
+    "InputProcessingStatus", "FileStorageState",
     # helpers as_pg_enum
     "file_category_as_pg_enum", "file_type_as_pg_enum", "file_language_as_pg_enum",
     "file_role_as_pg_enum", "input_file_class_as_pg_enum", "ingest_source_as_pg_enum", 
     "product_file_event_as_pg_enum", "product_file_generation_method_as_pg_enum", 
     "generation_method_as_pg_enum", "product_file_type_as_pg_enum", "product_version_as_pg_enum", 
     "storage_backend_as_pg_enum", "checksum_algo_as_pg_enum", "input_processing_status_as_pg_enum",
+    "file_storage_state_as_pg_enum",
 ]
 
 # Fin del archivo backend\app\modules\files\enums\__init__.py

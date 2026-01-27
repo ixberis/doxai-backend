@@ -34,6 +34,7 @@ from app.modules.files.enums import (
     ProductFileType,
     ProductVersion,
     StorageBackend,
+    FileStorageState,
 )
 from app.modules.files.models.product_file_models import ProductFile
 from app.modules.files.schemas.product_file_schemas import ProductFileCreate
@@ -276,12 +277,67 @@ async def archive(
     return file_obj
 
 
+async def invalidate_for_deletion(
+    session: AsyncSession,
+    product_file_id: UUID,
+    *,
+    reason: str = "user_deleted",
+) -> Optional[ProductFile]:
+    """
+    Invalida lógicamente un ProductFile (sin borrar la fila).
+    
+    Usado cuando el usuario elimina un archivo:
+    - storage_state='missing' (ya no existe en storage)
+    - invalidated_at=now()
+    - invalidation_reason=reason
+    - product_file_is_active=False
+    
+    Idempotente: si ya está invalidado, retorna el objeto sin error.
+    
+    Returns:
+        ProductFile actualizado, o None si no existe.
+    
+    NOTA:
+    - No hace commit, sólo flush.
+    """
+    from datetime import datetime, timezone
+    
+    file_obj = await get_by_id(session, product_file_id)
+    if file_obj is None:
+        return None
+    
+    # Idempotente: si ya está invalidado, retornar sin cambios
+    if file_obj.storage_state == FileStorageState.missing and not file_obj.product_file_is_active:
+        return file_obj
+    
+    file_obj.storage_state = FileStorageState.missing
+    file_obj.invalidated_at = datetime.now(timezone.utc)
+    file_obj.invalidation_reason = reason
+    file_obj.product_file_is_active = False
+    file_obj.product_file_is_archived = True
+    
+    await session.flush()
+    
+    logger.info(
+        "product_file_invalidated",
+        extra={
+            "product_file_id": str(product_file_id),
+            "display_name": file_obj.product_file_display_name,
+            "reason": reason,
+        },
+    )
+    return file_obj
+
+
 async def hard_delete(
     session: AsyncSession,
     product_file_id: UUID,
 ) -> bool:
     """
     Elimina físicamente un ProductFile de la base de datos.
+    
+    DEPRECATED: Usar invalidate_for_deletion para preservar histórico.
+    Este método solo debe usarse por jobs administrativos de limpieza.
     
     También elimina el registro relacionado en files_base si existe.
     
@@ -332,6 +388,7 @@ __all__ = [
     "upsert_by_project_and_path",
     "list_active",
     "archive",
+    "invalidate_for_deletion",
     "hard_delete",
 ]
 

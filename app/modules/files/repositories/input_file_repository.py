@@ -30,6 +30,7 @@ from app.modules.files.enums import (
     IngestSource,
     StorageBackend,
     InputProcessingStatus,
+    FileStorageState,
 )
 from app.modules.files.models.input_file_models import InputFile
 from app.modules.files.schemas.input_file_schemas import InputFileUpload
@@ -148,6 +149,49 @@ async def mark_archived(
     return obj
 
 
+async def invalidate_for_deletion(
+    session: AsyncSession,
+    *,
+    input_file_id: UUID,
+    reason: str = "user_deleted",
+) -> Optional[InputFile]:
+    """
+    Invalida lógicamente un InputFile (sin borrar la fila).
+    
+    Usado cuando el usuario elimina un archivo:
+    - storage_state='missing' (ya no existe en storage)
+    - invalidated_at=now()
+    - invalidation_reason=reason
+    - input_file_is_active=False
+    
+    Idempotente: si ya está invalidado, retorna el objeto sin error.
+    
+    Returns:
+        InputFile actualizado, o None si no existe.
+    
+    NOTA:
+    - No hace commit, sólo flush.
+    """
+    from datetime import datetime, timezone
+    
+    obj = await get_by_id(session, input_file_id)
+    if obj is None:
+        return None
+    
+    # Idempotente: si ya está invalidado, retornar sin cambios
+    if obj.storage_state == FileStorageState.missing and not obj.input_file_is_active:
+        return obj
+    
+    obj.storage_state = FileStorageState.missing
+    obj.invalidated_at = datetime.now(timezone.utc)
+    obj.invalidation_reason = reason
+    obj.input_file_is_active = False
+    obj.input_file_is_archived = True
+    
+    await session.flush()
+    return obj
+
+
 async def hard_delete(
     session: AsyncSession,
     *,
@@ -155,6 +199,9 @@ async def hard_delete(
 ) -> bool:
     """
     Elimina físicamente un InputFile de la base de datos.
+    
+    DEPRECATED: Usar invalidate_for_deletion para preservar histórico.
+    Este método solo debe usarse por jobs administrativos de limpieza.
     
     También elimina el registro relacionado en files_base si existe.
     
@@ -200,6 +247,7 @@ __all__ = [
     "list_by_project",
     "create_from_upload",
     "mark_archived",
+    "invalidate_for_deletion",
     "hard_delete",
 ]
 

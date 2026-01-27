@@ -47,10 +47,12 @@ from app.modules.files.enums import (
     ProductFileType,
     ProductVersion,
     StorageBackend,
+    FileStorageState,
     file_language_as_pg_enum,
     product_file_type_as_pg_enum,
     product_version_as_pg_enum,
     storage_backend_as_pg_enum,
+    file_storage_state_as_pg_enum,
 )
 
 if TYPE_CHECKING:
@@ -139,6 +141,27 @@ class ProductFile(Base):
     product_file_storage_path: Mapped[str] = mapped_column(
         Text,
         nullable=False,
+    )
+
+    # Storage lifecycle (RFC-DoxAI-STO-001)
+    storage_state: Mapped[FileStorageState] = mapped_column(
+        file_storage_state_as_pg_enum(),
+        nullable=False,
+        server_default=FileStorageState.present.value,
+    )
+    storage_last_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Invalidation metadata (solo cuando storage_state = missing/invalidated)
+    invalidated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    invalidation_reason: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
     )
 
     # Auditoría

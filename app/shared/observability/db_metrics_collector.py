@@ -14,6 +14,7 @@ Design:
 - Refresh cada 60s (configurable)
 - Cache en memoria con último valor conocido
 - Degradación graceful si DB falla (usa último valor + incrementa error counter)
+- Best-effort: vistas faltantes no se loguean cada minuto (throttle 10min)
 - /metrics responde rápido (no bloquea en DB)
 
 Autor: DoxAI
@@ -31,8 +32,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.core.metrics_helpers import get_or_create_gauge, get_or_create_counter
+from app.shared.utils.log_throttle import log_once_every
 
 _logger = logging.getLogger("observability.db_metrics")
+
+# Log throttle interval for missing views (10 minutes)
+_MISSING_VIEW_LOG_INTERVAL = 600
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -217,7 +222,7 @@ class DBMetricsCollector:
         
         results: Dict[str, Any] = {}
         
-        # 1. Ghost files count
+        # 1. Ghost files count (best-effort: table may not exist)
         try:
             res = await db.execute(SQL_GHOST_FILES_COUNT)
             count = res.scalar() or 0
@@ -225,11 +230,26 @@ class DBMetricsCollector:
             results["ghost_files_count"] = count
             self._cached_values["ghost_files"] = count
         except Exception as e:
-            _logger.warning(f"db_metrics_refresh_error metric=ghost_files: {e}")
-            self._errors_counter.labels(metric="ghost_files").inc()
-            results["ghost_files_count"] = self._cached_values.get("ghost_files", -1)
+            error_str = str(e).lower()
+            is_missing = "does not exist" in error_str or "undefined" in error_str
+            
+            if is_missing:
+                log_once_every(
+                    "db_metrics_ghost_files_missing",
+                    _MISSING_VIEW_LOG_INTERVAL,
+                    _logger,
+                    logging.WARNING,
+                    "db_metrics: input_files table missing (best-effort, using 0): %s",
+                    e,
+                )
+                self._ghost_files_gauge.set(0)
+                results["ghost_files_count"] = 0
+            else:
+                _logger.warning(f"db_metrics_refresh_error metric=ghost_files: {e}")
+                self._errors_counter.labels(metric="ghost_files").inc()
+                results["ghost_files_count"] = self._cached_values.get("ghost_files", -1)
         
-        # 2. Jobs failed 24h
+        # 2. Jobs failed 24h (best-effort: view may not exist)
         try:
             res = await db.execute(SQL_JOBS_FAILED_24H)
             count = res.scalar() or 0
@@ -237,11 +257,26 @@ class DBMetricsCollector:
             results["jobs_failed_24h"] = count
             self._cached_values["jobs_failed"] = count
         except Exception as e:
-            _logger.warning(f"db_metrics_refresh_error metric=jobs_failed: {e}")
-            self._errors_counter.labels(metric="jobs_failed").inc()
-            results["jobs_failed_24h"] = self._cached_values.get("jobs_failed", -1)
+            error_str = str(e).lower()
+            is_missing = "does not exist" in error_str or "undefined" in error_str
+            
+            if is_missing:
+                log_once_every(
+                    "db_metrics_jobs_failed_missing",
+                    _MISSING_VIEW_LOG_INTERVAL,
+                    _logger,
+                    logging.WARNING,
+                    "db_metrics: kpis.job_executions missing (best-effort, using 0): %s",
+                    e,
+                )
+                self._jobs_failed_gauge.set(0)
+                results["jobs_failed_24h"] = 0
+            else:
+                _logger.warning(f"db_metrics_refresh_error metric=jobs_failed: {e}")
+                self._errors_counter.labels(metric="jobs_failed").inc()
+                results["jobs_failed_24h"] = self._cached_values.get("jobs_failed", -1)
         
-        # 3. Critical jobs last status
+        # 3. Critical jobs last status (best-effort: view may not exist)
         try:
             res = await db.execute(
                 SQL_JOB_CRITICAL_LAST_STATUS,
@@ -272,11 +307,28 @@ class DBMetricsCollector:
             results["jobs_critical_status"] = job_status_map
             self._cached_values["jobs_critical"] = job_status_map
         except Exception as e:
-            _logger.warning(f"db_metrics_refresh_error metric=jobs_critical: {e}")
-            self._errors_counter.labels(metric="jobs_critical").inc()
-            results["jobs_critical_status"] = self._cached_values.get("jobs_critical", {})
+            error_str = str(e).lower()
+            is_missing = "does not exist" in error_str or "undefined" in error_str
+            
+            if is_missing:
+                log_once_every(
+                    "db_metrics_jobs_critical_missing",
+                    _MISSING_VIEW_LOG_INTERVAL,
+                    _logger,
+                    logging.WARNING,
+                    "db_metrics: kpis.job_executions missing for critical jobs (best-effort, using defaults): %s",
+                    e,
+                )
+                # Set all critical jobs to -1 (never ran)
+                for job_id in CRITICAL_JOBS:
+                    self._jobs_critical_gauge.labels(job_id=job_id).set(-1)
+                results["jobs_critical_status"] = {job: -1 for job in CRITICAL_JOBS}
+            else:
+                _logger.warning(f"db_metrics_refresh_error metric=jobs_critical: {e}")
+                self._errors_counter.labels(metric="jobs_critical").inc()
+                results["jobs_critical_status"] = self._cached_values.get("jobs_critical", {})
         
-        # 4. Storage delta
+        # 4. Storage delta (best-effort: view may not exist)
         try:
             res = await db.execute(SQL_STORAGE_DELTA)
             row = res.fetchone()
@@ -290,11 +342,31 @@ class DBMetricsCollector:
             
             self._storage_delta_gauge.set(total_delta)
             results["storage_delta_total"] = total_delta
+            results["storage_delta_available"] = True
             self._cached_values["storage_delta"] = total_delta
         except Exception as e:
-            _logger.warning(f"db_metrics_refresh_error metric=storage_delta: {e}")
-            self._errors_counter.labels(metric="storage_delta").inc()
-            results["storage_delta_total"] = self._cached_values.get("storage_delta", -1)
+            error_str = str(e).lower()
+            is_missing_view = "does not exist" in error_str or "undefined" in error_str
+            
+            if is_missing_view:
+                # Best-effort: log only once per 10min, use 0 as default
+                log_once_every(
+                    "db_metrics_storage_delta_missing",
+                    _MISSING_VIEW_LOG_INTERVAL,
+                    _logger,
+                    logging.WARNING,
+                    "db_metrics: v_kpis_storage_snapshot missing (best-effort, using 0): %s",
+                    e,
+                )
+                self._storage_delta_gauge.set(0)
+                results["storage_delta_total"] = 0
+                results["storage_delta_available"] = False
+            else:
+                # Real error: log always
+                _logger.warning(f"db_metrics_refresh_error metric=storage_delta: {e}")
+                self._errors_counter.labels(metric="storage_delta").inc()
+                results["storage_delta_total"] = self._cached_values.get("storage_delta", -1)
+                results["storage_delta_available"] = False
         
         # Update last refresh timestamp (epoch seconds)
         ts = int(time.time())

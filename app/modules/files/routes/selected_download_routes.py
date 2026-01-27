@@ -16,8 +16,10 @@ Fecha: 2026-01-21
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import time
 import zipfile
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -34,10 +36,14 @@ from app.shared.utils.storage_errors import StorageRequestError
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
 from app.modules.projects.models import Project
+from app.shared.observability.timed_route import TimedAPIRoute
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["files:download"])
+# Límite de concurrencia para descargas paralelas
+DOWNLOAD_CONCURRENCY_LIMIT = 6
+
+router = APIRouter(tags=["files:download"], route_class=TimedAPIRoute)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +165,68 @@ async def download_file_content(path: str, bucket: str) -> Tuple[Optional[bytes]
     except Exception as e:
         logger.warning("download_file_unexpected_error path=%s error=%s type=%s", path, str(e), type(e).__name__)
         return None, None
+
+
+async def download_files_parallel(
+    paths: List[str],
+    bucket: str,
+    concurrency_limit: int = DOWNLOAD_CONCURRENCY_LIMIT,
+) -> Tuple[List[Tuple[str, Optional[bytes]]], List[str], Optional[StorageRequestError], float]:
+    """
+    Descarga múltiples archivos en paralelo con límite de concurrencia.
+    
+    Args:
+        paths: Lista de rutas a descargar
+        bucket: Nombre del bucket
+        concurrency_limit: Máximo de descargas simultáneas
+    
+    Returns:
+        Tuple de:
+        - Lista de (path, content|None) para archivos procesados
+        - Lista de paths faltantes (404)
+        - StorageRequestError si hubo error crítico (None si no)
+        - Tiempo total de fetch en ms
+    """
+    semaphore = asyncio.Semaphore(concurrency_limit)
+    results: List[Tuple[str, Optional[bytes]]] = []
+    missing_paths: List[str] = []
+    critical_error: Optional[StorageRequestError] = None
+    
+    async def download_with_semaphore(path: str) -> Tuple[str, Optional[bytes], Optional[StorageRequestError]]:
+        async with semaphore:
+            content, error = await download_file_content(path, bucket)
+            return (path, content, error)
+    
+    start_time = time.perf_counter()
+    
+    # Ejecutar todas las descargas en paralelo (respetando el semáforo)
+    tasks = [download_with_semaphore(path) for path in paths]
+    download_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    fetch_ms = (time.perf_counter() - start_time) * 1000
+    
+    # Procesar resultados manteniendo orden determinista
+    for i, result in enumerate(download_results):
+        path = paths[i]
+        
+        if isinstance(result, Exception):
+            logger.warning("download_parallel_exception path=%s error=%s", path, str(result))
+            missing_paths.append(path)
+            continue
+        
+        r_path, content, error = result
+        
+        # Si hay error de storage crítico (400/401/403/5xx), abort
+        if error is not None:
+            critical_error = error
+            break
+        
+        if content is None:
+            missing_paths.append(path)
+        else:
+            results.append((path, content))
+    
+    return results, missing_paths, critical_error, fetch_ms
 
 
 # ---------------------------------------------------------------------------
@@ -308,36 +376,41 @@ async def download_selected_files(
             },
         )
     
-    # --- MULTIPLE FILES: generar ZIP ---
-    zip_buffer = io.BytesIO()
+    # --- MULTIPLE FILES: descarga paralela + generar ZIP ---
+    total_start = time.perf_counter()
     
+    # Fase 1: Descargar archivos en paralelo
+    downloaded_files, missing_paths, critical_error, fetch_ms = await download_files_parallel(
+        valid_paths, bucket, DOWNLOAD_CONCURRENCY_LIMIT
+    )
+    
+    # Si hay error de storage crítico (400/401/403/5xx) -> 502
+    if critical_error is not None:
+        logger.warning(
+            "download_selected_multi_storage_error project_id=%s status=%d fetch_ms=%.2f",
+            project_id, critical_error.status_code, fetch_ms
+        )
+        return JSONResponse(
+            status_code=502,
+            content=critical_error.to_dict(),
+        )
+    
+    # Fase 2: Generar ZIP
+    zip_start = time.perf_counter()
+    zip_buffer = io.BytesIO()
     downloaded_count = 0
-    missing_paths: List[str] = []
     
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in valid_paths:
-            content, storage_error = await download_file_content(path, bucket)
-            
-            # Si hay error de storage (400/401/403/5xx) en multi-file -> 502 inmediato
-            if storage_error is not None:
-                logger.warning(
-                    "download_selected_multi_storage_error project_id=%s path=%s status=%d",
-                    project_id, path, storage_error.status_code
-                )
-                return JSONResponse(
-                    status_code=502,
-                    content=storage_error.to_dict(),
-                )
-            
+        existing_names: List[str] = []
+        
+        for path, content in downloaded_files:
             if content is None:
-                missing_paths.append(path)
                 continue
             
             # Usar solo el nombre del archivo en el ZIP (no la ruta completa)
             filename = path.split("/")[-1] if "/" in path else path
             
             # Si hay duplicados, añadir sufijo numérico
-            existing_names = [info.filename for info in zf.filelist]
             if filename in existing_names:
                 base, ext = filename.rsplit(".", 1) if "." in filename else (filename, "")
                 counter = 1
@@ -345,14 +418,17 @@ async def download_selected_files(
                     counter += 1
                 filename = f"{base}_{counter}.{ext}" if ext else f"{base}_{counter}"
             
+            existing_names.append(filename)
             zf.writestr(filename, content)
             downloaded_count += 1
+    
+    zip_ms = (time.perf_counter() - zip_start) * 1000
     
     # Verificar resultado
     if downloaded_count == 0:
         logger.warning(
-            "download_selected_all_missing project_id=%s missing_count=%d",
-            project_id, len(missing_paths)
+            "download_selected_all_missing project_id=%s missing_count=%d fetch_ms=%.2f",
+            project_id, len(missing_paths), fetch_ms
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -364,22 +440,10 @@ async def download_selected_files(
             }
         )
     
+    # Fase 3: Construir respuesta
+    response_start = time.perf_counter()
     zip_content = zip_buffer.getvalue()
     zip_size = len(zip_content)
-    
-    # Determinar status code
-    if missing_paths:
-        status_code = 207  # Partial Content
-        logger.info(
-            "download_selected_partial project_id=%s downloaded=%d missing=%d bytes=%d",
-            project_id, downloaded_count, len(missing_paths), zip_size
-        )
-    else:
-        status_code = 200
-        logger.info(
-            "download_selected_ok project_id=%s files=%d bytes=%d",
-            project_id, downloaded_count, zip_size
-        )
     
     # Headers de respuesta
     headers = {
@@ -392,12 +456,33 @@ async def download_selected_files(
         # Incluir hasta 5 paths faltantes en header (para debug)
         headers["X-Download-Missing-Paths"] = ",".join(missing_paths[:5])
     
-    return Response(
+    response_obj = Response(
         content=zip_content,
-        status_code=status_code,
+        status_code=207 if missing_paths else 200,
         media_type="application/zip",
         headers=headers,
     )
+    
+    response_ms = (time.perf_counter() - response_start) * 1000
+    total_ms = (time.perf_counter() - total_start) * 1000
+    
+    # Log con breakdown de fases
+    if missing_paths:
+        logger.info(
+            "download_selected_partial project_id=%s downloaded=%d missing=%d bytes=%d "
+            "fetch_ms=%.2f zip_ms=%.2f response_ms=%.2f total_ms=%.2f",
+            project_id, downloaded_count, len(missing_paths), zip_size,
+            fetch_ms, zip_ms, response_ms, total_ms
+        )
+    else:
+        logger.info(
+            "download_selected_ok project_id=%s files=%d bytes=%d "
+            "fetch_ms=%.2f zip_ms=%.2f response_ms=%.2f total_ms=%.2f",
+            project_id, downloaded_count, zip_size,
+            fetch_ms, zip_ms, response_ms, total_ms
+        )
+    
+    return response_obj
 
 
 def _guess_content_type(filename: str) -> str:

@@ -387,12 +387,14 @@ class InputFilesFacade:
         if hard_delete:
             # 1) Eliminar del storage (idempotente si no existe)
             storage_path = input_file.input_file_storage_path
+            storage_deleted = False
             try:
                 await delete_file_from_storage(
                     self._storage,
                     bucket=self._bucket,
                     key=storage_path,
                 )
+                storage_deleted = True
                 _logger.info(
                     "storage_delete_ok: bucket=%s path=%s",
                     self._bucket,
@@ -402,6 +404,7 @@ class InputFilesFacade:
                 error_str = str(exc).lower()
                 # Tratar "not found" como idempotente
                 if "not found" in error_str or "404" in error_str or "does not exist" in error_str:
+                    storage_deleted = True  # Ya no existe, consideramos éxito
                     _logger.info(
                         "storage_delete_idempotent: bucket=%s path=%s (already deleted or never existed)",
                         self._bucket,
@@ -412,14 +415,15 @@ class InputFilesFacade:
                         f"No se pudo eliminar el archivo del storage: {exc}"
                     ) from exc
             
-            # 2) Eliminar de BD (input_files + files_base)
-            deleted = await input_file_repository.hard_delete(
+            # 2) Invalidación lógica en BD (NO hard-delete para preservar histórico)
+            invalidated = await input_file_repository.invalidate_for_deletion(
                 session=self._db,
                 input_file_id=input_file.input_file_id,
+                reason="user_deleted",
             )
-            if deleted:
+            if invalidated:
                 _logger.info(
-                    "db_hard_delete_ok: input_file_id=%s",
+                    "db_logical_invalidation_ok: input_file_id=%s storage_state=missing",
                     str(input_file.input_file_id)[:8],
                 )
         else:

@@ -36,8 +36,9 @@ from app.modules.projects.facades.errors import SlugAlreadyExists
 # SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+from app.shared.observability.timed_route import TimedAPIRoute
 
-router = APIRouter(tags=["projects:crud"])
+router = APIRouter(tags=["projects:crud"], route_class=TimedAPIRoute)
 
 
 def _coerce_to_project_read(p):

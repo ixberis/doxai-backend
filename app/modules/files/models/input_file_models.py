@@ -51,6 +51,7 @@ from app.modules.files.enums import (
     IngestSource,
     StorageBackend,
     InputProcessingStatus,
+    FileStorageState,
     file_type_as_pg_enum,
     file_category_as_pg_enum,
     file_language_as_pg_enum,
@@ -58,6 +59,7 @@ from app.modules.files.enums import (
     ingest_source_as_pg_enum,
     storage_backend_as_pg_enum,
     input_processing_status_as_pg_enum,
+    file_storage_state_as_pg_enum,
 )
 
 if TYPE_CHECKING:
@@ -173,6 +175,27 @@ class InputFile(Base):
     input_file_storage_path: Mapped[str] = mapped_column(
         Text,
         nullable=False,
+    )
+
+    # Storage lifecycle (RFC-DoxAI-STO-001)
+    storage_state: Mapped[FileStorageState] = mapped_column(
+        file_storage_state_as_pg_enum(),
+        nullable=False,
+        server_default=FileStorageState.present.value,
+    )
+    storage_last_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Invalidation metadata (solo cuando storage_state = missing/invalidated)
+    invalidated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    invalidation_reason: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
     )
 
     # Estado del pipeline

@@ -36,9 +36,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from app.shared.observability.timed_route import TimedAPIRoute
+
 router = APIRouter(
     prefix="/billing/webhooks",
     tags=["billing:webhooks"],
+    route_class=TimedAPIRoute,  # Instrumentación de tiempos de handler
 )
 
 
