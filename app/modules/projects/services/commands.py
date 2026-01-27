@@ -154,6 +154,35 @@ class ProjectsCommandService:
             user_email=user_email or "",
         )
 
+    async def hard_delete_closed_project(
+        self,
+        project_id: UUID,
+        *,
+        auth_user_id: UUID,
+    ) -> bool:
+        """
+        Elimina completamente un proyecto cerrado (hard delete).
+        
+        RFC-FILES-RETENTION-001: Solo disponible para proyectos cerrados.
+        
+        Requisitos:
+        - El proyecto debe tener status !== 'in_process'
+        - El usuario debe ser propietario
+        
+        Efectos:
+        - El proyecto desaparece del historial
+        - No afecta métricas agregadas ni billing histórico
+        
+        BD 2.0 SSOT: usa auth_user_id para ownership.
+        
+        Raises:
+            ProjectHardDeleteNotAllowed: si el proyecto está activo o no autorizado.
+        """
+        return await self.facade.hard_delete_closed_project(
+            project_id,
+            user_id=auth_user_id,
+        )
+
     # ---- Operaciones de archivos ----
     # Nota: ProjectFile SÍ tiene user_email para auditoría (diferente de Project)
     def add_file(

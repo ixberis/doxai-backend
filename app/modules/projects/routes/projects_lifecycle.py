@@ -7,9 +7,13 @@ Rutas de ciclo de vida de Proyectos:
 - Cambiar status administrativo
 - Transicionar estado técnico (workflow)
 - Archivar (soft delete)
+- Cerrar (inicia ciclo de retención)
+- Hard delete (eliminación definitiva de proyectos cerrados)
+
+RFC-FILES-RETENTION-001: Endpoints alineados con política de retención.
 
 Autor: Ixchel Beristain
-Fecha de actualización: 08/11/2025
+Fecha de actualización: 2026-01-27
 """
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
@@ -23,8 +27,10 @@ from app.modules.projects.schemas import ProjectRead, ProjectResponse
 # SSOT: get_current_user_ctx (Core) para rutas optimizadas (~40ms vs ~1200ms ORM)
 from app.modules.auth.services import get_current_user_ctx
 from app.modules.auth.schemas.auth_context_dto import AuthContextDTO
+# Observabilidad: TimedAPIRoute para instrumentación handler_ms
+from app.shared.observability import TimedAPIRoute
 
-router = APIRouter(tags=["projects:lifecycle"])
+router = APIRouter(tags=["projects:lifecycle"], route_class=TimedAPIRoute)
 
 # Helper para normalizar slugs
 def _norm_slug(s: str) -> str:
@@ -191,5 +197,55 @@ async def close_project(
         raise HTTPException(status_code=400, detail=e.reason)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete(
+    "/{project_id}/hard-delete",
+    response_model=dict,
+    summary="Eliminar completamente un proyecto cerrado",
+)
+async def hard_delete_project(
+    project_id: UUID,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
+    svc: ProjectsCommandService = Depends(get_projects_command_service),
+):
+    """
+    Elimina completamente un proyecto cerrado (hard delete).
+    
+    RFC-FILES-RETENTION-001: Solo disponible para proyectos cerrados.
+    
+    Requisitos:
+    - El proyecto debe tener status !== 'in_process'
+    - El usuario debe ser propietario
+    
+    Efectos:
+    - El proyecto desaparece del historial
+    - No afecta métricas agregadas ni billing histórico
+    
+    Idempotencia:
+    - Si el proyecto no existe → 404 (UI lo trata como éxito)
+    
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
+    from app.modules.projects.facades.errors import ProjectHardDeleteNotAllowed
+    
+    try:
+        ok = await svc.hard_delete_closed_project(
+            project_id,
+            auth_user_id=ctx.auth_user_id,
+        )
+        if ok:
+            return {"success": True, "message": "Proyecto eliminado permanentemente."}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado."
+            )
+    except ProjectHardDeleteNotAllowed as e:
+        # Proyecto activo o no autorizado
+        raise HTTPException(status_code=400, detail=e.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # Fin del archivo backend\app\modules\projects\routes\projects_lifecycle.py

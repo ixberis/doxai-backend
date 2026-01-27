@@ -221,6 +221,26 @@ class ProjectFacade:
             closed_reason=closed_reason,
         )
 
+    async def hard_delete_closed_project(
+        self,
+        project_id: UUID,
+        *,
+        user_id: UUID,
+        enforce_owner: bool = True
+    ) -> bool:
+        """
+        Elimina completamente un proyecto cerrado (hard delete).
+        
+        RFC-FILES-RETENTION-001: Solo disponible para proyectos cerrados.
+        """
+        return await projects.hard_delete_closed_project(
+            db=self.db,
+            audit=self.audit,
+            project_id=project_id,
+            user_id=user_id,
+            enforce_owner=enforce_owner,
+        )
+
 
 __all__ = ["ProjectFacade"]
 # Fin del archivo backend/app/modules/projects/facades/project_facade.py

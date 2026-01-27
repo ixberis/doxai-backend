@@ -59,6 +59,17 @@ class ProjectCloseNotAllowed(Exception):
         super().__init__(reason)
 
 
+class ProjectHardDeleteNotAllowed(Exception):
+    """
+    Se lanza cuando no se puede eliminar definitivamente un proyecto.
+    
+    RFC-FILES-RETENTION-001: Solo proyectos cerrados pueden eliminarse.
+    """
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 __all__ = [
     "ProjectNotFound",
     "InvalidStateTransition",
@@ -66,6 +77,7 @@ __all__ = [
     "FileNotFound",
     "PermissionDenied",
     "ProjectCloseNotAllowed",
+    "ProjectHardDeleteNotAllowed",
 ]
 
 # Fin del archivo backend/app/modules/projects/facades/errors.py

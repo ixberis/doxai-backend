@@ -19,6 +19,7 @@ from .state import (
     transition_state,
     archive,
     close_project,
+    hard_delete_closed_project,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "transition_state",
     "archive",
     "close_project",
+    "hard_delete_closed_project",
 ]

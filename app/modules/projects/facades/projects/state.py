@@ -26,7 +26,13 @@ from app.modules.projects.enums.project_state_enum import ProjectState
 from app.modules.projects.enums.project_status_enum import ProjectStatus
 from app.modules.projects.enums.project_action_type_enum import ProjectActionType
 from app.modules.projects.enums.project_state_transitions import validate_state_transition
-from app.modules.projects.facades.errors import ProjectNotFound, InvalidStateTransition, PermissionDenied, ProjectCloseNotAllowed
+from app.modules.projects.facades.errors import (
+    ProjectNotFound, 
+    InvalidStateTransition, 
+    PermissionDenied, 
+    ProjectCloseNotAllowed,
+    ProjectHardDeleteNotAllowed,
+)
 from app.modules.projects.facades.base import now_utc, commit_or_raise
 from app.modules.projects.facades.audit_logger import AuditLogger
 
@@ -293,9 +299,76 @@ async def close_project(
     return await commit_or_raise(db, _work)
 
 
+async def hard_delete_closed_project(
+    db: AsyncSession,
+    audit: AuditLogger,
+    project_id: UUID,
+    *,
+    user_id: UUID,
+    enforce_owner: bool = True
+) -> bool:
+    """
+    Elimina completamente un proyecto cerrado (hard delete).
+    
+    RFC-FILES-RETENTION-001: Solo disponible para proyectos cerrados.
+    
+    Requisitos:
+    - El proyecto debe tener status !== 'in_process'
+    - El usuario debe ser propietario
+    
+    Efectos:
+    - El proyecto desaparece del historial (logs con FK se borran por CASCADE)
+    - No afecta métricas agregadas ni billing histórico
+    
+    Auditoría:
+    - Se usa logger de aplicación en lugar de DB audit (el proyecto y sus logs
+      desaparecen, no tiene sentido persistir en DB antes de borrar)
+    
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    
+    Raises:
+        ProjectHardDeleteNotAllowed: si el proyecto está activo (in_process)
+        PermissionDenied: si el usuario no es propietario
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    async def _work() -> bool:
+        project = await _get_for_update(db, project_id)
+        
+        # BD 2.0 SSOT: comparar con auth_user_id
+        if enforce_owner and project.auth_user_id != user_id:
+            raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
+        
+        # Solo proyectos cerrados pueden eliminarse definitivamente
+        if project.status == ProjectStatus.IN_PROCESS:
+            raise ProjectHardDeleteNotAllowed(
+                reason="No se puede eliminar un proyecto activo. Primero debe cerrarlo."
+            )
+        
+        # Log via app logger (NO DB audit - proyecto desaparece con sus logs)
+        logger.info(
+            "project_hard_deleted",
+            extra={
+                "project_id": str(project.id),
+                "auth_user_id": str(user_id),
+                "status": project.status.value,
+                "state": project.state.value,
+                "project_name": project.project_name,
+            }
+        )
+        
+        # Hard delete (CASCADE borra logs con FK)
+        await db.delete(project)
+        return True
+    
+    return await commit_or_raise(db, _work)
+
+
 __all__ = [
     "change_status",
     "transition_state",
     "archive",
     "close_project",
+    "hard_delete_closed_project",
 ]
