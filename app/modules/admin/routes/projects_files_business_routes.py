@@ -463,9 +463,9 @@ class ProjectsFilesBusinessAggregator:
         """
         Get credits consumed by Files module.
         
-        Returns None if:
-        - 'module' column doesn't exist (migration pending)
-        - No 'files' module entries exist yet (backend not populating)
+        Returns:
+        - int >= 0 when 'module' column exists (0 means no consumption in period)
+        - None only if 'module' column doesn't exist (migration pending)
         
         SSOT: Only queries when module column exists. Does NOT infer 'files' 
         from other fields.
@@ -476,6 +476,7 @@ class ProjectsFilesBusinessAggregator:
         
         try:
             # Use datetime for timestamptz column
+            # SUM(ABS(credits_delta)) because debits are negative
             q = text("""
                 SELECT COALESCE(SUM(ABS(credits_delta)), 0) as total
                 FROM public.credit_transactions
@@ -487,22 +488,10 @@ class ProjectsFilesBusinessAggregator:
             res = await self.db.execute(q, {"from_date": from_dt, "to_date": to_dt})
             total = int(res.scalar() or 0)
             
-            # If 0, check if any 'files' module entries exist at all
-            # If not, return None to indicate "pending backend implementation"
-            if total == 0:
-                q_check = text("""
-                    SELECT COUNT(*) FROM public.credit_transactions
-                    WHERE module = 'files'
-                    LIMIT 1
-                """)
-                res_check = await self.db.execute(q_check)
-                has_files = int(res_check.scalar() or 0) > 0
-                if not has_files:
-                    return None
-            
+            # Return actual value (even if 0 - that's valid "no consumption")
             return total
         except Exception as e:
-            # Unexpected error - log as warning
+            # Unexpected error - log as warning and return None
             logger.warning(f"[credits_consumed_files] query failed: {e}")
             return None
 

@@ -141,4 +141,43 @@ async def archive_project(
     )
     return ProjectResponse(success=True, message="Proyecto archivado", project=_coerce_to_project_read(project))
 
+
+@router.post(
+    "/{project_id}/close",
+    response_model=ProjectResponse,
+    summary="Cerrar proyecto (entrega completada)",
+)
+async def close_project(
+    project_id: UUID,
+    ctx: AuthContextDTO = Depends(get_current_user_ctx),  # Core mode (~40ms)
+    svc: ProjectsCommandService = Depends(get_projects_command_service),
+):
+    """
+    Cierra un proyecto tras la entrega (inicia ciclo de retención).
+    
+    Prerequisitos:
+    - El proyecto debe estar en state='ready' (entregado)
+    - ready_at debe estar seteado (automático al transicionar a ready)
+    
+    Efectos:
+    - status cambia a 'closed'
+    - Se registra en project_action_logs ('project_closed')
+    - El job de retención comenzará a contar el periodo de gracia
+    
+    BD 2.0 SSOT: usa auth_user_id del contexto Core.
+    """
+    try:
+        project = await svc.close_project(
+            project_id,
+            auth_user_id=ctx.auth_user_id,
+            user_email=None,  # BD 2.0: email no requerido
+        )
+        return ProjectResponse(
+            success=True, 
+            message="Proyecto cerrado. Ciclo de retención iniciado.", 
+            project=_coerce_to_project_read(project)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 # Fin del archivo backend\app\modules\projects\routes\projects_lifecycle.py

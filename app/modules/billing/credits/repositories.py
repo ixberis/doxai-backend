@@ -110,6 +110,7 @@ class CreditTransactionRepository:
         payment_id: Optional[int] = None,
         reservation_id: Optional[int] = None,
         tx_metadata: Optional[dict] = None,
+        module: Optional[str] = None,
     ) -> CreditTransaction:
         if credits_delta == 0:
             raise ValueError("credits_delta cannot be zero")
@@ -126,6 +127,7 @@ class CreditTransactionRepository:
             payment_id=payment_id,
             reservation_id=reservation_id,
             tx_metadata=tx_metadata or {},
+            module=module if module else "unknown",
         )
         session.add(tx)
         await session.flush()

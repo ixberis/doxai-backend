@@ -85,6 +85,7 @@ class WalletService:
         idempotency_key: Optional[str] = None,
         payment_id: Optional[int] = None,
         tx_metadata: Optional[dict] = None,
+        module: Optional[str] = None,
     ) -> tuple["CreditTransaction", bool]:
         """
         Añade créditos al wallet del usuario.
@@ -120,6 +121,7 @@ class WalletService:
             idempotency_key=idempotency_key,
             payment_id=payment_id,
             tx_metadata=tx_metadata,
+            module=module,
         )
 
         logger.info(
@@ -140,6 +142,7 @@ class WalletService:
         reservation_id: Optional[int] = None,
         job_id: Optional[str] = None,
         tx_metadata: Optional[dict] = None,
+        module: Optional[str] = None,
     ):
         if credits <= 0:
             raise ValueError("credits must be positive")
@@ -173,6 +176,7 @@ class WalletService:
             reservation_id=reservation_id,
             job_id=job_id,
             tx_metadata=tx_metadata,
+            module=module,
         )
 
         logger.info(

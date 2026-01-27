@@ -168,6 +168,13 @@ class CreditTransaction(Base):
         nullable=True,
     )
 
+    module: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="unknown",
+        server_default="'unknown'",
+    )
+
     tx_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
         JSONB,

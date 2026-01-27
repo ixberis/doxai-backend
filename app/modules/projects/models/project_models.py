@@ -83,13 +83,14 @@ class Project(Base):
         name="project_state",
     )
 
-    # Project Status (administrative/business situation)
+    # Project Status (administrative/business/retention situation)
+    # SSOT DB-first: columna canónica es "status", no "project_status"
     status = Column(
         project_status_pg_enum(),
         nullable=False,
         server_default=ProjectStatus.in_process.value,
         index=True,
-        name="project_status",
+        name="status",
     )
 
     # Timestamps (SIN prefijo en DB - nomenclatura inconsistente)
@@ -128,7 +129,10 @@ class Project(Base):
         # Prohibe: user A tiene "mi-proyecto" x2
         UniqueConstraint("auth_user_id", "project_slug", name="uq_projects_auth_user_slug"),
         Index("idx_projects_auth_user_state", auth_user_id, state),
+        # SSOT: columna canónica es "status", no "project_status"
         Index("idx_projects_state_status", state, status),
+        # Índice para job de retención (files_retention_cleanup)
+        Index("idx_projects_status_ready_at", status, ready_at),
         # Parcial: prioriza proyectos listos por fecha de listo
         Index(
             "idx_projects_ready_at_ready",

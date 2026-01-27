@@ -196,9 +196,94 @@ async def archive(
         enforce_owner=enforce_owner
     )
 
+async def close_project(
+    db: AsyncSession,
+    audit: AuditLogger,
+    project_id: UUID,
+    *,
+    user_id: UUID,
+    user_email: str,
+    enforce_owner: bool = True
+) -> Project:
+    """
+    Cierra un proyecto (entrega completada, inicia ciclo de retención).
+    
+    Prerequisitos:
+    - project_state debe ser 'ready' (indica entrega completada)
+    - ready_at debe estar seteado (garantizado por transition_state a ready)
+    
+    Efectos:
+    - status cambia a 'closed'
+    - Se registra en project_action_logs con action_details='project_closed'
+    
+    Raises:
+        PermissionDenied: si el usuario no es propietario
+        ValueError: si el proyecto no está en state='ready'
+    
+    BD 2.0 SSOT: user_id param se compara con auth_user_id column.
+    """
+    async def _work() -> Project:
+        project = await _get_for_update(db, project_id)
+        
+        # BD 2.0 SSOT: comparar con auth_user_id
+        if enforce_owner and project.auth_user_id != user_id:
+            raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
+        
+        # Validar prerequisitos
+        if project.state != ProjectState.ready:
+            raise ValueError(
+                f"Proyecto debe estar en state='ready' para cerrar. "
+                f"Estado actual: {project.state.value}"
+            )
+        
+        if project.ready_at is None:
+            raise ValueError(
+                "Proyecto no tiene ready_at seteado. "
+                "Esto indica una inconsistencia en el flujo."
+            )
+        
+        # Ya cerrado? → idempotencia
+        if project.status == ProjectStatus.closed:
+            audit.log_action(
+                project_id=project.id,
+                auth_user_id=user_id,
+                action_type=ProjectActionType.updated,
+                action_details="project_closed",
+                action_metadata={
+                    "field": "status",
+                    "from": "closed",
+                    "to": "closed",
+                    "note": "no-op (proyecto ya estaba cerrado)"
+                }
+            )
+            return project
+        
+        # Cambiar status a closed
+        old_status = project.status
+        project.status = ProjectStatus.closed
+        
+        audit.log_action(
+            project_id=project.id,
+            auth_user_id=user_id,
+            action_type=ProjectActionType.updated,
+            action_details="project_closed",
+            action_metadata={
+                "field": "status",
+                "from": old_status.value,
+                "to": "closed",
+                "ready_at": project.ready_at.isoformat() if project.ready_at else None,
+                "retention_started": True,
+            }
+        )
+        
+        return project
+    
+    return await commit_or_raise(db, _work)
+
 
 __all__ = [
     "change_status",
     "transition_state",
     "archive",
+    "close_project",
 ]

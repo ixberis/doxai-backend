@@ -57,6 +57,7 @@ from app.modules.files.facades.product_files import (
 )
 from app.modules.files.schemas import ProductFileResponse
 from app.modules.files.services.storage_ops_service import AsyncStorageClient
+from app.modules.files.services.billing import FilesBillingService
 
 router = APIRouter(tags=["files:product"])
 
@@ -246,9 +247,44 @@ async def create_product_file_endpoint(
         original_name = file.filename or "product-file"
         mime_type = file.content_type or "application/octet-stream"
         file_bytes = await file.read()
+        file_size = len(file_bytes)
         
         # SSOT v2: Generate product_file_id first for path
         product_file_id = uuid4()
+        
+        # --- BILLING: Verificar y cobrar créditos ANTES de crear el archivo ---
+        billing_service = FilesBillingService()
+        has_enough, available, required = await billing_service.check_sufficient_balance(
+            db, ctx.auth_user_id, file_size
+        )
+        
+        if not has_enough:
+            _pf_logger.warning(
+                "insufficient_credits: auth_user_id=%s available=%d required=%d",
+                str(ctx.auth_user_id)[:8], available, required,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "error_code": "INSUFFICIENT_CREDITS",
+                    "message": f"Créditos insuficientes. Disponibles: {available}, Requeridos: {required}",
+                    "available": available,
+                    "required": required,
+                },
+            )
+        
+        # Cobrar créditos (con module='files' para métricas)
+        credits_charged = await billing_service.charge_product_file_creation(
+            db,
+            auth_user_id=ctx.auth_user_id,
+            file_size_bytes=file_size,
+            file_name=original_name,
+            product_file_id=product_file_id,
+        )
+        _pf_logger.info(
+            "credits_charged: auth_user_id=%s credits=%d product_file_id=%s",
+            str(ctx.auth_user_id)[:8], credits_charged, str(product_file_id)[:8],
+        )
         
         # SSOT: Use StoragePathsService for safe path generation
         paths_service = get_storage_paths_service()

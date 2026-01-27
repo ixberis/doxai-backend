@@ -188,6 +188,34 @@ class ProjectFacade:
             user_email=user_email or "",
             enforce_owner=enforce_owner,
         )
+    
+    async def close_project(
+        self,
+        project_id: UUID,
+        *,
+        user_id: UUID,
+        user_email: str,
+        enforce_owner: bool = True
+    ) -> Project:
+        """
+        Cierra un proyecto (entrega completada, inicia ciclo de retención).
+        
+        Prerequisitos:
+        - project_state debe ser 'ready' (indica entrega completada)
+        - ready_at debe estar seteado
+        
+        Efectos:
+        - status cambia a 'closed'
+        - Se registra en project_action_logs con action_details='project_closed'
+        """
+        return await projects.close_project(
+            db=self.db,
+            audit=self.audit,
+            project_id=project_id,
+            user_id=user_id,
+            user_email=user_email or "",
+            enforce_owner=enforce_owner,
+        )
 
 
 __all__ = ["ProjectFacade"]

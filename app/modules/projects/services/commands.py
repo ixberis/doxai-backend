@@ -115,6 +115,33 @@ class ProjectsCommandService:
             user_email=user_email or "",
         )
 
+    async def close_project(
+        self,
+        project_id: UUID,
+        *,
+        auth_user_id: UUID,
+        user_email: Optional[str],
+    ):
+        """
+        Cierra un proyecto (entrega completada).
+        
+        Workflow:
+        1. Valida que el proyecto esté en state='ready' (entregado)
+        2. Cambia status a 'closed' 
+        3. Registra en project_action_logs
+        
+        BD 2.0 SSOT: usa auth_user_id para ownership.
+        Prerequisite: ready_at debe estar seteado (proyecto debe estar ready).
+        
+        Raises:
+            HTTPException 400: si el proyecto no está en state='ready'
+        """
+        return await self.facade.close_project(
+            project_id,
+            user_id=auth_user_id,
+            user_email=user_email or "",
+        )
+
     async def delete(self, project_id: UUID, *, auth_user_id: UUID, user_email: Optional[str]) -> bool:
         return await self.facade.delete(
             project_id,
