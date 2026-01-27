@@ -42,21 +42,30 @@ async def archive_product_file(
     hard_delete: bool = True,
 ) -> None:
     """
-    Elimina un archivo producto.
+    Elimina un archivo producto (idempotente).
 
     Si `hard_delete` es True (por defecto):
         - Elimina el archivo del storage (Supabase).
-        - Elimina el registro de la BD (product_files + files_base).
+        - Invalida lógicamente el registro en BD (preserva histórico).
 
     Si `hard_delete` es False (modo legacy/compat):
         - Marca el archivo como archivado y no activo en BD.
         - El archivo se conserva en el storage.
 
-    Lanza FileNotFoundError si el archivo no existe.
+    IDEMPOTENCIA:
+    - Si el archivo ya está invalidado (storage_state != 'present' o is_active=false),
+      retorna sin error (204 implícito).
+    - Si el archivo no existe en storage, se trata como éxito.
+    - Cualquier otro error de storage lanza FileStorageError.
+    
+    Lanza FileNotFoundError si el archivo no existe en BD.
     """
     import logging
+    from app.modules.files.enums import FileStorageState
+    
     _logger = logging.getLogger("files.delete")
     
+    # Lookup sin filtros de estado (incluye inactivos/missing)
     obj = await get_product_file(
         session=db,
         product_file_id=product_file_id,
@@ -64,17 +73,29 @@ async def archive_product_file(
     if obj is None:
         raise FileNotFoundError("No se encontró el archivo producto solicitado")
 
+    # --- IDEMPOTENCIA: si ya está invalidado, retornar early ---
+    already_invalidated = (
+        obj.storage_state != FileStorageState.present
+        or not obj.product_file_is_active
+    )
+    if already_invalidated:
+        _logger.info(
+            "delete_idempotent_already_missing: product_file_id=%s storage_state=%s is_active=%s",
+            str(product_file_id)[:8],
+            obj.storage_state.value if obj.storage_state else "null",
+            obj.product_file_is_active,
+        )
+        return  # Éxito idempotente, nada que hacer
+
     if hard_delete:
         # 1) Eliminar del storage (idempotente si no existe)
         storage_path = obj.product_file_storage_path
-        storage_deleted = False
         try:
             await delete_file_from_storage(
                 storage_client,
                 bucket=bucket_name,
                 key=storage_path,
             )
-            storage_deleted = True
             _logger.info(
                 "storage_delete_ok: bucket=%s path=%s",
                 bucket_name,
@@ -84,7 +105,6 @@ async def archive_product_file(
             error_str = str(exc).lower()
             # Tratar "not found" como idempotente
             if "not found" in error_str or "404" in error_str or "does not exist" in error_str:
-                storage_deleted = True  # Ya no existe, consideramos éxito
                 _logger.info(
                     "storage_delete_idempotent: bucket=%s path=%s (already deleted or never existed)",
                     bucket_name,

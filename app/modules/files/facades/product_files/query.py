@@ -33,17 +33,27 @@ async def get_product_file_details(
     db: AsyncSession,
     *,
     product_file_id: UUID,
+    include_inactive: bool = False,
 ) -> ProductFileResponse:
     """
     Devuelve un ProductFileResponse a partir de su ID.
 
-    Lanza FileNotFoundError si no existe.
+    Args:
+        product_file_id: ID del archivo producto.
+        include_inactive: Si True, incluye archivos invalidados/inactivos.
+                          Útil para operaciones idempotentes como DELETE.
+
+    Lanza FileNotFoundError si no existe (o si está inactivo y include_inactive=False).
     """
     obj = await get_product_file(
         session=db,
         product_file_id=product_file_id,
     )
     if obj is None:
+        raise FileNotFoundError("No se encontró el archivo producto solicitado")
+    
+    # Si no incluye inactivos y está inactivo, lanzar 404
+    if not include_inactive and not obj.product_file_is_active:
         raise FileNotFoundError("No se encontró el archivo producto solicitado")
 
     return ProductFileResponse.model_validate(obj)

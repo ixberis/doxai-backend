@@ -693,9 +693,13 @@ async def delete_input_file(
     delete_start = _time.perf_counter()
     
     # Obtener project_id antes de borrar para touch posterior
+    # Usa include_inactive=True para idempotencia (archivos ya invalidados)
     project_id_for_touch: UUID | None = None
     try:
-        input_file_detail = await facade.get_input_file_by_file_id(file_id=file_id)
+        input_file_detail = await facade.get_input_file_by_file_id(
+            file_id=file_id,
+            include_inactive=True,  # Idempotente: incluir archivos ya invalidados
+        )
         project_id_for_touch = input_file_detail.project_id
     except Exception:
         pass

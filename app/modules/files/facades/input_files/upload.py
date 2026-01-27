@@ -278,9 +278,15 @@ class InputFilesFacade:
         self,
         *,
         file_id: UUID,
+        include_inactive: bool = False,
     ) -> InputFileResponse:
         """
         Devuelve un InputFileResponse a partir de un `file_id` canónico.
+
+        Args:
+            file_id: ID canónico del archivo (files_base).
+            include_inactive: Si True, incluye archivos invalidados/inactivos.
+                              Útil para operaciones idempotentes como DELETE.
 
         Lanza FileNotFoundError si no existe o no está vinculado a un input.
         """
@@ -289,6 +295,10 @@ class InputFilesFacade:
             file_id=file_id,
         )
         if input_file is None:
+            raise FileNotFoundError("No se encontró un archivo insumo para ese file_id")
+        
+        # Si no incluye inactivos y está inactivo, lanzar 404
+        if not include_inactive and not input_file.input_file_is_active:
             raise FileNotFoundError("No se encontró un archivo insumo para ese file_id")
 
         return InputFileResponse(

@@ -505,9 +505,14 @@ async def archive_product_file_endpoint(
     delete_start = _time.perf_counter()
     
     # Obtener project_id antes de archivar para touch posterior
+    # Usa include_inactive=True para idempotencia (archivos ya invalidados)
     project_id_for_touch: UUID | None = None
     try:
-        product_details = await get_product_file_details(db=db, product_file_id=product_file_id)
+        product_details = await get_product_file_details(
+            db=db, 
+            product_file_id=product_file_id,
+            include_inactive=True,  # Idempotente: incluir archivos ya invalidados
+        )
         project_id_for_touch = product_details.project_id
     except Exception:
         pass
