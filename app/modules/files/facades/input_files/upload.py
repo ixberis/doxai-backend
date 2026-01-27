@@ -367,37 +367,47 @@ class InputFilesFacade:
         self,
         *,
         file_id: UUID,
-        hard_delete: bool = True,
-    ) -> None:
+        delete_from_storage: bool = True,
+    ) -> tuple[UUID | None, int]:
         """
-        Elimina un archivo insumo (idempotente).
+        Elimina un archivo insumo (invalidación lógica + storage idempotente).
 
-        Si `hard_delete` es True (por defecto):
-        - Elimina el archivo del storage (Supabase).
-        - Invalida lógicamente el registro en BD (preserva histórico).
-
-        Si `hard_delete` es False (modo legacy/compat):
-        - Marca el archivo como archivado (lógico) en BD.
-        - El archivo se conserva en el storage.
+        Comportamiento:
+        - Invalida lógicamente el registro en BD (storage_state='missing', is_active=False).
+        - Si `delete_from_storage=True`, elimina el archivo físico del storage (best-effort).
+        - Siempre preserva el registro en BD para histórico/auditoría.
 
         IDEMPOTENCIA:
         - Si el archivo ya está invalidado (storage_state != 'present' o is_active=false),
           retorna sin error (204 implícito).
         - Si el archivo no existe en storage, se trata como éxito.
         - Cualquier otro error de storage lanza FileStorageError.
+
+        Args:
+            file_id: UUID del archivo (files_base.file_id).
+            delete_from_storage: Si True (default), elimina el archivo físico del storage.
+
+        Returns:
+            tuple[project_id, db_ops_count]: El project_id del archivo (para touch) y
+            el número de operaciones DB realizadas.
         """
         import logging
         from app.modules.files.enums import FileStorageState
         
         _logger = logging.getLogger("files.delete")
+        db_ops_count = 0
         
         # Lookup sin filtros de estado (incluye inactivos/missing)
         input_file = await get_input_file_by_file_id(
             session=self._db,
             file_id=file_id,
         )
+        db_ops_count += 1
+        
         if input_file is None:
             raise FileNotFoundError("No se encontró un archivo insumo para ese file_id")
+
+        project_id = input_file.project_id
 
         # --- IDEMPOTENCIA: si ya está invalidado, retornar early ---
         from app.modules.files.utils.enum_helpers import safe_enum_value
@@ -407,15 +417,16 @@ class InputFilesFacade:
         
         if already_invalidated:
             _logger.info(
-                "delete_idempotent_already_missing: file_id=%s input_file_id=%s storage_state=%s is_active=%s",
+                "delete_idempotent_already_missing: file_id=%s input_file_id=%s storage_state=%s is_active=%s db_ops=%d",
                 str(file_id)[:8],
                 str(input_file.input_file_id)[:8],
                 state_str,
                 input_file.input_file_is_active,
+                db_ops_count,
             )
-            return  # Éxito idempotente, nada que hacer
+            return (project_id, db_ops_count)  # Éxito idempotente, nada que hacer
 
-        if hard_delete:
+        if delete_from_storage:
             # 1) Eliminar del storage (idempotente si no existe)
             storage_path = input_file.input_file_storage_path
             try:
@@ -443,16 +454,19 @@ class InputFilesFacade:
                         f"No se pudo eliminar el archivo del storage: {exc}"
                     ) from exc
             
-            # 2) Invalidación lógica en BD (NO hard-delete para preservar histórico)
+            # Invalidación lógica en BD (siempre preserva histórico)
             invalidated = await input_file_repository.invalidate_for_deletion(
                 session=self._db,
                 input_file_id=input_file.input_file_id,
                 reason="user_deleted",
             )
+            db_ops_count += 1
+            
             if invalidated:
                 _logger.info(
-                    "db_logical_invalidation_ok: input_file_id=%s storage_state=missing",
+                    "db_logical_invalidation_ok: input_file_id=%s storage_state=missing db_ops=%d tx_mode=single_tx",
                     str(input_file.input_file_id)[:8],
+                    db_ops_count,
                 )
         else:
             # Modo legacy: solo archivado lógico
@@ -460,6 +474,9 @@ class InputFilesFacade:
                 session=self._db,
                 input_file_id=input_file.input_file_id,
             )
+            db_ops_count += 1
+        
+        return (project_id, db_ops_count)
 
 
 __all__ = ["InputFilesFacade"]

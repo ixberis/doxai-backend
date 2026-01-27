@@ -10,7 +10,7 @@ Incluye:
 - Obtener detalle por ID.
 - Listar archivos producto de un proyecto.
 - Obtener URL temporal de descarga.
-- Archivar / eliminar (hard delete opcional).
+- Eliminar (invalidación lógica + storage opcional).
 
 Autor: Ixchel Beristáin Mendoza
 Fecha: 2025-11-22
@@ -59,7 +59,9 @@ from app.modules.files.schemas import ProductFileResponse
 from app.modules.files.services.storage_ops_service import AsyncStorageClient
 from app.modules.files.services.billing import FilesBillingService
 
-router = APIRouter(tags=["files:product"])
+from app.shared.observability.timed_route import TimedAPIRoute
+
+router = APIRouter(tags=["files:product"], route_class=TimedAPIRoute)
 
 
 # ---------------------------------------------------------------------------
@@ -486,15 +488,25 @@ async def get_product_file_download_url_endpoint(
 
 @router.delete(
     "/{product_file_id}",
-    summary="Eliminar archivo producto (hard delete por defecto)",
+    summary="Eliminar archivo producto (invalidación lógica)",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def archive_product_file_endpoint(
     product_file_id: UUID,
-    hard: bool = True,
+    delete_storage: bool = True,
     db: AsyncSession = Depends(get_db),
     storage_client: AsyncStorageClient = Depends(get_storage_client),
 ):
+    """
+    Elimina un archivo producto (invalidación lógica + storage).
+
+    Comportamiento por defecto (`delete_storage=True`):
+    - Elimina el fichero físico del storage (best-effort, idempotente).
+    - Invalida lógicamente el registro en BD (preserva histórico).
+
+    Si `delete_storage=False`:
+    - Solo invalida lógicamente en BD (el archivo permanece en storage).
+    """
     import time as _time
     from app.modules.files.metrics.collectors.delete_collectors import (
         inc_delete_total,
@@ -523,7 +535,7 @@ async def archive_product_file_endpoint(
             storage_client=storage_client,
             bucket_name="users-files",
             product_file_id=product_file_id,
-            hard_delete=hard,
+            delete_from_storage=delete_storage,
         )
         
         # --- TOUCH PROJECT (ANTES del commit para persistir en la misma transacción) ---

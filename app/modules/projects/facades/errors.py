@@ -47,12 +47,25 @@ class PermissionDenied(Exception):
         super().__init__(message)
 
 
+class ProjectCloseNotAllowed(Exception):
+    """
+    Se lanza cuando no se puede cerrar un proyecto por restricciones de estado.
+    
+    Ejemplo: El proyecto está en state='processing' y no se puede interrumpir.
+    """
+    def __init__(self, current_state: str, reason: str):
+        self.current_state = current_state
+        self.reason = reason
+        super().__init__(reason)
+
+
 __all__ = [
     "ProjectNotFound",
     "InvalidStateTransition",
     "SlugAlreadyExists",
     "FileNotFound",
     "PermissionDenied",
+    "ProjectCloseNotAllowed",
 ]
 
 # Fin del archivo backend/app/modules/projects/facades/errors.py

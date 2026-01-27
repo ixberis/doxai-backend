@@ -32,13 +32,19 @@ class ProjectStatus(StrEnum):
     Estados administrativos/de negocio de un proyecto.
 
     Valores:
-    - in_process / IN_PROCESS: Proyecto con actividad administrativa activa
-      (contratos, pagos, entregas).
-    - IN_PROGRESS: Alias de in_process para compatibilidad.
+    - IN_PROCESS: Proyecto con actividad administrativa activa (contratos, pagos, entregas).
+    - CLOSED: Proyecto cerrado/entregado, inicia ciclo de retención.
+    - RETENTION_GRACE: Periodo de gracia previo a eliminación.
+    - DELETED_BY_POLICY: Archivos eliminados por política de retención.
     """
-    IN_PROCESS = "in_process"   # Valor canónico que esperan los tests
-    IN_PROGRESS = "in_process"  # Alias compatible
-    in_process = "in_process"   # Alias lowercase
+    IN_PROCESS = "in_process"
+    CLOSED = "closed"
+    RETENTION_GRACE = "retention_grace"
+    DELETED_BY_POLICY = "deleted_by_policy"
+    
+    # Aliases para compatibilidad (deprecated, usar valores canónicos)
+    IN_PROGRESS = "in_process"
+    in_process = "in_process"
 
 
 class ProjectStatusType(TypeDecorator):
@@ -51,6 +57,9 @@ class ProjectStatusType(TypeDecorator):
     """
     impl = PG_ENUM(
         "in_process",
+        "closed",
+        "retention_grace",
+        "deleted_by_policy",
         name="project_status_enum",
         create_type=False,
     )

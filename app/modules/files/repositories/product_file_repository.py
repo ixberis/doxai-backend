@@ -193,6 +193,9 @@ async def upsert_by_project_and_path(
         product_file_is_active=True,
         product_file_is_archived=False,
         product_file_generated_at=now,
+        # SSOT: Nuevo archivo siempre empieza con storage_state=present
+        # Usamos .value para compatibilidad con SQLite en tests
+        storage_state=FileStorageState.present.value,
     )
     session.add(obj)
     await session.flush()
@@ -307,10 +310,11 @@ async def invalidate_for_deletion(
         return None
     
     # Idempotente: si ya está invalidado, retornar sin cambios
-    if file_obj.storage_state == FileStorageState.missing and not file_obj.product_file_is_active:
+    # Usamos .value para compatibilidad con SQLite en tests
+    if file_obj.storage_state == FileStorageState.missing.value and not file_obj.product_file_is_active:
         return file_obj
     
-    file_obj.storage_state = FileStorageState.missing
+    file_obj.storage_state = FileStorageState.missing.value
     file_obj.invalidated_at = datetime.now(timezone.utc)
     file_obj.invalidation_reason = reason
     file_obj.product_file_is_active = False
@@ -328,60 +332,6 @@ async def invalidate_for_deletion(
     )
     return file_obj
 
-
-async def hard_delete(
-    session: AsyncSession,
-    product_file_id: UUID,
-) -> bool:
-    """
-    Elimina físicamente un ProductFile de la base de datos.
-    
-    DEPRECATED: Usar invalidate_for_deletion para preservar histórico.
-    Este método solo debe usarse por jobs administrativos de limpieza.
-    
-    También elimina el registro relacionado en files_base si existe.
-    
-    Returns:
-        True si se eliminó correctamente, False si no existía.
-    
-    NOTA:
-    - No hace commit, sólo ejecuta DELETE y flush.
-    """
-    from sqlalchemy import text
-    
-    file_obj = await get_by_id(session, product_file_id)
-    if file_obj is None:
-        return False
-    
-    # Guardar file_id antes de borrar para limpiar files_base
-    file_id = file_obj.file_id
-    
-    # 1) Eliminar de product_files
-    await session.delete(file_obj)
-    await session.flush()
-    
-    logger.info(
-        "product_file_hard_deleted",
-        extra={
-            "product_file_id": str(product_file_id),
-            "display_name": file_obj.product_file_display_name,
-        },
-    )
-    
-    # 2) Eliminar de files_base si existe (defensivo)
-    if file_id is not None:
-        try:
-            await session.execute(
-                text("DELETE FROM public.files_base WHERE file_id = CAST(:file_id AS uuid)"),
-                {"file_id": str(file_id)},
-            )
-            await session.flush()
-        except Exception:
-            pass
-    
-    return True
-
-
 __all__ = [
     "get_by_id",
     "get_by_file_id",
@@ -389,7 +339,6 @@ __all__ = [
     "list_active",
     "archive",
     "invalidate_for_deletion",
-    "hard_delete",
 ]
 
 # Fin del archivo backend/app/modules/files/repositories/product_file_repository.py

@@ -39,18 +39,15 @@ async def archive_product_file(
     bucket_name: str,
     *,
     product_file_id: UUID,
-    hard_delete: bool = True,
+    delete_from_storage: bool = True,
 ) -> None:
     """
-    Elimina un archivo producto (idempotente).
+    Elimina un archivo producto (invalidación lógica + storage idempotente).
 
-    Si `hard_delete` es True (por defecto):
-        - Elimina el archivo del storage (Supabase).
-        - Invalida lógicamente el registro en BD (preserva histórico).
-
-    Si `hard_delete` es False (modo legacy/compat):
-        - Marca el archivo como archivado y no activo en BD.
-        - El archivo se conserva en el storage.
+    Comportamiento:
+    - Invalida lógicamente el registro en BD (storage_state='missing', is_active=False).
+    - Si `delete_from_storage=True`, elimina el archivo físico del storage (best-effort).
+    - Siempre preserva el registro en BD para histórico/auditoría.
 
     IDEMPOTENCIA:
     - Si el archivo ya está invalidado (storage_state != 'present' o is_active=false),
@@ -88,7 +85,7 @@ async def archive_product_file(
         )
         return  # Éxito idempotente, nada que hacer
 
-    if hard_delete:
+    if delete_from_storage:
         # 1) Eliminar del storage (idempotente si no existe)
         storage_path = obj.product_file_storage_path
         try:
@@ -116,7 +113,7 @@ async def archive_product_file(
                     f"No se pudo eliminar el archivo producto del storage: {exc}"
                 ) from exc
         
-        # 2) Invalidación lógica en BD (NO hard-delete para preservar histórico)
+        # Invalidación lógica en BD (siempre preserva histórico)
         invalidated = await product_file_repository.invalidate_for_deletion(
             session=db,
             product_file_id=product_file_id,

@@ -61,6 +61,7 @@ SORT_COLUMN_WHITELIST = {
     "created_at": "created_at",
     "ready_at": "ready_at",
     "archived_at": "archived_at",
+    "closed_at": "closed_at",  # RFC-FILES-RETENTION-001: para ordenar proyectos cerrados
     "project_name": "project_name",  # Para ordenar por nombre (A-Z, Z-A)
     # NOTA: last_activity_at fue removido - usar updated_at para "Más reciente"
 }

@@ -26,7 +26,7 @@ from app.modules.projects.enums.project_state_enum import ProjectState
 from app.modules.projects.enums.project_status_enum import ProjectStatus
 from app.modules.projects.enums.project_action_type_enum import ProjectActionType
 from app.modules.projects.enums.project_state_transitions import validate_state_transition
-from app.modules.projects.facades.errors import ProjectNotFound, InvalidStateTransition, PermissionDenied
+from app.modules.projects.facades.errors import ProjectNotFound, InvalidStateTransition, PermissionDenied, ProjectCloseNotAllowed
 from app.modules.projects.facades.base import now_utc, commit_or_raise
 from app.modules.projects.facades.audit_logger import AuditLogger
 
@@ -203,22 +203,32 @@ async def close_project(
     *,
     user_id: UUID,
     user_email: str,
-    enforce_owner: bool = True
+    enforce_owner: bool = True,
+    closed_reason: str = "user_closed_from_dashboard"
 ) -> Project:
     """
-    Cierra un proyecto (entrega completada, inicia ciclo de retención).
+    Cierra un proyecto (inicia ciclo de retención).
     
-    Prerequisitos:
-    - project_state debe ser 'ready' (indica entrega completada)
-    - ready_at debe estar seteado (garantizado por transition_state a ready)
+    Opción B: Permite cerrar desde casi cualquier project_state.
+    
+    Estados permitidos:
+    - created, uploading, ready, error, archived → OK, se cierra
+    - processing → RECHAZADO (evitar cortar proceso activo)
     
     Efectos:
     - status cambia a 'closed'
+    - closed_at se fija automáticamente (trigger DB)
     - Se registra en project_action_logs con action_details='project_closed'
+    
+    Idempotencia:
+    - Si ya está closed/retention_grace/deleted_by_policy → return OK sin cambios
     
     Raises:
         PermissionDenied: si el usuario no es propietario
-        ValueError: si el proyecto no está en state='ready'
+        ProjectCloseNotAllowed: si el proyecto está en state='processing'
+    
+    Args:
+        closed_reason: Razón del cierre para auditoría (default: 'user_closed_from_dashboard')
     
     BD 2.0 SSOT: user_id param se compara con auth_user_id column.
     """
@@ -229,21 +239,16 @@ async def close_project(
         if enforce_owner and project.auth_user_id != user_id:
             raise PermissionDenied(f"Usuario {user_id} no es propietario del proyecto {project_id}")
         
-        # Validar prerequisitos
-        if project.state != ProjectState.ready:
-            raise ValueError(
-                f"Proyecto debe estar en state='ready' para cerrar. "
-                f"Estado actual: {project.state.value}"
+        # Opción B: Bloquear SOLO si está en processing
+        if project.state == ProjectState.processing:
+            raise ProjectCloseNotAllowed(
+                current_state=project.state.value,
+                reason="No puedes cerrar un proyecto mientras está procesando. Intenta de nuevo cuando termine."
             )
         
-        if project.ready_at is None:
-            raise ValueError(
-                "Proyecto no tiene ready_at seteado. "
-                "Esto indica una inconsistencia en el flujo."
-            )
-        
-        # Ya cerrado? → idempotencia
-        if project.status == ProjectStatus.closed:
+        # Ya cerrado / retention_grace / deleted_by_policy? → idempotencia
+        closed_statuses = {ProjectStatus.CLOSED, ProjectStatus.RETENTION_GRACE, ProjectStatus.DELETED_BY_POLICY}
+        if project.status in closed_statuses:
             audit.log_action(
                 project_id=project.id,
                 auth_user_id=user_id,
@@ -251,16 +256,21 @@ async def close_project(
                 action_details="project_closed",
                 action_metadata={
                     "field": "status",
-                    "from": "closed",
-                    "to": "closed",
-                    "note": "no-op (proyecto ya estaba cerrado)"
+                    "from": project.status.value,
+                    "to": project.status.value,
+                    "note": "no-op (proyecto ya estaba cerrado o en retención)",
+                    "from_state": project.state.value,
+                    "closed_reason": closed_reason,
                 }
             )
             return project
         
-        # Cambiar status a closed
+        # Guardar estados anteriores para auditoría
         old_status = project.status
-        project.status = ProjectStatus.closed
+        old_state = project.state
+        
+        # Cambiar status a closed (NO tocamos project.state)
+        project.status = ProjectStatus.CLOSED
         
         audit.log_action(
             project_id=project.id,
@@ -269,10 +279,12 @@ async def close_project(
             action_details="project_closed",
             action_metadata={
                 "field": "status",
-                "from": old_status.value,
-                "to": "closed",
+                "from_status": old_status.value,
+                "to_status": "closed",
+                "from_state": old_state.value,
                 "ready_at": project.ready_at.isoformat() if project.ready_at else None,
                 "retention_started": True,
+                "closed_reason": closed_reason,
             }
         )
         

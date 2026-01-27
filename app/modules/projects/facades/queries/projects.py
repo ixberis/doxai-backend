@@ -184,14 +184,18 @@ async def list_active_projects(
     include_total: bool = False,
 ) -> Tuple[List[Project], int]:
     """
-    Lista proyectos activos (state != ARCHIVED) de un usuario con ordenamiento.
+    Lista proyectos activos (status='in_process') de un usuario con ordenamiento.
+    
+    RFC-FILES-RETENTION-001 SSOT:
+    - Activos = status='in_process' (NO usa project_state para este filtro)
+    - El status es el criterio canónico para la UI de "Proyectos Activos"
     
     BD 2.0 SSOT: REQUIERE auth_user_id (UUID). No hay fallback a user_email
     porque la columna no existe en BD 2.0.
     
     Optimización 2026-01-11:
-    - Usa ORM con filtros que aprovechan idx_projects_auth_user_active_updated
-    - ORDER BY utiliza el índice ordenado (updated_at DESC incluido en índice)
+    - Usa ORM con filtros que aprovechan idx_projects_status_closed_at
+    - ORDER BY updated_at DESC para "más reciente primero"
     - Sin COUNT separado cuando include_total=False
     
     Args:
@@ -209,9 +213,9 @@ async def list_active_projects(
     start = time.perf_counter()
     effective_limit = min(limit, MAX_LIMIT)
     
-    # BD 2.0 SSOT: solo auth_user_id, NO user_email
-    # Aprovecha idx_projects_auth_user_active_updated (auth_user_id, state, updated_at DESC)
-    base_filter = (Project.auth_user_id == auth_user_id) & (Project.state != ProjectState.ARCHIVED)
+    # RFC-FILES-RETENTION-001 SSOT: Activos = status='in_process'
+    # NO usar state para este filtro - status es el criterio canónico
+    base_filter = (Project.auth_user_id == auth_user_id) & (Project.status == ProjectStatus.IN_PROCESS)
     user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     
     # Query principal - el índice cubre (auth_user_id, state, updated_at DESC)
@@ -251,14 +255,19 @@ async def list_active_projects(
 async def list_closed_projects(
     db: AsyncSession,
     auth_user_id: UUID,
-    order_by: str = "updated_at",
+    order_by: str = "closed_at",
     asc: bool = False,
     limit: int = 50,
     offset: int = 0,
     include_total: bool = False,
 ) -> Tuple[List[Project], int]:
     """
-    Lista proyectos cerrados/archivados (state == ARCHIVED) de un usuario con ordenamiento.
+    Lista proyectos cerrados (status IN ['closed', 'retention_grace', 'deleted_by_policy']) de un usuario.
+    
+    RFC-FILES-RETENTION-001 SSOT:
+    - Cerrados = status IN (closed, retention_grace, deleted_by_policy)
+    - Filtro EXPLÍCITO usando .in_() para claridad semántica y mantenibilidad
+    - closed_at es el anchor de retención y default para ordenamiento
     
     BD 2.0 SSOT: REQUIERE auth_user_id (UUID). No hay fallback a user_email
     porque la columna no existe en BD 2.0.
@@ -266,7 +275,7 @@ async def list_closed_projects(
     Args:
         db: Sesión AsyncSession SQLAlchemy
         auth_user_id: UUID del usuario (SSOT, REQUERIDO)
-        order_by: Columna para ordenar (updated_at, created_at, ready_at)
+        order_by: Columna para ordenar (closed_at, updated_at, created_at, ready_at)
         asc: Orden ascendente (default: False = descendente)
         limit: Número máximo de resultados (default: 50, max: MAX_LIMIT)
         offset: Desplazamiento para paginación (default: 0)
@@ -278,8 +287,14 @@ async def list_closed_projects(
     start = time.perf_counter()
     effective_limit = min(limit, MAX_LIMIT)
     
-    # BD 2.0 SSOT: solo auth_user_id, NO user_email
-    base_filter = (Project.auth_user_id == auth_user_id) & (Project.state == ProjectState.ARCHIVED)
+    # RFC-FILES-RETENTION-001 SSOT: Filtro EXPLÍCITO con .in_()
+    # Incluye: closed, retention_grace, deleted_by_policy
+    closed_statuses = [
+        ProjectStatus.CLOSED,
+        ProjectStatus.RETENTION_GRACE,
+        ProjectStatus.DELETED_BY_POLICY,
+    ]
+    base_filter = (Project.auth_user_id == auth_user_id) & (Project.status.in_(closed_statuses))
     user_log = f"auth_user_id={str(auth_user_id)[:8]}..."
     
     # Query con ordenamiento

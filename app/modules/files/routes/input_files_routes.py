@@ -61,7 +61,9 @@ from app.modules.files.schemas import InputFileUpload, InputFileResponse
 from app.modules.files.services.storage_ops_service import AsyncStorageClient
 from app.modules.files.services.storage.storage_paths import get_storage_paths_service
 
-router = APIRouter(tags=["files:input"])
+from app.shared.observability.timed_route import TimedAPIRoute
+
+router = APIRouter(tags=["files:input"], route_class=TimedAPIRoute)
 
 
 # ---------------------------------------------------------------------------
@@ -661,24 +663,24 @@ async def get_input_file_download_url(
 
 @router.delete(
     "/{file_id}",
-    summary="Eliminar un archivo insumo (hard delete por defecto)",
+    summary="Eliminar un archivo insumo (invalidación lógica)",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_input_file(
     request: Request,
     file_id: UUID,
-    hard: bool = True,
+    delete_storage: bool = True,
     facade: InputFilesFacade = Depends(get_input_files_facade),
 ):
     """
-    Elimina un archivo insumo.
+    Elimina un archivo insumo (invalidación lógica + storage).
 
-    Si `hard` es True (por defecto):
-        - Elimina el fichero físico del storage.
-        - Elimina el registro de la BD.
+    Comportamiento por defecto (`delete_storage=True`):
+    - Elimina el fichero físico del storage (best-effort, idempotente).
+    - Invalida lógicamente el registro en BD (preserva histórico).
 
-    Si `hard` es False (modo legacy):
-        - Solo se archiva lógicamente en BD.
+    Si `delete_storage=False`:
+    - Solo invalida lógicamente en BD (el archivo permanece en storage).
     """
     import time as _time
     from app.modules.files.metrics.collectors.delete_collectors import (
@@ -691,24 +693,14 @@ async def delete_input_file(
     status_code = 204
     result = "success"
     delete_start = _time.perf_counter()
-    
-    # Obtener project_id antes de borrar para touch posterior
-    # Usa include_inactive=True para idempotencia (archivos ya invalidados)
-    project_id_for_touch: UUID | None = None
-    try:
-        input_file_detail = await facade.get_input_file_by_file_id(
-            file_id=file_id,
-            include_inactive=True,  # Idempotente: incluir archivos ya invalidados
-        )
-        project_id_for_touch = input_file_detail.project_id
-    except Exception:
-        pass
+    db_ops_count = 0
     
     try:
         with telemetry.measure("db_ms"):
-            await facade.delete_input_file(
+            # Facade retorna (project_id, db_ops_count) - evita lookup duplicado
+            project_id_for_touch, db_ops_count = await facade.delete_input_file(
                 file_id=file_id,
-                hard_delete=hard,
+                delete_from_storage=delete_storage,
             )
         
         # --- TOUCH PROJECT (ANTES del commit para persistir en la misma transacción) ---
@@ -725,10 +717,13 @@ async def delete_input_file(
                     reason="input_file_deleted",
                     # window_seconds usa DEFAULT_WINDOW_SECONDS (configurable via env var)
                 )
+                if touched:
+                    db_ops_count += 1  # El touch ejecutó un UPDATE
                 _delete_logger.info(
-                    "touch_project_debounced_result: project_id=%s reason=input_file_deleted touched=%s",
+                    "touch_project_debounced_result: project_id=%s reason=input_file_deleted touched=%s db_ops=%d",
                     str(project_id_for_touch)[:8],
                     touched,
+                    db_ops_count,
                 )
             except Exception as touch_e:
                 _delete_logger.warning(
@@ -741,6 +736,13 @@ async def delete_input_file(
         # Incluye tanto el delete como el touch del proyecto
         await db.commit()
         
+        # Log de diagnóstico con db_ops_count y tx_mode
+        import logging
+        logging.getLogger("files.delete").info(
+            "route_delete_diagnostics: file_id=%s db_ops_count=%d tx_mode=single_tx",
+            str(file_id)[:8],
+            db_ops_count,
+        )
         # --- METRICS: Record successful delete (después del commit) ---
         delete_latency = _time.perf_counter() - delete_start
         observe_delete_latency(delete_latency, file_type="input", op="single_delete")

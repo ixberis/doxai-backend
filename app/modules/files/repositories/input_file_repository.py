@@ -86,10 +86,11 @@ async def list_by_project(
     )
     
     # Filtrar archivos activos a menos que se pida incluir inactivos
+    # Nota: usamos .value para compatibilidad con SQLite en tests (convierte enum a string)
     if not include_inactive:
         stmt = stmt.where(
             InputFile.input_file_is_active == True,
-            InputFile.storage_state == FileStorageState.present,
+            InputFile.storage_state == FileStorageState.present.value,
         )
     
     # Filtrar archivados a menos que se pida incluirlos
@@ -139,6 +140,11 @@ async def create_from_upload(
         input_file_storage_backend=storage_backend,
         input_file_storage_path=storage_path,
         input_file_status=InputProcessingStatus.uploaded,
+        # SSOT: Nuevo archivo siempre empieza con valores explícitos
+        # (server_default no aplica en SQLite tests - SQLAlchemy deja None si no se pasa)
+        storage_state=FileStorageState.present.value,
+        input_file_is_active=True,
+        input_file_is_archived=False,
     )
     # Si se proporciona un ID pre-generado, usarlo
     if input_file_id is not None:
@@ -198,10 +204,11 @@ async def invalidate_for_deletion(
         return None
     
     # Idempotente: si ya está invalidado, retornar sin cambios
-    if obj.storage_state == FileStorageState.missing and not obj.input_file_is_active:
+    # Usamos .value para compatibilidad con SQLite en tests
+    if obj.storage_state == FileStorageState.missing.value and not obj.input_file_is_active:
         return obj
     
-    obj.storage_state = FileStorageState.missing
+    obj.storage_state = FileStorageState.missing.value
     obj.invalidated_at = datetime.now(timezone.utc)
     obj.invalidation_reason = reason
     obj.input_file_is_active = False
@@ -210,56 +217,6 @@ async def invalidate_for_deletion(
     await session.flush()
     return obj
 
-
-async def hard_delete(
-    session: AsyncSession,
-    *,
-    input_file_id: UUID,
-) -> bool:
-    """
-    Elimina físicamente un InputFile de la base de datos.
-    
-    DEPRECATED: Usar invalidate_for_deletion para preservar histórico.
-    Este método solo debe usarse por jobs administrativos de limpieza.
-    
-    También elimina el registro relacionado en files_base si existe.
-    
-    Returns:
-        True si se eliminó correctamente, False si no existía.
-    
-    NOTA:
-    - No hace commit, sólo ejecuta DELETE y flush.
-    - files_base tiene FK con ON DELETE CASCADE si está configurado,
-      pero hacemos delete explícito para ser defensivos.
-    """
-    from sqlalchemy import delete, text
-    
-    obj = await get_by_id(session, input_file_id)
-    if obj is None:
-        return False
-    
-    # Guardar file_id antes de borrar para limpiar files_base
-    file_id = obj.file_id
-    
-    # 1) Eliminar de input_files
-    await session.delete(obj)
-    await session.flush()
-    
-    # 2) Eliminar de files_base si existe (defensivo, por si no hay CASCADE)
-    if file_id is not None:
-        try:
-            await session.execute(
-                text("DELETE FROM public.files_base WHERE file_id = CAST(:file_id AS uuid)"),
-                {"file_id": str(file_id)},
-            )
-            await session.flush()
-        except Exception:
-            # Si falla (ej. ya fue eliminado por CASCADE), ignorar
-            pass
-    
-    return True
-
-
 __all__ = [
     "get_by_id",
     "get_by_file_id",
@@ -267,7 +224,6 @@ __all__ = [
     "create_from_upload",
     "mark_archived",
     "invalidate_for_deletion",
-    "hard_delete",
 ]
 
 # Fin del archivo backend/app/modules/files/repositories/input_file_repository.py

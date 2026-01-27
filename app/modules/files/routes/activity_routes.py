@@ -33,8 +33,9 @@ from app.modules.files.services.product_file_activity import (
     list_activity_for_project,
 )
 from app.modules.files.services import activity_stats_service
+from app.shared.observability.timed_route import TimedAPIRoute
 
-router = APIRouter(tags=["files:activity"])
+router = APIRouter(tags=["files:activity"], route_class=TimedAPIRoute)
 
 
 # ---------------------------------------------------------------------------

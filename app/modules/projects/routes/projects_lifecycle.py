@@ -145,7 +145,7 @@ async def archive_project(
 @router.post(
     "/{project_id}/close",
     response_model=ProjectResponse,
-    summary="Cerrar proyecto (entrega completada)",
+    summary="Cerrar proyecto (inicia ciclo de retención)",
 )
 async def close_project(
     project_id: UUID,
@@ -153,30 +153,42 @@ async def close_project(
     svc: ProjectsCommandService = Depends(get_projects_command_service),
 ):
     """
-    Cierra un proyecto tras la entrega (inicia ciclo de retención).
+    Cierra un proyecto (inicia ciclo de retención).
     
-    Prerequisitos:
-    - El proyecto debe estar en state='ready' (entregado)
-    - ready_at debe estar seteado (automático al transicionar a ready)
+    Opción B: Permite cerrar desde casi cualquier project_state.
+    
+    Estados permitidos:
+    - created, uploading, ready, error, archived → OK, se cierra
+    - processing → RECHAZADO con 400 (evitar cortar proceso activo)
     
     Efectos:
     - status cambia a 'closed'
+    - closed_at se fija automáticamente (trigger DB)
     - Se registra en project_action_logs ('project_closed')
     - El job de retención comenzará a contar el periodo de gracia
     
+    Idempotencia:
+    - Si ya está closed/retention_grace/deleted_by_policy → 200 OK sin cambios
+    
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
+    from app.modules.projects.facades.errors import ProjectCloseNotAllowed
+    
     try:
         project = await svc.close_project(
             project_id,
             auth_user_id=ctx.auth_user_id,
             user_email=None,  # BD 2.0: email no requerido
+            closed_reason="user_closed_from_dashboard",
         )
         return ProjectResponse(
             success=True, 
             message="Proyecto cerrado. Ciclo de retención iniciado.", 
             project=_coerce_to_project_read(project)
         )
+    except ProjectCloseNotAllowed as e:
+        # Proyecto en processing → 400 con mensaje claro
+        raise HTTPException(status_code=400, detail=e.reason)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
