@@ -360,23 +360,28 @@ class InputFilesFacade:
         hard_delete: bool = True,
     ) -> None:
         """
-        Elimina un archivo insumo.
+        Elimina un archivo insumo (idempotente).
 
         Si `hard_delete` es True (por defecto):
         - Elimina el archivo del storage (Supabase).
-        - Elimina el registro de la BD (input_files + files_base).
+        - Invalida lógicamente el registro en BD (preserva histórico).
 
         Si `hard_delete` es False (modo legacy/compat):
         - Marca el archivo como archivado (lógico) en BD.
         - El archivo se conserva en el storage.
 
-        NOTA:
-        - Si el archivo no existe en storage, se trata como idempotente (no error).
+        IDEMPOTENCIA:
+        - Si el archivo ya está invalidado (storage_state != 'present' o is_active=false),
+          retorna sin error (204 implícito).
+        - Si el archivo no existe en storage, se trata como éxito.
         - Cualquier otro error de storage lanza FileStorageError.
         """
         import logging
+        from app.modules.files.enums import FileStorageState
+        
         _logger = logging.getLogger("files.delete")
         
+        # Lookup sin filtros de estado (incluye inactivos/missing)
         input_file = await get_input_file_by_file_id(
             session=self._db,
             file_id=file_id,
@@ -384,17 +389,30 @@ class InputFilesFacade:
         if input_file is None:
             raise FileNotFoundError("No se encontró un archivo insumo para ese file_id")
 
+        # --- IDEMPOTENCIA: si ya está invalidado, retornar early ---
+        already_invalidated = (
+            input_file.storage_state != FileStorageState.present
+            or not input_file.input_file_is_active
+        )
+        if already_invalidated:
+            _logger.info(
+                "delete_idempotent_already_missing: file_id=%s input_file_id=%s storage_state=%s is_active=%s",
+                str(file_id)[:8],
+                str(input_file.input_file_id)[:8],
+                input_file.storage_state.value if input_file.storage_state else "null",
+                input_file.input_file_is_active,
+            )
+            return  # Éxito idempotente, nada que hacer
+
         if hard_delete:
             # 1) Eliminar del storage (idempotente si no existe)
             storage_path = input_file.input_file_storage_path
-            storage_deleted = False
             try:
                 await delete_file_from_storage(
                     self._storage,
                     bucket=self._bucket,
                     key=storage_path,
                 )
-                storage_deleted = True
                 _logger.info(
                     "storage_delete_ok: bucket=%s path=%s",
                     self._bucket,
@@ -404,7 +422,6 @@ class InputFilesFacade:
                 error_str = str(exc).lower()
                 # Tratar "not found" como idempotente
                 if "not found" in error_str or "404" in error_str or "does not exist" in error_str:
-                    storage_deleted = True  # Ya no existe, consideramos éxito
                     _logger.info(
                         "storage_delete_idempotent: bucket=%s path=%s (already deleted or never existed)",
                         self._bucket,
