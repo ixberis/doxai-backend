@@ -419,16 +419,15 @@ async def hard_delete_closed_project(
                 exception_type=exception_type,
             )
         
-        # Log via app logger (redundancia, la auditoría persistente es la SSOT)
+        # Log canónico con contexto mínimo para diagnóstico (sin PII)
+        # Formato: project_hard_deleted project_id=<8chars> auth_user_id=<8chars> status_before=<status>
+        project_id_short = str(project.id)[:8]
+        auth_user_id_short = str(user_id)[:8]
+        status_before = project.status.value
+        
         logger.info(
-            "project_hard_deleted",
-            extra={
-                "project_id": str(project.id),
-                "auth_user_id": str(user_id),
-                "status": project.status.value,
-                "state": project.state.value,
-                "project_name": project.project_name,
-            }
+            f"project_hard_deleted project_id={project_id_short} "
+            f"auth_user_id={auth_user_id_short} status_before={status_before}"
         )
         
         # Hard delete via SQL DELETE (evita cargar relaciones ORM inexistentes)
