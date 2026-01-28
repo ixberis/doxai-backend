@@ -45,6 +45,11 @@ class AuthContextDTO:
         """True si está activado y no eliminado."""
         return self.user_is_activated and not self.is_deleted
     
+    @property
+    def is_admin(self) -> bool:
+        """True si el usuario tiene rol de administrador."""
+        return self.user_role == "admin"
+    
     @classmethod
     def from_mapping(cls, row: dict) -> "AuthContextDTO":
         """
