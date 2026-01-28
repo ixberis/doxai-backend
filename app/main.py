@@ -831,6 +831,37 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Timing middleware no disponible: {e}")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# REQUEST LOGGING & JSON EXCEPTION MIDDLEWARES
+# ═══════════════════════════════════════════════════════════════════════════════
+# Orden de registro (INVERSO al orden de ejecución en Starlette):
+# 1. RequestLoggingMiddleware - loguea inicio/fin de requests
+# 2. JSONExceptionMiddleware - captura excepciones y devuelve JSON (no text/plain)
+#
+# Orden de ejecución real:
+# Request → CORS → JSONException → RequestLogging → Timing → Handler → Timing → RequestLogging → JSONException → CORS → Response
+try:
+    from app.shared.middleware.exception_handler import JSONExceptionMiddleware
+    from app.shared.middleware.request_logging import RequestLoggingMiddleware
+    import re
+    
+    # RequestLoggingMiddleware primero (se ejecuta después en el flujo real)
+    # Filtrar solo rutas API principales (excluir /metrics, /health)
+    app.add_middleware(
+        RequestLoggingMiddleware,
+        include_patterns=[
+            re.compile(r"^/api/"),
+            re.compile(r"^/_internal/"),
+        ],
+    )
+    logger.info("📝 Request logging middleware habilitado (API routes)")
+    
+    # JSONExceptionMiddleware después (se ejecuta antes en el flujo real)
+    app.add_middleware(JSONExceptionMiddleware)
+    logger.info("🛡️ JSON exception middleware habilitado (500 → JSON)")
+except Exception as e:
+    logger.warning(f"⚠️ Exception/Logging middlewares no disponibles: {e}")
+
 # CORS middleware - se registra al final para ejecutarse primero
 _cors_config = _configure_cors(app)
 
