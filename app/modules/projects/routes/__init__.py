@@ -22,6 +22,7 @@ from fastapi import APIRouter
 from .projects_crud import router as projects_crud_router
 from .projects_lifecycle import router as projects_lifecycle_router
 from .queries import router as queries_router
+from .internal import router as internal_router
 
 # Subrouter de métricas (ensamblador dedicado)
 from app.modules.projects.metrics.routes import get_projects_metrics_router
@@ -62,6 +63,9 @@ def get_projects_router() -> APIRouter:
 
     # 3. Ciclo de vida: status/state/archive
     router.include_router(projects_lifecycle_router)
+
+    # 4. Internal diagnostic endpoints (service_role only)
+    router.include_router(internal_router)
 
     # 4. Métricas (Prometheus y snapshots)
     try:

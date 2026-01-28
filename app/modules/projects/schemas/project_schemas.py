@@ -170,6 +170,11 @@ class ProjectRead(UTF8SafeModel):
     ready_at: Optional[datetime] = Field(None, description="Fecha cuando alcanzó estado 'ready'")
     archived_at: Optional[datetime] = Field(None, description="Fecha de archivo")
     
+    # RFC-FILES-RETENTION-001: Timestamps de retención (SSOT canónico)
+    closed_at: Optional[datetime] = Field(None, description="Fecha de cierre (anchor de retención)")
+    retention_grace_at: Optional[datetime] = Field(None, description="Fecha de gracia de retención")
+    deleted_by_policy_at: Optional[datetime] = Field(None, description="Fecha de borrado por política")
+    
     # Campos de actividad calculados (opcional, set por queries de listado)
     last_activity_at: Optional[datetime] = Field(
         None,
