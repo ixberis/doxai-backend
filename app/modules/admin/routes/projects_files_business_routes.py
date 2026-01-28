@@ -58,14 +58,42 @@ class ProjectsFilesBusinessSummary(BaseModel):
     
     KPIs + daily series for charts.
     No operational metrics (storage, errors, latency) - those are separate.
+    
+    v2 (2026-01-28): Added projects_active, projects_closed, projects_active_with_files,
+    files_processed, files_in_custody, files_deleted for complete lifecycle visibility.
     """
     # ─────────────────────────────────────────────────────────────
-    # KPIs
+    # KPIs - Projects (lifecycle snapshot at to_date)
     # ─────────────────────────────────────────────────────────────
     projects_created: int = Field(0, description="Projects created in period")
-    projects_ready: int = Field(0, description="Projects that reached READY state in period")
+    projects_active: int = Field(0, description="Projects with status='in_process' at to_date")
+    projects_closed: int = Field(0, description="Projects with status='closed' at to_date")
+    projects_active_with_files: int = Field(
+        0, 
+        description="Active projects with at least one input file (product files not required)"
+    )
+    
+    # ─────────────────────────────────────────────────────────────
+    # KPIs - Files (lifecycle in period)
+    # ─────────────────────────────────────────────────────────────
     files_uploaded: int = Field(0, description="Input files uploaded in period")
+    files_processed: int = Field(
+        0, 
+        description="Input files with input_file_status IN ('parsed','vectorized') uploaded in period"
+    )
     files_generated: int = Field(0, description="Product files generated in period")
+    files_in_custody: int = Field(
+        0, 
+        description="Files (input+product) with storage_state='present' at to_date"
+    )
+    files_deleted: int = Field(
+        0, 
+        description="Files (input+product) with storage_state='invalidated' in period"
+    )
+    
+    # ─────────────────────────────────────────────────────────────
+    # KPIs - Users & Credits
+    # ─────────────────────────────────────────────────────────────
     active_users_files: int = Field(0, description="Unique users with file activity in period")
     credits_consumed_files: Optional[int] = Field(
         None, 
@@ -182,20 +210,32 @@ class ProjectsFilesBusinessAggregator:
         
         # Execute all queries with datetime objects
         kpis = await self._get_kpis(from_dt, to_exclusive_dt, from_date, to_date_exclusive)
+        projects_lifecycle = await self._get_projects_lifecycle_snapshot(to_date)
+        files_lifecycle = await self._get_files_lifecycle(from_dt, to_exclusive_dt, to_date)
         project_series = await self._get_project_activity_series(from_dt, to_exclusive_dt, from_date, to_date_exclusive, all_days)
         file_series = await self._get_file_activity_series(from_dt, to_exclusive_dt, all_days)
         users_series = await self._get_active_users_series(from_dt, to_exclusive_dt, all_days)
         credits = await self._get_credits_consumed_files(from_dt, to_exclusive_dt)
         
         return ProjectsFilesBusinessSummary(
+            # Projects
             projects_created=kpis["projects_created"],
-            projects_ready=kpis["projects_ready"],
+            projects_active=projects_lifecycle["active"],
+            projects_closed=projects_lifecycle["closed"],
+            projects_active_with_files=projects_lifecycle["active_with_files"],
+            # Files
             files_uploaded=kpis["files_uploaded"],
+            files_processed=files_lifecycle["processed"],
             files_generated=kpis["files_generated"],
+            files_in_custody=files_lifecycle["in_custody"],
+            files_deleted=files_lifecycle["deleted"],
+            # Users & Credits
             active_users_files=kpis["active_users_files"],
             credits_consumed_files=credits,
+            # Range
             range_from=from_str,
             range_to=to_str,
+            # Series
             project_activity_series=project_series,
             file_activity_series=file_series,
             active_users_series=users_series,
@@ -206,10 +246,14 @@ class ProjectsFilesBusinessAggregator:
         """
         Validate that all required SSOT objects exist.
         
+        Note: kpis.mv_projects_ready_lead_time_daily is OPTIONAL (only used for daily chart).
+        Panel de Negocio no longer requires projects_ready KPI as primary metric.
+        
         Raises:
-            SSOTMissingError: If any required object is missing
+            SSOTMissingError: If any REQUIRED object is missing
         """
-        # Check kpis.mv_projects_ready_lead_time_daily
+        # Check kpis.mv_projects_ready_lead_time_daily - OPTIONAL (warning only)
+        # This view is only used for the daily "ready" chart, not required for KPIs
         q_kpis_view = text("""
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.views
@@ -219,13 +263,16 @@ class ProjectsFilesBusinessAggregator:
         """)
         res = await self.db.execute(q_kpis_view)
         if not res.scalar():
-            logger.error("SSOT missing: kpis.mv_projects_ready_lead_time_daily view not installed")
-            raise SSOTMissingError(
-                "kpis.mv_projects_ready_lead_time_daily view not installed. "
-                "Run database/projects/07_metrics/01_kpis_projects.sql"
+            logger.warning(
+                "OPTIONAL: kpis.mv_projects_ready_lead_time_daily view not installed. "
+                "Daily 'ready' chart will show 0s. Run database/projects/07_metrics/01_kpis_projects.sql to enable."
             )
+            # Store flag for later use in series query
+            self._kpis_view_available = False
+        else:
+            self._kpis_view_available = True
         
-        # Check public.product_file_activity
+        # Check public.product_file_activity - REQUIRED
         q_activity_table = text("""
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
@@ -267,16 +314,6 @@ class ProjectsFilesBusinessAggregator:
         res1 = await self.db.execute(q1, {"from_date": from_dt, "to_date": to_dt})
         projects_created = int(res1.scalar() or 0)
         
-        # Projects ready (from view) - use date for date column
-        q2 = text("""
-            SELECT COALESCE(SUM(ready_count), 0) as cnt
-            FROM kpis.mv_projects_ready_lead_time_daily
-            WHERE day >= :from_date
-              AND day < :to_date
-        """)
-        res2 = await self.db.execute(q2, {"from_date": from_date, "to_date": to_date_exclusive})
-        projects_ready = int(res2.scalar() or 0)
-        
         # Files uploaded - use datetime for timestamptz column
         q3 = text("""
             SELECT COUNT(*) as cnt
@@ -310,10 +347,158 @@ class ProjectsFilesBusinessAggregator:
         
         return {
             "projects_created": projects_created,
-            "projects_ready": projects_ready,
             "files_uploaded": files_uploaded,
             "files_generated": files_generated,
             "active_users_files": active_users,
+        }
+    
+    async def _get_projects_lifecycle_snapshot(self, to_date: date) -> dict:
+        """
+        Get projects lifecycle snapshot as of to_date.
+        
+        Definition (user-specified SSOT):
+        - projects_active: status='in_process' at to_date
+        - projects_closed: status='closed' at to_date
+        - projects_active_with_files: active projects with ≥1 input file (product files NOT required)
+        
+        Args:
+            to_date: Snapshot date (inclusive)
+        """
+        # Convert to datetime for timestamptz column (end of day)
+        from datetime import timedelta
+        to_dt = datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        
+        # Projects active (status='in_process' and created by to_date)
+        q_active = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.projects
+            WHERE status = 'in_process'
+              AND created_at < :to_date
+        """)
+        res_active = await self.db.execute(q_active, {"to_date": to_dt})
+        active = int(res_active.scalar() or 0)
+        
+        # Projects closed (status='closed' and closed_at by to_date)
+        q_closed = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.projects
+            WHERE status = 'closed'
+              AND closed_at IS NOT NULL
+              AND closed_at < :to_date
+        """)
+        res_closed = await self.db.execute(q_closed, {"to_date": to_dt})
+        closed = int(res_closed.scalar() or 0)
+        
+        # Active projects with files (has input_files - product files NOT required per SSOT)
+        q_with_files = text("""
+            SELECT COUNT(DISTINCT p.id) as cnt
+            FROM public.projects p
+            WHERE p.status = 'in_process'
+              AND p.created_at < :to_date
+              AND EXISTS (
+                SELECT 1 FROM public.input_files i
+                WHERE i.project_id = p.id
+                  AND i.input_file_uploaded_at < :to_date
+              )
+        """)
+        res_with_files = await self.db.execute(q_with_files, {"to_date": to_dt})
+        active_with_files = int(res_with_files.scalar() or 0)
+        
+        return {
+            "active": active,
+            "closed": closed,
+            "active_with_files": active_with_files,
+        }
+    
+    async def _get_files_lifecycle(
+        self, 
+        from_dt: datetime, 
+        to_dt: datetime,
+        to_date: date,
+    ) -> dict:
+        """
+        Get files lifecycle metrics.
+        
+        SSOT Definition (2026-01-28):
+        - files_processed: input_files WHERE input_file_status IN ('parsed','vectorized')
+          Uses input_file_uploaded_at since no processing_completed_at column exists.
+          Note: This counts files uploaded in period that have completed processing.
+        - files_in_custody: input_files + product_files with storage_state='present' at to_date
+        - files_deleted: input_files + product_files with storage_state IN ('missing','invalidated')
+          where invalidated_at in period
+        
+        Args:
+            from_dt: Start datetime for timestamptz queries
+            to_dt: Exclusive end datetime for timestamptz queries
+            to_date: Snapshot date for custody count
+        """
+        from datetime import timedelta
+        to_snapshot_dt = datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        
+        # SSOT: files_processed = input_file_status IN ('parsed','vectorized')
+        # Temporal window: input_file_uploaded_at (no processing_completed_at exists)
+        # Limitation: Counts files UPLOADED in period that NOW have completed status
+        q_processed = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.input_files
+            WHERE input_file_status IN ('parsed', 'vectorized')
+              AND input_file_uploaded_at >= :from_date
+              AND input_file_uploaded_at < :to_date
+        """)
+        res_processed = await self.db.execute(q_processed, {"from_date": from_dt, "to_date": to_dt})
+        processed = int(res_processed.scalar() or 0)
+        
+        # Files in custody (storage_state='present' at to_date)
+        q_custody_input = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.input_files
+            WHERE storage_state = 'present'
+              AND input_file_uploaded_at < :to_date
+        """)
+        res_custody_input = await self.db.execute(q_custody_input, {"to_date": to_snapshot_dt})
+        custody_input = int(res_custody_input.scalar() or 0)
+        
+        q_custody_product = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.product_files
+            WHERE storage_state = 'present'
+              AND product_file_generated_at < :to_date
+        """)
+        res_custody_product = await self.db.execute(q_custody_product, {"to_date": to_snapshot_dt})
+        custody_product = int(res_custody_product.scalar() or 0)
+        
+        files_in_custody = custody_input + custody_product
+        
+        # Files deleted (storage_state in 'missing','invalidated' with invalidated_at in period)
+        # SSOT: invalidated_at column is canonical timestamp for soft-delete
+        q_deleted_input = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.input_files
+            WHERE storage_state IN ('missing', 'invalidated')
+              AND invalidated_at IS NOT NULL
+              AND invalidated_at >= :from_date
+              AND invalidated_at < :to_date
+        """)
+        res_deleted_input = await self.db.execute(q_deleted_input, {"from_date": from_dt, "to_date": to_dt})
+        deleted_input = int(res_deleted_input.scalar() or 0)
+        
+        q_deleted_product = text("""
+            SELECT COUNT(*) as cnt
+            FROM public.product_files
+            WHERE storage_state IN ('missing', 'invalidated')
+              AND invalidated_at IS NOT NULL
+              AND invalidated_at >= :from_date
+              AND invalidated_at < :to_date
+        """)
+        res_deleted_product = await self.db.execute(q_deleted_product, {"from_date": from_dt, "to_date": to_dt})
+        deleted_product = int(res_deleted_product.scalar() or 0)
+        
+        files_deleted = deleted_input + deleted_product
+        
+        return {
+            "processed": processed,
+            "in_custody": files_in_custody,
+            "deleted": files_deleted,
         }
     
     async def _get_project_activity_series(
@@ -336,15 +521,22 @@ class ProjectsFilesBusinessAggregator:
         res_created = await self.db.execute(q_created, {"from_date": from_dt, "to_date": to_dt})
         created_map = {str(row.day): int(row.cnt) for row in res_created.fetchall()}
         
-        # Projects ready per day (from view) - use date for date column
-        q_ready = text("""
-            SELECT day, ready_count
-            FROM kpis.mv_projects_ready_lead_time_daily
-            WHERE day >= :from_date
-              AND day < :to_date
-        """)
-        res_ready = await self.db.execute(q_ready, {"from_date": from_date, "to_date": to_date_exclusive})
-        ready_map = {str(row.day): int(row.ready_count or 0) for row in res_ready.fetchall()}
+        # Projects ready per day (from OPTIONAL view) - use date for date column
+        # If view not available, skip query and use empty map
+        ready_map: dict = {}
+        if getattr(self, '_kpis_view_available', True):
+            try:
+                q_ready = text("""
+                    SELECT day, ready_count
+                    FROM kpis.mv_projects_ready_lead_time_daily
+                    WHERE day >= :from_date
+                      AND day < :to_date
+                """)
+                res_ready = await self.db.execute(q_ready, {"from_date": from_date, "to_date": to_date_exclusive})
+                ready_map = {str(row.day): int(row.ready_count or 0) for row in res_ready.fetchall()}
+            except Exception as e:
+                logger.warning(f"Could not fetch ready series from kpis view: {e}")
+                ready_map = {}
         
         # Build complete series with all days (fill zeros for missing days)
         return [

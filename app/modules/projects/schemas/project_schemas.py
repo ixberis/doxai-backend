@@ -171,8 +171,13 @@ class ProjectRead(UTF8SafeModel):
         serialization_alias="project_state",
         description="Estado operacional del proyecto"
     )
-    # SSOT: status es canónico tanto en ORM como en serialización
-    status: ProjectStatus = Field(..., description="Estado de negocio del proyecto")
+    # SSOT: Serializamos con nombre "project_status" para consistencia con frontend
+    project_status: ProjectStatus = Field(
+        ..., 
+        alias="status", 
+        serialization_alias="project_status",
+        description="Estado de negocio del proyecto"
+    )
     
     # Timestamps operativos
     created_at: datetime = Field(..., description="Fecha de creación")
@@ -194,8 +199,8 @@ class ProjectRead(UTF8SafeModel):
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
-        # Usar alias de serialización para output JSON consistente
-        by_alias=False,
+        # Usar alias de serialización para output JSON consistente (project_state, project_status)
+        by_alias=True,
         json_schema_extra={
             "example": {
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
@@ -204,7 +209,7 @@ class ProjectRead(UTF8SafeModel):
                 "project_slug": "propuesta-tecnica-q4",
                 "project_description": "Análisis de propuesta",
                 "project_state": "ready",
-                "status": "in_process",
+                "project_status": "in_process",
                 "created_at": "2025-10-01T10:00:00Z",
                 "updated_at": "2025-10-18T15:30:00Z",
                 "ready_at": "2025-10-18T15:30:00Z",
@@ -235,8 +240,8 @@ class ProjectResponse(UTF8SafeModel):
                     "project_name": "Mi Proyecto",
                     "project_slug": "mi-proyecto",
                     "project_description": "Descripción del proyecto",
-                    "state": "created",
-                    "status": "in_process",
+                    "project_state": "created",
+                    "project_status": "in_process",
                     "created_at": "2025-10-25T10:00:00Z",
                     "updated_at": "2025-10-25T10:00:00Z",
                     "ready_at": None,

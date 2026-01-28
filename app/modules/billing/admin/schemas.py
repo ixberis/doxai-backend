@@ -8,6 +8,7 @@ exponer snapshots de métricas al panel administrativo.
 
 Autor: DoxAI
 Fecha: 2026-01-01
+Updated: 2026-01-28 - Added revenue_range_cents for dynamic date range support
 """
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -21,10 +22,12 @@ class BillingFinanceSnapshot(BaseModel):
     - revenue_*: métricas de ingresos
     - paying_users_*: usuarios con pagos
     - conversion_*: tasas de conversión
+    
+    v2 (2026-01-28): Added revenue_range_cents for dynamic date range filtering.
     """
     
     # ─────────────────────────────────────────────────────────────
-    # Ingresos
+    # Ingresos - Ventanas fijas (histórico)
     # ─────────────────────────────────────────────────────────────
     revenue_total_cents: int = Field(
         0,
@@ -38,6 +41,24 @@ class BillingFinanceSnapshot(BaseModel):
         0,
         description="Ingresos últimos 30 días en centavos"
     )
+    
+    # ─────────────────────────────────────────────────────────────
+    # Ingresos - Rango dinámico (según selector del dashboard)
+    # ─────────────────────────────────────────────────────────────
+    revenue_range_cents: Optional[int] = Field(
+        None,
+        description="Ingresos en el rango seleccionado (from/to) en centavos. "
+                    "Null si no se especificó rango."
+    )
+    range_from: Optional[str] = Field(
+        None,
+        description="Fecha inicio del rango (YYYY-MM-DD)"
+    )
+    range_to: Optional[str] = Field(
+        None,
+        description="Fecha fin del rango (YYYY-MM-DD)"
+    )
+    
     currency: str = Field(
         "MXN",
         description="Moneda principal (ISO 4217)"

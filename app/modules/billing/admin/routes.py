@@ -10,12 +10,16 @@ Expone endpoints JSON de monitoreo interno:
 Sin fallback: la fuente de verdad es solo v_billing_finance_snapshot.
 Si la vista falla, responde 500.
 
+v2 (2026-01-28): Added optional from/to query params for dynamic revenue range.
+
 Autor: DoxAI
 Fecha: 2026-01-01
 """
 import logging
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import date
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import ProgrammingError
 
@@ -35,15 +39,34 @@ router = APIRouter(
 
 
 @router.get("/summary", response_model=BillingFinanceSnapshot)
-async def get_billing_finance_summary(db: AsyncSession = Depends(get_db)):
+async def get_billing_finance_summary(
+    from_date: Optional[str] = Query(
+        None,
+        alias="from",
+        description="Start date (YYYY-MM-DD) for dynamic revenue range",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    ),
+    to_date: Optional[str] = Query(
+        None,
+        alias="to",
+        description="End date (YYYY-MM-DD) for dynamic revenue range",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
     """
     Devuelve un snapshot JSON con métricas financieras agregadas.
     
-    Fuente de verdad: v_billing_finance_snapshot (1 query).
+    Fuente de verdad: v_billing_finance_snapshot (1 query) + payments (for range).
     Sin fallback: si la vista no existe, responde 500.
+    
+    Query params (optional):
+    - from: Start date (YYYY-MM-DD) for revenue_range_cents
+    - to: End date (YYYY-MM-DD) for revenue_range_cents
     
     Campos:
     - revenue_total_cents, revenue_7d_cents, revenue_30d_cents
+    - revenue_range_cents (if from/to provided)
     - currency, checkouts_completed_total, paying_users_total
     - users_activated_total, conversion_activated_to_paid
     - avg_revenue_per_paying_user_cents
@@ -52,18 +75,36 @@ async def get_billing_finance_summary(db: AsyncSession = Depends(get_db)):
     Sin PII. Orientado a negocio, no a debugging.
     """
     request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[billing_finance_summary:{request_id}] Request started")
+    logger.info(f"[billing_finance_summary:{request_id}] Request started from={from_date} to={to_date}")
+    
+    # Parse dates if provided
+    parsed_from: Optional[date] = None
+    parsed_to: Optional[date] = None
+    
+    if from_date and to_date:
+        try:
+            parsed_from = date.fromisoformat(from_date)
+            parsed_to = date.fromisoformat(to_date)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+        
+        if parsed_from > parsed_to:
+            raise HTTPException(status_code=400, detail="from_date must be <= to_date")
     
     agg = BillingFinanceAggregators(db)
     
     try:
-        snapshot = await agg.get_billing_finance_snapshot()
+        snapshot = await agg.get_billing_finance_snapshot(
+            from_date=parsed_from,
+            to_date=parsed_to,
+        )
         
         logger.info(
             f"[billing_finance_summary:{request_id}] source=db_view "
             f"revenue_total={snapshot.revenue_total_cents} "
             f"revenue_7d={snapshot.revenue_7d_cents} "
             f"revenue_30d={snapshot.revenue_30d_cents} "
+            f"revenue_range={snapshot.revenue_range_cents} "
             f"paying_users={snapshot.paying_users_total} "
             f"conversion={snapshot.conversion_activated_to_paid:.4f}"
         )
@@ -72,6 +113,9 @@ async def get_billing_finance_summary(db: AsyncSession = Depends(get_db)):
             revenue_total_cents=snapshot.revenue_total_cents,
             revenue_7d_cents=snapshot.revenue_7d_cents,
             revenue_30d_cents=snapshot.revenue_30d_cents,
+            revenue_range_cents=snapshot.revenue_range_cents,
+            range_from=snapshot.range_from,
+            range_to=snapshot.range_to,
             currency=snapshot.currency,
             checkouts_completed_total=snapshot.checkouts_completed_total,
             paying_users_total=snapshot.paying_users_total,
