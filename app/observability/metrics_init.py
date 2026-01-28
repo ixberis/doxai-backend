@@ -75,6 +75,8 @@ def _verify_registry() -> dict:
             "has_touch_debounced_allowed": "touch_debounced_allowed" in family_names,
             "has_touch_debounced_skipped": "touch_debounced_skipped" in family_names,
             "has_doxai_ghost_files_count": "doxai_ghost_files_count" in family_names,
+            "has_projects_lifecycle_requests": "projects_lifecycle_requests" in family_names,
+            "has_projects_lifecycle_latency_seconds": "projects_lifecycle_latency_seconds" in family_names,
         }
     except Exception as e:
         _logger.error("metrics_registry_verify_error: %s", str(e), exc_info=True)
@@ -95,6 +97,7 @@ def initialize_all_metrics() -> dict:
         "files_delete": False,
         "touch_debounce": False,
         "db_metrics": False,
+        "projects_lifecycle": False,
     }
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -186,13 +189,43 @@ def initialize_all_metrics() -> dict:
         )
     
     # ─────────────────────────────────────────────────────────────────────────
+    # 4. Projects Lifecycle Collectors
+    # ─────────────────────────────────────────────────────────────────────────
+    try:
+        from app.modules.projects.metrics.collectors.lifecycle_collectors import (
+            _ensure_collectors as ensure_lifecycle_collectors,
+        )
+        results["projects_lifecycle"] = ensure_lifecycle_collectors()
+        
+        if results["projects_lifecycle"]:
+            _logger.info("metrics_init: projects_lifecycle collectors registered ✓")
+        else:
+            _logger.error(
+                "metrics_init: projects_lifecycle collectors returned False",
+                exc_info=False,
+            )
+    except ImportError as ie:
+        _logger.error(
+            "metrics_init: projects_lifecycle IMPORT FAILED: %s",
+            str(ie),
+            exc_info=True,
+        )
+    except Exception as e:
+        _logger.error(
+            "metrics_init: projects_lifecycle INIT FAILED: %s",
+            str(e),
+            exc_info=True,
+        )
+    
+    # ─────────────────────────────────────────────────────────────────────────
     # Summary log
     # ─────────────────────────────────────────────────────────────────────────
     _logger.info(
-        "metrics_init_summary: files_delete=%s touch_debounce=%s db_metrics=%s",
+        "metrics_init_summary: files_delete=%s touch_debounce=%s db_metrics=%s projects_lifecycle=%s",
         results["files_delete"],
         results["touch_debounce"],
         results["db_metrics"],
+        results["projects_lifecycle"],
     )
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -202,11 +235,14 @@ def initialize_all_metrics() -> dict:
     registry_check = _verify_registry()
     _logger.info(
         "metrics_registry_check: has_files_delete=%s has_touch_debounced_allowed=%s "
-        "has_files_delete_latency_seconds=%s has_doxai_ghost_files_count=%s",
+        "has_files_delete_latency_seconds=%s has_doxai_ghost_files_count=%s "
+        "has_projects_lifecycle_requests=%s has_projects_lifecycle_latency_seconds=%s",
         registry_check.get("has_files_delete", False),
         registry_check.get("has_touch_debounced_allowed", False),
         registry_check.get("has_files_delete_latency_seconds", False),
         registry_check.get("has_doxai_ghost_files_count", False),
+        registry_check.get("has_projects_lifecycle_requests", False),
+        registry_check.get("has_projects_lifecycle_latency_seconds", False),
     )
     
     return results

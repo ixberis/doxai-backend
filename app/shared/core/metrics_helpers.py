@@ -31,6 +31,9 @@ from prometheus_client import Counter, Histogram, Gauge, REGISTRY
 # Without this, the cache dict is recreated on reload, causing duplicate metrics
 _METRICS_CACHE: Dict[Tuple[str, str, Tuple[str, ...]]] = globals().get("_METRICS_CACHE") or {}
 
+# Cache for histogram buckets - used to detect conflicting bucket configurations
+_HISTOGRAM_BUCKETS_CACHE: Dict[str, tuple] = globals().get("_HISTOGRAM_BUCKETS_CACHE") or {}
+
 
 def _get_cache_key(name: str, type_name: str, labelnames: tuple) -> Tuple[str, str, Tuple[str, ...]]:
     """Generate cache key for metric lookup."""
@@ -81,14 +84,36 @@ def get_or_create_counter(name: str, description: str, labelnames: tuple = ()) -
         )
 
 
-def get_or_create_histogram(name: str, description: str, labelnames: tuple = ()) -> Histogram:
+def get_or_create_histogram(
+    name: str,
+    description: str,
+    labelnames: tuple = (),
+    buckets: tuple = None,
+) -> Histogram:
     """
     Obtiene histograma existente o crea uno nuevo (evita duplicados en tests/reload).
     
+    Args:
+        name: Nombre de la métrica
+        description: Descripción de la métrica
+        labelnames: Tuple de nombres de labels
+        buckets: Tuple de bucket boundaries (opcional, usa default de prometheus_client)
+    
     Raises:
+        ValueError: Si se intenta crear el mismo histograma con buckets diferentes
         RuntimeError: If metric cannot be created or found (should never happen)
     """
     cache_key = _get_cache_key(name, "histogram", labelnames)
+    
+    # Check for bucket conflicts BEFORE checking cache
+    if buckets is not None:
+        existing_buckets = _HISTOGRAM_BUCKETS_CACHE.get(name)
+        if existing_buckets is not None and existing_buckets != tuple(buckets):
+            raise ValueError(
+                f"Histogram '{name}' already exists with different buckets. "
+                f"Existing: {existing_buckets}, Requested: {tuple(buckets)}. "
+                f"This is a configuration error - histograms must have consistent bucket definitions."
+            )
     
     if cache_key in _METRICS_CACHE:
         return _METRICS_CACHE[cache_key]
@@ -96,11 +121,20 @@ def get_or_create_histogram(name: str, description: str, labelnames: tuple = ())
     existing = _get_existing_metric(name)
     if existing is not None:
         _METRICS_CACHE[cache_key] = existing
+        # Store buckets for conflict detection
+        if buckets is not None:
+            _HISTOGRAM_BUCKETS_CACHE[name] = tuple(buckets)
         return existing
     
     try:
-        histogram = Histogram(name, description, labelnames=labelnames)
+        kwargs = {"labelnames": labelnames}
+        if buckets is not None:
+            kwargs["buckets"] = buckets
+        histogram = Histogram(name, description, **kwargs)
         _METRICS_CACHE[cache_key] = histogram
+        # Store buckets for conflict detection
+        if buckets is not None:
+            _HISTOGRAM_BUCKETS_CACHE[name] = tuple(buckets)
         return histogram
     except ValueError:
         existing = _get_existing_metric(name)
@@ -152,6 +186,7 @@ def clear_metrics_cache() -> None:
     WARNING: Does NOT unregister metrics from REGISTRY.
     """
     _METRICS_CACHE.clear()
+    _HISTOGRAM_BUCKETS_CACHE.clear()
 
 
 __all__ = [

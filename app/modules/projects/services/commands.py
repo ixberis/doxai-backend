@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.projects.facades import ProjectFacade
 from app.modules.projects.enums import ProjectState, ProjectStatus
-from app.modules.projects.metrics.collectors.lifecycle_metrics import (
+from app.modules.projects.metrics.collectors.lifecycle_collectors import (
     instrument_lifecycle_op,
 )
 
