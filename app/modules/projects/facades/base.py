@@ -53,7 +53,7 @@ async def commit_or_raise(db: Union[Session, AsyncSession], work: Callable[[], T
     acceder a atributos del objeto ORM post-commit (evita MissingGreenlet).
     
     Soporta:
-    - db siendo AsyncSession o Session
+    - db siendo AsyncSession, Session, o mocks async (duck typing)
     - work siendo sync o async (awaitable)
     
     Args:
@@ -66,8 +66,6 @@ async def commit_or_raise(db: Union[Session, AsyncSession], work: Callable[[], T
     Raises:
         Cualquier excepción lanzada por work()
     """
-    is_async = _is_async_session(db)
-    
     try:
         # Ejecutar work
         result = work()
@@ -76,20 +74,18 @@ async def commit_or_raise(db: Union[Session, AsyncSession], work: Callable[[], T
         if inspect.isawaitable(result):
             result = await result
         
-        # Commit según tipo de sesión
-        if is_async:
-            await db.commit()
-        else:
-            db.commit()
+        # Commit - duck typing: await si es awaitable
+        commit_result = db.commit()
+        if inspect.isawaitable(commit_result):
+            await commit_result
         
         return result
         
     except Exception:
-        # Rollback según tipo de sesión
-        if is_async:
-            await db.rollback()
-        else:
-            db.rollback()
+        # Rollback - duck typing: await si es awaitable
+        rollback_result = db.rollback()
+        if inspect.isawaitable(rollback_result):
+            await rollback_result
         raise
 
 
