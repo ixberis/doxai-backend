@@ -378,15 +378,34 @@ async def hard_delete_closed_project(
                 "project_state": project.state.value,
             })
         except Exception as e:
-            logger.error(
-                "project_hard_delete_audit_failed",
-                extra={
-                    "project_id": str(project.id),
-                    "auth_user_id": str(user_id),
-                    "error": str(e),
-                }
+            # =========================================================================
+            # LOGGING EXPLÍCITO: Capturar SQLSTATE si existe (asyncpg/psycopg2)
+            # IMPORTANTE: Formato inline + repr(e) para visibilidad completa en Railway
+            # =========================================================================
+            import sys
+            sqlstate = getattr(e, 'sqlstate', None) or getattr(getattr(e, 'orig', None), 'pgcode', None)
+            
+            # stderr con flush=True para Railway
+            print(
+                f"ERROR project_hard_delete_audit_failed "
+                f"project_id={project.id} "
+                f"auth_user_id={user_id} "
+                f"sqlstate={sqlstate} "
+                f"error={repr(e)}",
+                file=sys.stderr,
+                flush=True,
             )
-            raise ProjectHardDeleteAuditFailed(project_id, str(e))
+            
+            # logger.error inline (sin extra={}) para consistencia
+            logger.error(
+                f"project_hard_delete_audit_failed "
+                f"project_id={project.id} "
+                f"auth_user_id={user_id} "
+                f"sqlstate={sqlstate} "
+                f"error={repr(e)}"
+            )
+            
+            raise ProjectHardDeleteAuditFailed(project_id, f"sqlstate={sqlstate} {repr(e)}")
         
         # Log via app logger (redundancia, la auditoría persistente es la SSOT)
         logger.info(
