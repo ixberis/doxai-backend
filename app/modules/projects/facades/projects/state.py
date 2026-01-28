@@ -360,8 +360,8 @@ async def hard_delete_closed_project(
             # Usar función SECURITY DEFINER para bypass de RLS
             audit_fn = text("""
                 SELECT public.fn_insert_project_deletion_audit_event(
-                    :project_id::uuid,
-                    :auth_user_id::uuid,
+                    CAST(:project_id AS uuid),
+                    CAST(:auth_user_id AS uuid),
                     :project_slug,
                     :project_name,
                     :project_status,
