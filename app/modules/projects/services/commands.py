@@ -10,8 +10,13 @@ BD 2.0 SSOT (2026-01-27):
 - Eliminados métodos de files legacy (Files 2.0 es el SSOT de archivos)
 - NO existe tabla project_files en BD 2.0
 
+Métricas (2026-01-28):
+- Instrumentación de lifecycle: create, update, close, hard_delete
+- Métricas: projects_lifecycle_requests_total{op,outcome}
+- Métricas: projects_lifecycle_latency_seconds{op,outcome}
+
 Autor: Ixchel Beristain
-Actualizado: 2026-01-27 - Eliminar métodos de files legacy
+Actualizado: 2026-01-28 - Agregar métricas lifecycle Prometheus
 """
 from __future__ import annotations
 from uuid import UUID
@@ -21,6 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.projects.facades import ProjectFacade
 from app.modules.projects.enums import ProjectState, ProjectStatus
+from app.modules.projects.metrics.collectors.lifecycle_metrics import (
+    instrument_lifecycle_op,
+)
 
 
 class ProjectsCommandService:
@@ -30,6 +38,9 @@ class ProjectsCommandService:
     BD 2.0 SSOT: 
     - Todos los comandos usan auth_user_id (UUID) para ownership.
     - Para operaciones de archivos, usar el módulo Files 2.0.
+    
+    Métricas:
+    - Cada operación lifecycle registra requests_total y latency_seconds.
     """
 
     def __init__(self, db: Union[Session, AsyncSession]):
@@ -47,13 +58,16 @@ class ProjectsCommandService:
         project_description: Optional[str] = None,
     ):
         """BD 2.0: auth_user_id es el SSOT de ownership."""
-        return await self.facade.create(
-            user_id=auth_user_id,  # Facade espera user_id, se mapea a auth_user_id
-            user_email=user_email or "",
-            project_name=project_name,
-            project_slug=project_slug,
-            project_description=project_description,
-        )
+        async with instrument_lifecycle_op("create") as metrics:
+            result = await self.facade.create(
+                user_id=auth_user_id,  # Facade espera user_id, se mapea a auth_user_id
+                user_email=user_email or "",
+                project_name=project_name,
+                project_slug=project_slug,
+                project_description=project_description,
+            )
+            metrics.set_success()
+            return result
 
     async def update_project(
         self,
@@ -65,18 +79,21 @@ class ProjectsCommandService:
         project_description: Optional[str] = None,
     ):
         """BD 2.0: auth_user_id es el SSOT de ownership."""
-        payload = {}
-        if project_name is not None:
-            payload["project_name"] = project_name
-        if project_description is not None:
-            payload["project_description"] = project_description
+        async with instrument_lifecycle_op("update") as metrics:
+            payload = {}
+            if project_name is not None:
+                payload["project_name"] = project_name
+            if project_description is not None:
+                payload["project_description"] = project_description
 
-        return await self.facade.update(
-            project_id,
-            user_id=auth_user_id,
-            user_email=user_email or "",
-            **payload
-        )
+            result = await self.facade.update(
+                project_id,
+                user_id=auth_user_id,
+                user_email=user_email or "",
+                **payload
+            )
+            metrics.set_success()
+            return result
 
     # ---- Status administrativo ----
     async def change_status(
@@ -142,12 +159,15 @@ class ProjectsCommandService:
         Raises:
             ProjectCloseNotAllowed: si el proyecto está en processing.
         """
-        return await self.facade.close_project(
-            project_id,
-            user_id=auth_user_id,
-            user_email=user_email or "",
-            closed_reason=closed_reason,
-        )
+        async with instrument_lifecycle_op("close") as metrics:
+            result = await self.facade.close_project(
+                project_id,
+                user_id=auth_user_id,
+                user_email=user_email or "",
+                closed_reason=closed_reason,
+            )
+            metrics.set_success()
+            return result
 
     async def delete(self, project_id: UUID, *, auth_user_id: UUID, user_email: Optional[str]) -> bool:
         return await self.facade.delete(
@@ -172,6 +192,7 @@ class ProjectsCommandService:
         - El usuario debe ser propietario
         
         Efectos:
+        - Inserta evento de auditoría en project_deletion_audit_events
         - El proyecto desaparece del historial
         - No afecta métricas agregadas ni billing histórico
         
@@ -179,11 +200,15 @@ class ProjectsCommandService:
         
         Raises:
             ProjectHardDeleteNotAllowed: si el proyecto está activo o no autorizado.
+            ProjectHardDeleteAuditFailed: si falla la inserción de auditoría.
         """
-        return await self.facade.hard_delete_closed_project(
-            project_id,
-            user_id=auth_user_id,
-        )
+        async with instrument_lifecycle_op("hard_delete") as metrics:
+            result = await self.facade.hard_delete_closed_project(
+                project_id,
+                user_id=auth_user_id,
+            )
+            metrics.set_success()
+            return result
 
 
 __all__ = ["ProjectsCommandService"]

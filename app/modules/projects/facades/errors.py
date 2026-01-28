@@ -70,6 +70,20 @@ class ProjectHardDeleteNotAllowed(Exception):
         super().__init__(reason)
 
 
+class ProjectHardDeleteAuditFailed(Exception):
+    """
+    Se lanza cuando falla la inserción del evento de auditoría antes del hard-delete.
+    
+    El hard-delete NO debe ejecutarse si la auditoría falla.
+    Error code estable: PROJECT_HARD_DELETE_AUDIT_FAILED
+    """
+    def __init__(self, project_id, original_error: str):
+        self.project_id = project_id
+        self.original_error = original_error
+        self.error_code = "PROJECT_HARD_DELETE_AUDIT_FAILED"
+        super().__init__(f"Error al registrar auditoría para proyecto {project_id}: {original_error}")
+
+
 __all__ = [
     "ProjectNotFound",
     "InvalidStateTransition",
@@ -78,6 +92,7 @@ __all__ = [
     "PermissionDenied",
     "ProjectCloseNotAllowed",
     "ProjectHardDeleteNotAllowed",
+    "ProjectHardDeleteAuditFailed",
 ]
 
 # Fin del archivo backend/app/modules/projects/facades/errors.py

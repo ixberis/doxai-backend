@@ -227,7 +227,10 @@ async def hard_delete_project(
     
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    from app.modules.projects.facades.errors import ProjectHardDeleteNotAllowed
+    from app.modules.projects.facades.errors import (
+        ProjectHardDeleteNotAllowed,
+        ProjectHardDeleteAuditFailed,
+    )
     
     try:
         ok = await svc.hard_delete_closed_project(
@@ -241,6 +244,15 @@ async def hard_delete_project(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Proyecto no encontrado."
             )
+    except ProjectHardDeleteAuditFailed as e:
+        # Error de auditoría: 500 con código estable
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error_code": e.error_code,
+                "message": "Error al registrar auditoría. El proyecto NO fue eliminado.",
+            }
+        )
     except ProjectHardDeleteNotAllowed as e:
         # Proyecto activo o no autorizado
         raise HTTPException(status_code=400, detail=e.reason)

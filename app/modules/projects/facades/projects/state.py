@@ -33,6 +33,7 @@ from app.modules.projects.facades.errors import (
     PermissionDenied, 
     ProjectCloseNotAllowed,
     ProjectHardDeleteNotAllowed,
+    ProjectHardDeleteAuditFailed,
 )
 from app.modules.projects.facades.base import now_utc, commit_or_raise
 from app.modules.projects.facades.audit_logger import AuditLogger
@@ -318,20 +319,24 @@ async def hard_delete_closed_project(
     - El usuario debe ser propietario
     
     Efectos:
+    - ANTES de borrar: inserta evento en project_deletion_audit_events
     - El proyecto desaparece del historial (logs con FK se borran por CASCADE)
     - No afecta métricas agregadas ni billing histórico
     
-    Auditoría:
-    - Se usa logger de aplicación en lugar de DB audit (el proyecto y sus logs
-      desaparecen, no tiene sentido persistir en DB antes de borrar)
+    Auditoría persistente:
+    - Se inserta fila en project_deletion_audit_events ANTES del delete
+    - Si falla el INSERT de auditoría, se aborta el delete (fail-fast)
     
     BD 2.0 SSOT: user_id param se compara con auth_user_id column.
     
     Raises:
         ProjectHardDeleteNotAllowed: si el proyecto está activo (in_process)
+        ProjectHardDeleteAuditFailed: si falla el INSERT de auditoría
         PermissionDenied: si el usuario no es propietario
     """
     import logging
+    from sqlalchemy import text
+    
     logger = logging.getLogger(__name__)
     
     async def _work() -> bool:
@@ -347,7 +352,43 @@ async def hard_delete_closed_project(
                 reason="No se puede eliminar un proyecto activo. Primero debe cerrarlo."
             )
         
-        # Log via app logger (NO DB audit - proyecto desaparece con sus logs)
+        # =====================================================================
+        # AUDITORÍA PERSISTENTE: Insertar ANTES del delete via SECURITY DEFINER
+        # Si falla, NO ejecutamos el delete (fail-fast)
+        # =====================================================================
+        try:
+            # Usar función SECURITY DEFINER para bypass de RLS
+            audit_fn = text("""
+                SELECT public.fn_insert_project_deletion_audit_event(
+                    :project_id::uuid,
+                    :auth_user_id::uuid,
+                    :project_slug,
+                    :project_name,
+                    :project_status,
+                    :project_state,
+                    'project_hard_delete'
+                )
+            """)
+            await db.execute(audit_fn, {
+                "project_id": str(project.id),
+                "auth_user_id": str(user_id),
+                "project_slug": project.project_slug,
+                "project_name": project.project_name,
+                "project_status": project.status.value,
+                "project_state": project.state.value,
+            })
+        except Exception as e:
+            logger.error(
+                "project_hard_delete_audit_failed",
+                extra={
+                    "project_id": str(project.id),
+                    "auth_user_id": str(user_id),
+                    "error": str(e),
+                }
+            )
+            raise ProjectHardDeleteAuditFailed(project_id, str(e))
+        
+        # Log via app logger (redundancia, la auditoría persistente es la SSOT)
         logger.info(
             "project_hard_deleted",
             extra={

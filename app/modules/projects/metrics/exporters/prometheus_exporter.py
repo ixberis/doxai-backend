@@ -97,6 +97,32 @@ def _iter_labeled_samples(value: Any) -> Iterable[Tuple[Optional[Dict[str, Any]]
     # Fallback: ignora estructuras desconocidas
 
 
+def _parse_labeled_name(name: str) -> tuple:
+    """
+    Parse metric name with embedded labels.
+    
+    Format: metric_name:label1=val1:label2=val2
+    Returns: (metric_name, {label1: val1, label2: val2})
+    
+    Examples:
+        "projects_lifecycle_requests_total:op=create:outcome=success"
+        -> ("projects_lifecycle_requests_total", {"op": "create", "outcome": "success"})
+    """
+    if ":" not in name:
+        return name, {}
+    
+    parts = name.split(":")
+    metric_name = parts[0]
+    labels = {}
+    
+    for part in parts[1:]:
+        if "=" in part:
+            k, v = part.split("=", 1)
+            labels[k] = v
+    
+    return metric_name, labels
+
+
 def _normalize_histogram(value: Any) -> Iterable[Tuple[Optional[Dict[str, Any]], Dict[str, float], Optional[float], Optional[int]]]:
     """
     Normaliza histogramas a una secuencia de:
@@ -169,30 +195,40 @@ class PrometheusExporter:
         # Counters
         # ----------------
         for name, value in snapshot.get("counters", {}).items():
-            prom_name = _sanitize_name(name)
+            # Parse labels from name format: metric_name:label1=val1:label2=val2
+            prom_name, parsed_labels = _parse_labeled_name(name)
+            prom_name = _sanitize_name(prom_name)
             lines.append(f"# TYPE {prom_name} counter")
             for labels, val in _iter_labeled_samples(value):
-                labels_str = _format_labels(labels)
+                # Merge parsed labels with any from value structure
+                merged_labels = {**parsed_labels, **(labels or {})}
+                labels_str = _format_labels(merged_labels) if merged_labels else ""
                 lines.append(f"{prom_name}{labels_str} {val}")
 
         # ----------------
         # Gauges
         # ----------------
         for name, value in snapshot.get("gauges", {}).items():
-            prom_name = _sanitize_name(name)
+            prom_name, parsed_labels = _parse_labeled_name(name)
+            prom_name = _sanitize_name(prom_name)
             lines.append(f"# TYPE {prom_name} gauge")
             for labels, val in _iter_labeled_samples(value):
-                labels_str = _format_labels(labels)
+                merged_labels = {**parsed_labels, **(labels or {})}
+                labels_str = _format_labels(merged_labels) if merged_labels else ""
                 lines.append(f"{prom_name}{labels_str} {val}")
 
         # ----------------
         # Histograms
         # ----------------
         for name, value in snapshot.get("histograms", {}).items():
-            prom_name = _sanitize_name(name)
+            prom_name, parsed_labels = _parse_labeled_name(name)
+            prom_name = _sanitize_name(prom_name)
             lines.append(f"# TYPE {prom_name} histogram")
 
             for labels, buckets, s_opt, c_opt in _normalize_histogram(value):
+                # Merge parsed labels from name with histogram labels
+                merged_labels = {**parsed_labels, **(labels or {})}
+                
                 # Ordenar por límite 'le' numérico cuando sea posible
                 def _le_key(k: str) -> float:
                     try:
@@ -209,20 +245,21 @@ class PrometheusExporter:
                     count = float(count)
                     total_seen += count
                     cumulative += count
-                    labels_with_le = dict(labels or {})
+                    labels_with_le = dict(merged_labels or {})
                     labels_with_le["le"] = le_str
                     lines.append(f'{prom_name}_bucket{_format_labels(labels_with_le)} {cumulative}')
 
                 # Asegurar bucket +Inf
-                labels_with_inf = dict(labels or {})
+                labels_with_inf = dict(merged_labels or {})
                 labels_with_inf["le"] = "+Inf"
                 lines.append(f'{prom_name}_bucket{_format_labels(labels_with_inf)} {cumulative}')
 
                 # _count y _sum
                 total_count = int(c_opt) if c_opt is not None else int(total_seen)
-                lines.append(f"{prom_name}_count{_format_labels(labels)} {total_count}")
+                merged_labels_str = _format_labels(merged_labels) if merged_labels else ""
+                lines.append(f"{prom_name}_count{merged_labels_str} {total_count}")
                 if s_opt is not None:
-                    lines.append(f"{prom_name}_sum{_format_labels(labels)} {float(s_opt)}")
+                    lines.append(f"{prom_name}_sum{merged_labels_str} {float(s_opt)}")
 
         return "\n".join(lines) + "\n"
 
