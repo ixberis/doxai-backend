@@ -114,6 +114,12 @@ class Project(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # BD 2.0 SSOT: closed_at es el anchor canónico para retención
+    # Se setea automáticamente por trigger cuando status cambia a 'closed'
+    closed_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     # Relationships
     # NOTA: La relación a archivos se gestiona en el módulo Files 2.0 (SSOT).
