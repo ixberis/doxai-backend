@@ -261,12 +261,21 @@ async def hard_delete_project(
         raise HTTPException(status_code=403, detail=str(e))
     except ProjectHardDeleteAuditFailed as e:
         # Error de auditoría: 500 con código estable
+        # Debug info solo para admins (ctx.is_admin) - NUNCA para usuarios normales en prod
+        detail = {
+            "error_code": e.error_code,
+            "message": "Error al registrar auditoría. El proyecto NO fue eliminado.",
+        }
+        
+        # Solo incluir debug info si el usuario es admin
+        if ctx.is_admin:
+            detail["debug_sqlstate"] = e.sqlstate
+            detail["debug_db_message"] = e.db_message
+            detail["debug_exception_type"] = e.exception_type
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error_code": e.error_code,
-                "message": "Error al registrar auditoría. El proyecto NO fue eliminado.",
-            }
+            detail=detail,
         )
     except ProjectHardDeleteNotAllowed as e:
         # Proyecto activo o no autorizado

@@ -76,11 +76,27 @@ class ProjectHardDeleteAuditFailed(Exception):
     
     El hard-delete NO debe ejecutarse si la auditoría falla.
     Error code estable: PROJECT_HARD_DELETE_AUDIT_FAILED
+    
+    Atributos adicionales para debug:
+    - sqlstate: código SQLSTATE de PostgreSQL (ej: 42501)
+    - db_message: mensaje original de la excepción DB
+    - exception_type: tipo de excepción original (ej: asyncpg.exceptions.InsufficientPrivilegeError)
     """
-    def __init__(self, project_id, original_error: str):
+    def __init__(
+        self, 
+        project_id, 
+        original_error: str,
+        *,
+        sqlstate: str = None,
+        db_message: str = None,
+        exception_type: str = None,
+    ):
         self.project_id = project_id
         self.original_error = original_error
         self.error_code = "PROJECT_HARD_DELETE_AUDIT_FAILED"
+        self.sqlstate = sqlstate
+        self.db_message = db_message
+        self.exception_type = exception_type
         super().__init__(f"Error al registrar auditoría para proyecto {project_id}: {original_error}")
 
 

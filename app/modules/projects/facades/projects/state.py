@@ -379,11 +379,15 @@ async def hard_delete_closed_project(
             })
         except Exception as e:
             # =========================================================================
-            # LOGGING EXPLÍCITO: Capturar SQLSTATE si existe (asyncpg/psycopg2)
-            # IMPORTANTE: Formato inline + repr(e) para visibilidad completa en Railway
+            # LOGGING EXPLÍCITO: Capturar SQLSTATE + mensaje + tipo de excepción
+            # IMPORTANTE: Incluir toda la info para debug sin depender de Railway logs
             # =========================================================================
             import sys
+            
+            # Extraer SQLSTATE (asyncpg: e.sqlstate, psycopg2: e.orig.pgcode)
             sqlstate = getattr(e, 'sqlstate', None) or getattr(getattr(e, 'orig', None), 'pgcode', None)
+            db_message = str(e)
+            exception_type = type(e).__module__ + "." + type(e).__name__
             
             # stderr con flush=True para Railway
             print(
@@ -391,7 +395,8 @@ async def hard_delete_closed_project(
                 f"project_id={project.id} "
                 f"auth_user_id={user_id} "
                 f"sqlstate={sqlstate} "
-                f"error={repr(e)}",
+                f"exception_type={exception_type} "
+                f"db_message={db_message}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -402,10 +407,17 @@ async def hard_delete_closed_project(
                 f"project_id={project.id} "
                 f"auth_user_id={user_id} "
                 f"sqlstate={sqlstate} "
-                f"error={repr(e)}"
+                f"exception_type={exception_type} "
+                f"db_message={db_message}"
             )
             
-            raise ProjectHardDeleteAuditFailed(project_id, f"sqlstate={sqlstate} {repr(e)}")
+            raise ProjectHardDeleteAuditFailed(
+                project_id, 
+                f"sqlstate={sqlstate} {db_message}",
+                sqlstate=sqlstate,
+                db_message=db_message,
+                exception_type=exception_type,
+            )
         
         # Log via app logger (redundancia, la auditoría persistente es la SSOT)
         logger.info(
