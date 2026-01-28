@@ -76,6 +76,8 @@ async def change_status(
     Cambia el status administrativo del proyecto. Requiere propiedad.
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
+    from app.modules.projects.facades.errors import PermissionDenied
+    
     # Normalizar y mapear slug a enum
     slug = _norm_slug(status_slug)
     if slug in {"in_process", "in_progress"}:
@@ -86,13 +88,16 @@ async def change_status(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status_slug}")
     
-    project = await svc.change_status(
-        project_id,
-        auth_user_id=ctx.auth_user_id,
-        user_email=None,  # BD 2.0: email no requerido
-        new_status=new_status,
-    )
-    return ProjectResponse(success=True, message="Status actualizado", project=_coerce_to_project_read(project))
+    try:
+        project = await svc.change_status(
+            project_id,
+            auth_user_id=ctx.auth_user_id,
+            user_email=None,  # BD 2.0: email no requerido
+            new_status=new_status,
+        )
+        return ProjectResponse(success=True, message="Status actualizado", project=_coerce_to_project_read(project))
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 @router.post(
@@ -140,12 +145,17 @@ async def archive_project(
     Archiva (soft delete) un proyecto. Requiere propiedad.
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    project = await svc.archive(
-        project_id,
-        auth_user_id=ctx.auth_user_id,
-        user_email=None,  # BD 2.0: email no requerido
-    )
-    return ProjectResponse(success=True, message="Proyecto archivado", project=_coerce_to_project_read(project))
+    from app.modules.projects.facades.errors import PermissionDenied
+    
+    try:
+        project = await svc.archive(
+            project_id,
+            auth_user_id=ctx.auth_user_id,
+            user_email=None,  # BD 2.0: email no requerido
+        )
+        return ProjectResponse(success=True, message="Proyecto archivado", project=_coerce_to_project_read(project))
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 @router.post(
@@ -178,7 +188,7 @@ async def close_project(
     
     BD 2.0 SSOT: usa auth_user_id del contexto Core.
     """
-    from app.modules.projects.facades.errors import ProjectCloseNotAllowed
+    from app.modules.projects.facades.errors import ProjectCloseNotAllowed, PermissionDenied
     
     try:
         project = await svc.close_project(
@@ -192,6 +202,8 @@ async def close_project(
             message="Proyecto cerrado. Ciclo de retención iniciado.", 
             project=_coerce_to_project_read(project)
         )
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ProjectCloseNotAllowed as e:
         # Proyecto en processing → 400 con mensaje claro
         raise HTTPException(status_code=400, detail=e.reason)
@@ -230,6 +242,7 @@ async def hard_delete_project(
     from app.modules.projects.facades.errors import (
         ProjectHardDeleteNotAllowed,
         ProjectHardDeleteAuditFailed,
+        PermissionDenied,
     )
     
     try:
@@ -244,6 +257,8 @@ async def hard_delete_project(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Proyecto no encontrado."
             )
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ProjectHardDeleteAuditFailed as e:
         # Error de auditoría: 500 con código estable
         raise HTTPException(
