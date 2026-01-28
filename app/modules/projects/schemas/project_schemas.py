@@ -150,27 +150,37 @@ class ProjectRead(UTF8SafeModel):
     """
     Response completo de un proyecto.
     
-    Incluye todos los campos del modelo Project alineados con
-    ProjectState/ProjectStatus.
+    SSOT Contract:
+    - Todos los campos se serializan con nombres canónicos de DB
+    - project_state: Estado operacional (created, uploading, processing, ready, error, archived)
+    - status: Estado de negocio (in_process, closed, retention_grace, deleted_by_policy)
+    - Los timestamps de retención siempre se incluyen (pueden ser null)
     
     BD 2.0 SSOT: auth_user_id es el ownership canónico (UUID).
-    
-    last_activity_at: Máximo entre updated_at y el último evento de archivo.
-    Usado por el frontend para mostrar "Actualizado: ..." correctamente.
     """
     project_id: UUID = Field(..., alias="id", description="ID único del proyecto")
     auth_user_id: UUID = Field(..., description="ID del usuario propietario (UUID SSOT)")
     project_name: str = Field(..., description="Nombre del proyecto")
     project_slug: str = Field(..., description="Slug único del proyecto")
     project_description: Optional[str] = Field(None, description="Descripción")
-    state: ProjectState = Field(..., description="Estado operacional del proyecto")
+    
+    # SSOT: Serializamos con nombre canónico "project_state" (alias desde atributo ORM "state")
+    project_state: ProjectState = Field(
+        ..., 
+        alias="state", 
+        serialization_alias="project_state",
+        description="Estado operacional del proyecto"
+    )
+    # SSOT: status es canónico tanto en ORM como en serialización
     status: ProjectStatus = Field(..., description="Estado de negocio del proyecto")
+    
+    # Timestamps operativos
     created_at: datetime = Field(..., description="Fecha de creación")
     updated_at: datetime = Field(..., description="Última actualización")
     ready_at: Optional[datetime] = Field(None, description="Fecha cuando alcanzó estado 'ready'")
     archived_at: Optional[datetime] = Field(None, description="Fecha de archivo")
     
-    # RFC-FILES-RETENTION-001: Timestamps de retención (SSOT canónico)
+    # RFC-FILES-RETENTION-001: Timestamps de retención (SSOT canónico, siempre incluidos)
     closed_at: Optional[datetime] = Field(None, description="Fecha de cierre (anchor de retención)")
     retention_grace_at: Optional[datetime] = Field(None, description="Fecha de gracia de retención")
     deleted_by_policy_at: Optional[datetime] = Field(None, description="Fecha de borrado por política")
@@ -184,6 +194,8 @@ class ProjectRead(UTF8SafeModel):
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
+        # Usar alias de serialización para output JSON consistente
+        by_alias=False,
         json_schema_extra={
             "example": {
                 "project_id": "123e4567-e89b-12d3-a456-426614174000",
@@ -191,12 +203,15 @@ class ProjectRead(UTF8SafeModel):
                 "project_name": "Propuesta Técnica Q4",
                 "project_slug": "propuesta-tecnica-q4",
                 "project_description": "Análisis de propuesta",
-                "state": "ready",
+                "project_state": "ready",
                 "status": "in_process",
                 "created_at": "2025-10-01T10:00:00Z",
                 "updated_at": "2025-10-18T15:30:00Z",
                 "ready_at": "2025-10-18T15:30:00Z",
                 "archived_at": None,
+                "closed_at": None,
+                "retention_grace_at": None,
+                "deleted_by_policy_at": None,
                 "last_activity_at": "2025-10-18T16:00:00Z"
             }
         }
